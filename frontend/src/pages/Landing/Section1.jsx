@@ -120,8 +120,11 @@ export default function Section1() {
   const inputRef = useRef(null);
   const [scrollProgress, setScrollProgress] = useState(0);
 
-  // Intro state
-  const [entered, setEntered] = useState(false);
+  // Check if user has visited before
+  const hasVisited = useRef(typeof localStorage !== "undefined" && localStorage.getItem("cz_intro_seen") === "1");
+
+  // Intro state — skip intro if returning visitor
+  const [entered, setEntered] = useState(hasVisited.current);
   const [introFading, setIntroFading] = useState(false);
   const [emailValue, setEmailValue] = useState("");
   const [productValue, setProductValue] = useState("");
@@ -180,6 +183,7 @@ export default function Section1() {
     setIntroFading(true);
     setTimeout(() => {
       setEntered(true);
+      try { localStorage.setItem("cz_intro_seen", "1"); } catch (_) {}
     }, 800);
   }
 
@@ -228,13 +232,13 @@ export default function Section1() {
     return () => window.removeEventListener("scroll", handleScroll);
   }, [handleScroll]);
 
-  // Phase calculations
-  const titleFade = Math.max(0, Math.min(1, 1 - (scrollProgress - 0.10) / 0.25));
-  const titleScale = 1 + scrollProgress * 0.12;
-  const splitProgress = Math.max(0, Math.min(1, (scrollProgress - 0.10) / 0.25));
-  const splitDistance = splitProgress * 120;
-  const caveProgress = Math.max(0, Math.min(1, (scrollProgress - 0.20) / 0.50));
-  const revealProgress = Math.max(0, Math.min(1, (scrollProgress - 0.65) / 0.30));
+  // Phase calculations — starts immediately, gentle pace
+  const titleFade = Math.max(0, Math.min(1, 1 - scrollProgress / 0.20));
+  const titleScale = 1 + scrollProgress * 0.06;
+  const splitProgress = Math.max(0, Math.min(1, scrollProgress / 0.20));
+  const splitDistance = splitProgress * 60;
+  const caveProgress = Math.max(0, Math.min(1, (scrollProgress - 0.10) / 0.45));
+  const revealProgress = Math.max(0, Math.min(1, (scrollProgress - 0.50) / 0.35));
   const circleRadius = 3 + caveProgress * 115;
   const videoY = (1 - caveProgress) * 20;
 
@@ -246,7 +250,7 @@ export default function Section1() {
     <section
       ref={sectionRef}
       className="relative"
-      style={{ height: "350vh" }}
+      style={{ height: "220vh" }}
     >
       {/* ====== INTRO OVERLAY ====== */}
       {!entered && (

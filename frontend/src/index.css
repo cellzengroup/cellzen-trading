@@ -232,6 +232,22 @@ body {
   font-family: var(--font-roboto);
   background: var(--cz-paper);
   color: var(--cz-ink);
+  overflow-x: hidden;
+}
+
+/* Near-invisible horizontal scrollbar only */
+::-webkit-scrollbar:horizontal {
+  height: 6px;
+}
+::-webkit-scrollbar-track:horizontal {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb:horizontal {
+  background: rgba(45, 45, 45, 0.01);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:horizontal:hover {
+  background: rgba(45, 45, 45, 0.05);
 }
 
 h1, h2, h3, h4, h5, h6 {
