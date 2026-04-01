@@ -27,7 +27,6 @@ app.use(helmet({
 const isProduction = process.env.NODE_ENV === 'production';
 const defaultProdOrigins = [
   'https://cellzen-trading.onrender.com',
-  'https://cellzen.com.np',
   'https://www.cellzen.com.np'
 ];
 
