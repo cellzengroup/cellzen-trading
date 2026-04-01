@@ -160,12 +160,12 @@ export default function Section1() {
       return () => clearTimeout(t);
     }
 
-    // Greeting finished — hold, then fade out
+    // Greeting finished — hold briefly, then fade out
     const t = setTimeout(() => {
       setGreetDone(true);
       setGreetFading(true);
-      setTimeout(() => setShowInput(true), 2500);
-    }, 2000);
+      setTimeout(() => setShowInput(true), 800);
+    }, 600);
     return () => clearTimeout(t);
   }, [entered, logoVisible, greetTyped, greetDone, GREETING.length]);
 
