@@ -89,7 +89,7 @@ export default function Section2() {
   const [activeTab, setActiveTab] = useState(0);
 
   return (
-    <section ref={ref} id="who-we-are" className="relative bg-[#EDEDED] overflow-hidden">
+    <section ref={ref} id="who-we-are" className="relative bg-[#E5E1DA] overflow-hidden">
 
       {/* \u2014\u2014 Top: Full-width heading with massive negative space \u2014\u2014 */}
       <div className="pt-32 pb-20 px-6">
@@ -131,7 +131,7 @@ export default function Section2() {
 
               {/* \u2014\u2014 Left: 3D Rotating Earth Globe \u2014\u2014 */}
               <div className="relative flex justify-center items-center" style={{ perspective: "1000px" }}>
-                <div className="relative w-64 h-64 sm:w-80 sm:h-80" style={{ transformStyle: "preserve-3d" }}>
+                <div className="relative w-72 h-72 sm:w-[22rem] sm:h-[22rem]" style={{ transformStyle: "preserve-3d" }}>
 
                   {/* 3D Globe \u2014 CSS sphere with rotating texture */}
                   <div
@@ -144,19 +144,19 @@ export default function Section2() {
                     {/* Sphere base with earth texture */}
                     <div className="absolute inset-0 rounded-full overflow-hidden"
                       style={{
-                        boxShadow: "inset -30px -30px 60px rgba(0,0,0,0.6), inset 20px 20px 40px rgba(255,255,255,0.1), 0 0 40px 8px rgba(100,160,255,0.08)",
+                        boxShadow: "inset -30px -30px 60px rgba(0,0,0,0.6), inset 20px 20px 40px rgba(255,255,255,0.1), 0 0 40px 8px rgba(65,36,96,0.15)",
                       }}
                     >
-                      {/* Rotating earth map */}
+                      {/* Rotating earth map — seamless loop */}
                       <div
                         style={{
                           position: "absolute",
                           top: 0,
-                          left: "-50%",
-                          width: "200%",
+                          left: 0,
+                          width: "300%",
                           height: "100%",
                           backgroundImage: "url('https://upload.wikimedia.org/wikipedia/commons/thumb/2/23/Blue_Marble_2002.png/1280px-Blue_Marble_2002.png')",
-                          backgroundSize: "50% 100%",
+                          backgroundSize: "33.333% 100%",
                           backgroundRepeat: "repeat-x",
                           animation: "rotateEarth 35s linear infinite",
                         }}
@@ -175,7 +175,7 @@ export default function Section2() {
                       <div
                         className="absolute inset-0 rounded-full"
                         style={{
-                          background: "radial-gradient(circle at 50% 50%, transparent 40%, rgba(0,0,0,0.3) 65%, rgba(0,0,0,0.7) 82%, rgba(0,0,0,0.95) 100%)",
+                          background: "radial-gradient(circle at 50% 50%, transparent 45%, rgba(0,0,0,0.15) 60%, rgba(0,0,0,0.4) 75%, rgba(0,0,0,0.8) 100%)",
                           zIndex: 4,
                         }}
                       />
@@ -195,8 +195,8 @@ export default function Section2() {
                   <div
                     className="absolute inset-[-6px] rounded-full"
                     style={{
-                      background: "radial-gradient(circle, transparent 55%, rgba(80,140,255,0.06) 70%, rgba(80,140,255,0.12) 85%, rgba(80,140,255,0.04) 100%)",
-                      boxShadow: "0 0 30px 8px rgba(80,140,255,0.06)",
+                      background: "radial-gradient(circle, transparent 55%, rgba(65,36,96,0.06) 70%, rgba(65,36,96,0.10) 85%, rgba(65,36,96,0.04) 100%)",
+                      boxShadow: "0 0 30px 8px rgba(65,36,96,0.06)",
                     }}
                   />
 

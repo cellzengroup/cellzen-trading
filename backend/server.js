@@ -85,9 +85,11 @@ app.use((req, res, next) => {
 // Serve uploaded files (product images etc.)
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Serve frontend static files in production
+// Serve frontend static files when dist exists (production builds)
 const distPath = path.join(__dirname, '..', 'dist');
-if (isProduction) {
+const fs = require('fs');
+const distExists = fs.existsSync(distPath);
+if (isProduction || distExists) {
   app.use(express.static(distPath));
 }
 
@@ -105,12 +107,12 @@ app.get('/api/health', (req, res) => {
 app.use('/api/forms', formsRoutes);
 app.use('/api/inventory', inventoryRoutes);
 
-// Catch-all route — serve frontend index.html for non-API routes in production
+// Catch-all route — serve frontend index.html for non-API routes when dist exists
 app.all('*', (req, res, next) => {
   if (req.path.startsWith('/api')) {
     return next();
   }
-  if (isProduction) {
+  if ((isProduction || distExists) && fs.existsSync(path.join(distPath, 'index.html'))) {
     return res.sendFile(path.join(distPath, 'index.html'));
   }
   res.status(404).json({

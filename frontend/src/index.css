@@ -319,7 +319,7 @@ h1, h2, h3, h4, h5, h6 {
 /* Earth globe — scrolls the map texture to simulate sphere rotation */
 @keyframes rotateEarth {
   0% { transform: translateX(0); }
-  100% { transform: translateX(-50%); }
+  100% { transform: translateX(-33.333%); }
 }
 
 /* Gentle tilt wobble — makes the globe feel alive and 3D */
