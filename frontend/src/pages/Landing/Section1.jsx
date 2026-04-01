@@ -500,6 +500,6 @@ export default function Section1() {
         )}
       </div>
 
-iti    </section>
+    </section>
   );
 }
