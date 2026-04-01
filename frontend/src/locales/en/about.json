@@ -1,0 +1,47 @@
+{
+  "title": "About Yogini Arts",
+  "subtitle": "Where Ancient Wisdom Meets Sacred Craftsmanship",
+  "hero": {
+    "line1": "Sacred Art.",
+    "line2": "Timeless Craft.",
+    "line3": "Living Heritage."
+  },
+  "heroDescription": "For generations, the artisans of the Himalayas have preserved traditions that connect the earthly with the divine. Yogini Arts carries this legacy forward, bringing authentic sacred art and healing instruments to seekers around the world.",
+  "story": {
+    "label": "Our Story",
+    "title": "Rooted in Tradition, Crafted with Devotion",
+    "text1": "Yogini Arts was born from a deep reverence for the spiritual traditions of Nepal and the Himalayan region. What began as a personal journey into the world of Thangka painting and sound healing evolved into a mission — to share these sacred art forms with the world while honoring the artisans who breathe life into them.",
+    "text2": "Every piece in our collection is sourced directly from master craftspeople in Kathmandu Valley and beyond. We work closely with family-run workshops where techniques have been passed down through generations, ensuring that each creation carries the authenticity and spiritual intention of its maker.",
+    "text3": "We believe that sacred art is not merely decorative — it is a bridge between the seen and unseen, a tool for meditation, healing, and inner transformation."
+  },
+  "values": {
+    "label": "What We Stand For",
+    "title": "The Pillars of Our Practice",
+    "art": {
+      "title": "Sacred Artistry",
+      "description": "Each Thangka painting is a meditation in itself — hand-painted over weeks or months using natural pigments and gold, following iconographic traditions that date back centuries. We preserve this art form by supporting the artisans who dedicate their lives to it."
+    },
+    "sound": {
+      "title": "Healing Resonance",
+      "description": "Our hand-hammered singing bowls are crafted from traditional seven-metal alloys, each one tuned to produce rich, layered overtones. Used in meditation, yoga, and sound therapy, these bowls carry vibrations that calm the mind and restore balance."
+    },
+    "spirituality": {
+      "title": "Authentic Heritage",
+      "description": "From prayer beads to ritual ornaments, every sacred item we offer is rooted in genuine Himalayan spiritual tradition. We work only with artisans who understand the deeper meaning behind what they create, ensuring spiritual integrity in every piece."
+    }
+  },
+  "journey": {
+    "title": "From the Himalayas to Your Sacred Space",
+    "text": "Every item we offer has traveled a journey — from the hands of a devoted artisan in Nepal, through ancient traditions of craftsmanship, to your home, your altar, your practice. We invite you to be part of this living tradition."
+  },
+  "stats": {
+    "artisans": "Artisans",
+    "years": "Years of Heritage",
+    "pieces": "Pieces Crafted",
+    "countries": "Countries Reached"
+  },
+  "cta": {
+    "explore": "Explore Our Collection",
+    "contact": "Get in Touch"
+  }
+}

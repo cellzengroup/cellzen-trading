@@ -1,0 +1,30 @@
+{
+  "title": "Exhibitions",
+  "subtitle": "Join us for upcoming exhibitions showcasing Himalayan art and culture",
+  "item1": {
+    "title": "Sacred Art of the Himalayas",
+    "date": "March 15 - April 30, 2025",
+    "location": "Kathmandu, Nepal",
+    "description": "An immersive exhibition featuring rare Thangka paintings and traditional Tibetan art pieces from private collections."
+  },
+  "item2": {
+    "title": "Sound & Meditation Experience",
+    "date": "May 10 - June 15, 2025",
+    "location": "Lhasa, Tibet",
+    "description": "Explore the healing power of sound through interactive demonstrations with authentic Tibetan singing bowls and meditation practices."
+  },
+  "item3": {
+    "title": "Spiritual Artifacts Showcase",
+    "date": "July 1 - August 20, 2025",
+    "location": "Bhutan",
+    "description": "A curated display of sacred items, ritual objects, and spiritual artifacts from the Himalayan region, celebrating centuries of spiritual tradition."
+  }
+}
+
+
+
+
+
+
+
+

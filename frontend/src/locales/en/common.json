@@ -1,0 +1,47 @@
+{
+  "navigation": {
+    "home": "Home",
+    "about": "About",
+    "products": "Products",
+    "gallery": "Gallery",
+    "exhibition": "Exhibition",
+    "newsNotices": "New and Notices",
+    "contactUs": "Contact Us",
+    "reachUs": "Reach US",
+    "thangka": "Thangka Art",
+    "soundBowls": "Sound Bowls",
+    "sacredItems": "Sacred Items",
+    "contact": "Contact"
+  },
+  "common": {
+    "getStarted": "Get Started",
+    "learnMore": "Learn More",
+    "aboutUs": "About Us",
+    "back": "Back",
+    "next": "Next",
+    "previous": "Previous",
+    "submit": "Submit",
+    "cancel": "Cancel",
+    "close": "Close",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "required": "Required",
+    "optional": "Optional"
+  },
+  "validation": {
+    "required": "This field is required",
+    "email": "Please enter a valid email address",
+    "minLength": "Must be at least {{min}} characters",
+    "maxLength": "Must not exceed {{max}} characters",
+    "phone": "Please enter a valid phone number"
+  },
+  "footer": {
+    "about": "About",
+    "description": "Authentic Himalayan art and sound-healing culture from Nepal",
+    "contact": "Contact",
+    "contactInfo": "Get in touch with us",
+    "rights": "All rights reserved."
+  }
+}
+

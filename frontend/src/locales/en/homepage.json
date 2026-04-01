@@ -1,0 +1,91 @@
+{
+  "title": "Welcome to Yogini Arts",
+  "subtitle": "Discover the sacred artistry of Thangka paintings and the healing resonance of Tibetan sound bowls",
+  "heroText": "Bring the ancient art of filmmaking and the healing power of the mountains into your space.",
+  "heroHeading": "The Harmony of Sound",
+  "feelSingingBowl": "Feel the Singing Bowl",
+  "singingBowlDesc": "Experience the healing resonance of our handcrafted singing bowls, designed for meditation and mindfulness.",
+  "contactUs": "Contact Us",
+  "ourProducts": "Our Products",
+  "products": {
+    "thangka": {
+      "title": "Thangka",
+      "pills": {
+        "handPainted": "Painted with Hand"
+      }
+    },
+    "singingBowl": {
+      "title": "Singing Bowl",
+      "pills": {
+        "handCrafted": "Crafted with hand",
+        "madeInNepal": "Made In nepal"
+      }
+    },
+    "jewelleries": {
+      "title": "Jewelleries",
+      "pills": {
+        "handCrafted": "Crafted with Hand"
+      }
+    }
+  },
+  "ctaTitle": "Let's grow your Brand Together!",
+  "aboutTitle": "Yogini Arts – Sacred Art & Sound Experience Platform",
+  "aboutSubtitle": "A beautifully crafted experience showcasing authentic Himalayan art and sound-healing culture from Nepal",
+  "pillars": {
+    "thangka": {
+      "title": "The Art of Thangka",
+      "description": "Traditional Tibetan Buddhist art form known for its sacred symbolism, precise craftsmanship, and spiritual significance. Explore authentic hand-painted Thangka artworks from Nepal."
+    },
+    "sound": {
+      "title": "The Sound of Healing",
+      "description": "Specially engraved, artisan-crafted sound bowls designed for meditation and healing practices. Experience the healing power of meticulously crafted Tibetan singing bowls."
+    },
+    "sacred": {
+      "title": "Sacred Items & Spiritual Connection",
+      "description": "Discover meaningful sacred objects and spiritual artifacts, each carefully sourced from experienced Nepalese artisans with cultural significance and authenticity."
+    }
+  },
+  "forms": {
+    "thangka": {
+      "title": "Thangka Art",
+      "description": "Explore authentic hand-painted Thangka artworks from Nepal, each piece rich with spiritual symbolism and traditional craftsmanship."
+    },
+    "soundBowls": {
+      "title": "Sound Bowls",
+      "description": "Experience the healing power of artisan-crafted Tibetan singing bowls, meticulously engraved for meditation and sound therapy."
+    },
+    "sacredItems": {
+      "title": "Sacred Items",
+      "description": "Discover meaningful sacred objects and spiritual artifacts, each carefully sourced from experienced Nepalese artisans."
+    },
+    "contact": {
+      "title": "Contact Us",
+      "description": "Get in touch with us to learn more about our collection, inquire about custom pieces, or schedule a consultation."
+    }
+  },
+  "section3": {
+    "trustedBy": "Handcrafted with Love and Purpose",
+    "testimonials": [
+      {
+        "name": "Singing Bowls",
+        "image": "gallery/Section3_1.png",
+        "quote": "Hand-hammered bowls with deep, balanced resonance for meditation and sound healing."
+      },
+      {
+        "name": "Thangka Art",
+        "image": "gallery/Section3_3.png",
+        "quote": "Hand-painted sacred artworks created using traditional iconography and proportions."
+      },
+      {
+        "name": "Sacred Ornaments",
+        "image": "gallery/Section3_2.png",
+        "quote": "Artisan-crafted adornments carrying symbolic meaning drawn from Himalayan spiritual culture."
+      }
+    ]
+  },
+  "section4": {
+    "headline": "A Journey from the Himalayas to Your Space",
+    "supportingText": "Born in the Himalayan region, each creation carries the stillness, depth, and spirit of its origin—bringing a sense of calm and authenticity into modern spaces.",
+    "cta": "Explore Our Collection"
+  }
+}
