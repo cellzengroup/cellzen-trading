@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+iimport React, { useState, useEffect, useRef } from "react";
 import useScrollReveal from "./useScrollReveal";
 
 const STATS = [

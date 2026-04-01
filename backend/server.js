@@ -26,9 +26,9 @@ app.use(helmet({
 // CORS configuration
 const isProduction = process.env.NODE_ENV === 'production';
 const defaultProdOrigins = [
-  'https://cellzentrading.com',
-  'https://www.cellzentrading.com',
-  'https://cellzentrading.onrender.com'
+  'https://cellzen-trading.onrender.com',
+  'https://cellzen.com.np',
+  'https://www.cellzen.com.np'
 ];
 
 const defaultDevOrigins = [

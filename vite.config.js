@@ -12,11 +12,11 @@ export default defineConfig({
     port: 3300,
     host: true,
     allowedHosts: [
-      'cellzentrading.onrender.com',
+      'cellzen-trading.onrender.com',
       '.onrender.com',
-      'cellzentrading.com',
-      'www.cellzentrading.com',
-      '.cellzentrading.com',
+      'cellzen.com.np',
+      'www.cellzen.com.np',
+      '.cellzen.com.np',
       'localhost',
       '127.0.0.1'
     ]
