@@ -1,18 +1,12 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react';
+import React, { useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 
 const InventoryApp = lazy(() => import('./inventory/InventoryApp'));
 import { useTranslation } from 'react-i18next';
 import Layout from './components/ui/Layout';
-import HomePage from './pages/Landing/HomePage';
-import About from './pages/About';
-import Products from './pages/Products/Products';
-import Gallery from './pages/Gallery';
-import Exhibition from './pages/Exhibition';
-import Contact from './pages/Contact';
+import Landingpage from './pages/Landing/Landingpage';
 
 function App() {
-  const [currentView, setCurrentView] = useState('home');
   const { i18n } = useTranslation();
 
   // Update HTML lang attribute when language changes and ensure all components update
@@ -40,12 +34,6 @@ function App() {
     return () => window.removeEventListener('storage', handleStorageChange);
   }, [i18n]);
 
-  const handleCardSelect = (formType) => {
-    // Handle navigation to different sections
-    console.log('Selected:', formType);
-    // You can add routing logic here or state management
-  };
-
   // Keep Router basename aligned with Vite's BASE_URL (prevents /YoginiArts/ being forced on custom domains).
   const basename =
     import.meta.env.BASE_URL && import.meta.env.BASE_URL !== '/'
@@ -71,13 +59,8 @@ function App() {
           element={
             <Layout showNavigation={false}>
               <Routes>
-                <Route path="/" element={<HomePage onCardSelect={handleCardSelect} />} />
-                <Route path="/about" element={<About />} />
-                <Route path="/products" element={<Products />} />
-                <Route path="/gallery" element={<Gallery />} />
-                <Route path="/exhibition" element={<Exhibition />} />
-                <Route path="/contact" element={<Contact />} />
-                <Route path="/*" element={<HomePage onCardSelect={handleCardSelect} />} />
+                <Route path="/" element={<Landingpage />} />
+                <Route path="/*" element={<Landingpage />} />
               </Routes>
             </Layout>
           }

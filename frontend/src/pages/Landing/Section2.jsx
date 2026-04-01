@@ -34,9 +34,9 @@ const TABS = [
   {
     tab: "Global Reach",
     cardTitle: "A Worldwide Sourcing Network",
-    desc: "We connect businesses around the world with trusted manufacturers. Our team handles everything — sourcing, negotiation, quality checks, and logistics — so you can focus on growing your business.",
+    desc: "We connect businesses around the world with trusted manufacturers. Our team handles everything \u2014 sourcing, negotiation, quality checks, and logistics \u2014 so you can focus on growing your business.",
     image: "https://images.unsplash.com/photo-1586528116311-ad8dd3c8310d?w=200&h=200&fit=crop",
-    color: "#512D70",
+    color: "#412460",
   },
   {
     tab: "Our Markets",
@@ -91,7 +91,7 @@ export default function Section2() {
   return (
     <section ref={ref} id="who-we-are" className="relative bg-[#EDEDED] overflow-hidden">
 
-      {/* ── Top: Full-width heading with massive negative space ── */}
+      {/* \u2014\u2014 Top: Full-width heading with massive negative space \u2014\u2014 */}
       <div className="pt-32 pb-20 px-6">
         <div className="mx-auto max-w-5xl">
           <div className={`transition-all duration-1000 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-12"}`}>
@@ -113,27 +113,27 @@ export default function Section2() {
             <div className="hidden lg:block w-px h-full bg-cz-ink/10" />
             <p className="text-base leading-[1.8] text-cz-ink/50 pl-0 lg:pl-12 mt-4 lg:mt-0">
               Founded with a mission to make international trade simple and accessible, we act as
-              the trusted bridge between our clients and the world's largest manufacturing hub —
+              the trusted bridge between our clients and the world's largest manufacturing hub \u2014
               your single point of contact from sourcing to delivery, anywhere in the world.
             </p>
           </div>
         </div>
       </div>
 
-      {/* ── Stats strip with animated counters ── */}
+      {/* \u2014\u2014 Stats strip with animated counters \u2014\u2014 */}
       <StatsStrip />
 
-      {/* ── Our Unique Position — Exact reference layout ── */}
+      {/* \u2014\u2014 Our Unique Position \u2014 Exact reference layout \u2014\u2014 */}
       <div className="py-24 px-6">
         <div className="mx-auto max-w-5xl">
           <div className={`transition-all duration-1000 delay-200 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
             <div className="grid gap-12 lg:grid-cols-2 items-center">
 
-              {/* ══ Left: 3D Rotating Earth Globe ══ */}
+              {/* \u2014\u2014 Left: 3D Rotating Earth Globe \u2014\u2014 */}
               <div className="relative flex justify-center items-center" style={{ perspective: "1000px" }}>
                 <div className="relative w-64 h-64 sm:w-80 sm:h-80" style={{ transformStyle: "preserve-3d" }}>
 
-                  {/* 3D Globe — CSS sphere with rotating texture */}
+                  {/* 3D Globe \u2014 CSS sphere with rotating texture */}
                   <div
                     className="absolute inset-0 rounded-full"
                     style={{
@@ -162,7 +162,7 @@ export default function Section2() {
                         }}
                       />
 
-                      {/* Specular highlight — top left shine */}
+                      {/* Specular highlight \u2014 top left shine */}
                       <div
                         className="absolute inset-0 rounded-full"
                         style={{
@@ -171,7 +171,7 @@ export default function Section2() {
                         }}
                       />
 
-                      {/* Edge darkening — sphere falloff */}
+                      {/* Edge darkening \u2014 sphere falloff */}
                       <div
                         className="absolute inset-0 rounded-full"
                         style={{
@@ -191,7 +191,7 @@ export default function Section2() {
                     </div>
                   </div>
 
-                  {/* Atmosphere glow — blue haze around the sphere */}
+                  {/* Atmosphere glow \u2014 blue haze around the sphere */}
                   <div
                     className="absolute inset-[-6px] rounded-full"
                     style={{
@@ -213,7 +213,7 @@ export default function Section2() {
                 </div>
               </div>
 
-              {/* ══ Right: Content ══ */}
+              {/* \u2014\u2014 Right: Content \u2014\u2014 */}
               <div>
 
                 {/* Heading */}
@@ -224,10 +224,10 @@ export default function Section2() {
 
                 <p className="mt-5 text-sm leading-[1.9] text-cz-ink/50">
                   Strategically positioned across 10+ countries through fully integrated sourcing
-                  operations — a single point of contact for your global supply chain needs.
+                  operations \u2014 a single point of contact for your global supply chain needs.
                 </p>
 
-                {/* Tabs — rectangular, side by side, no gap */}
+                {/* Tabs \u2014 rectangular, side by side, no gap */}
                 <div className="mt-8 flex">
                   {TABS.map((t, i) => (
                     <button
@@ -263,7 +263,7 @@ export default function Section2() {
         </div>
       </div>
 
-      {/* ── Bottom breathing space ── */}
+      {/* \u2014\u2014 Bottom breathing space \u2014\u2014 */}
       <div className="h-16" />
     </section>
   );

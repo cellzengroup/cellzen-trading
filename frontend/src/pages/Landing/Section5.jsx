@@ -65,7 +65,7 @@ export default function Section5() {
             Logistics & Shipping
           </h2>
           <p className="mx-auto mt-4 max-w-2xl text-base text-cz-ink/60">
-            We manage full shipping solutions — sea, air, or express — directly to your destination.
+            We manage full shipping solutions \u2014 sea, air, or express \u2014 directly to your destination.
           </p>
         </div>
 

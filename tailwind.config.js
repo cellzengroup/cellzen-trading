@@ -1,8 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
+    "./frontend/index.html",
+    "./frontend/src/**/*.{js,ts,jsx,tsx}",
   ],
   theme: {
     extend: {
@@ -29,8 +29,8 @@ export default {
         },
         'sacred-border': '#7A5D47',
         cz: {
-          main: '#512D70',
-          ink: '#3E3D3D',
+          main: '#412460',
+          ink: '#2D2D2D',
           paper: '#E5E1DA',
           'secondary-light': '#B99353',
           'secondary-dark': '#B99353',

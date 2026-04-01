@@ -1,269 +1,151 @@
-import { useEffect, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { useLocation, Link } from 'react-router-dom';
-import useBreakpoint from '../hooks/useBreakpoint';
+import React, { useState, useEffect, useCallback } from "react";
+import { Link, NavLink, useLocation } from "react-router-dom";
 
-// Flag Component - Circular flag display
-const FlagIcon = ({ flagSrc, className = "h-5 w-5" }) => (
-  <div className={`${className} rounded-full overflow-hidden flex items-center justify-center`}>
-    <img
-      src={flagSrc}
-      alt="Flag"
-      className="w-full h-full object-cover rounded-full"
-    />
-  </div>
-);
+import RateToggle from "./RateToggle";
 
-const Header = () => {
-  const { t, i18n } = useTranslation();
+export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChange, onLogout, visible = true }) {
   const location = useLocation();
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isScrolled, setIsScrolled] = useState(false);
-  const [forceHidden, setForceHidden] = useState(false);
+  const isLanding = location.pathname === "/";
+  const [dark, setDark] = useState(isLanding);
 
-  const {
-    isSmallMobile,
-    isLargeMobile,
-    isTabletPortrait,
-    isTabletLandscapeSmallDesktop,
-    isDesktopLaptop,
-    isDesktopLarge,
-    isMobile,
-    isTablet,
-    isDesktop,
-  } = useBreakpoint();
+  const handleScroll = useCallback(() => {
+    if (!isLanding) { setDark(false); return; }
+    const heroEnd = window.innerHeight * 3.5;
+    setDark(window.scrollY < heroEnd - 100);
+  }, [isLanding]);
 
-  const navigation = [
-    { name: t('navigation.home'), path: '/' },
-    { name: t('navigation.about'), path: '/about' },
-    { name: t('navigation.products'), path: '/products' },
-    { name: t('navigation.gallery'), path: '/gallery' },
-    // Reuse existing /exhibition route for "New and Notices"
-    { name: t('navigation.newsNotices'), path: '/exhibition' },
-  ];
-
-  // Allow sections to force-hide the header (e.g., Section 2).
   useEffect(() => {
-    // Keep track of which sections want to hide the header
-    const hiddenSections = new Set();
+    if (!isLanding) { setDark(false); return; }
+    setDark(true);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    handleScroll();
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [isLanding, handleScroll]);
 
-    const onForceHidden = (e) => {
-      const { id, hidden } = e.detail || {};
-      
-      // Handle legacy events (no ID) - though we updated S2/S3, safeguard just in case
-      if (!id) {
-        setForceHidden(Boolean(hidden));
-        if (Boolean(hidden)) setIsMobileMenuOpen(false);
-        return;
-      }
-
-      if (hidden) {
-        hiddenSections.add(id);
-      } else {
-        hiddenSections.delete(id);
-      }
-
-      const shouldHide = hiddenSections.size > 0;
-      setForceHidden(shouldHide);
-      if (shouldHide) {
-        setIsMobileMenuOpen(false);
-      }
-    };
-
-    window.addEventListener('header:forceHidden', onForceHidden);
-    return () => window.removeEventListener('header:forceHidden', onForceHidden);
-  }, []);
-
-  // Default header behavior: always visible (no scroll-hide), only changes style on scroll.
   useEffect(() => {
-    const handleScroll = () => {
-      const y = window.scrollY || 0;
-      setIsScrolled(y > 0);
-    };
-
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => {
-      window.removeEventListener('scroll', handleScroll);
-    };
-  }, []);
-
-  const toggleLanguage = () => {
-    const newLang = i18n.language === 'en' ? 'zh' : 'en';
-    localStorage.setItem('i18nextLng', newLang);
-    document.documentElement.lang = newLang;
-    i18n.changeLanguage(newLang).then(() => {
-      localStorage.setItem('i18nextLng', newLang);
-      window.dispatchEvent(new StorageEvent('storage', { key: 'i18nextLng', newValue: newLang }));
-    });
-  };
-
-  // Determine logo size based on breakpoint
-  const getLogoSize = () => {
-    if (isSmallMobile) return 'h-8';
-    if (isLargeMobile) return 'h-9';
-    if (isTabletPortrait) return 'h-10';
-    if (isTabletLandscapeSmallDesktop) return 'h-11';
-    if (isDesktopLaptop) return 'h-12';
-    return 'h-12'; // desktopLarge
-  };
-
-  // Determine navigation spacing based on breakpoint
-  const getNavSpacing = () => {
-    if (isTabletPortrait) return 'space-x-6';
-    if (isTabletLandscapeSmallDesktop) return 'space-x-7';
-    if (isDesktopLaptop) return 'space-x-8';
-    return 'space-x-8'; // desktopLarge
-  };
+    if (!isLanding) setDark(false);
+    else setDark(true);
+  }, [isLanding]);
 
   return (
     <header
-      className={`sticky top-0 z-50 transition-all duration-500 ease-in-out ${
-        forceHidden ? 'opacity-0 -translate-y-full pointer-events-none' : 'opacity-100 translate-y-0'
-      } ${isScrolled ? 'backdrop-blur-md shadow-lg' : ''}`}
-      style={
-        isScrolled
-          ? { backgroundColor: 'rgba(255, 255, 255, 0.7)' }
-          : { backgroundColor: '#FFFBE9' }
-      }
+      className="sticky top-0 z-50 transition-all duration-700 ease-out"
+      style={{
+        backgroundColor: dark ? "#2A1740" : "#E5E1DA",
+        borderBottom: dark ? "none" : "none",
+        boxShadow: "none",
+        transform: visible ? "translateY(0)" : "translateY(-100%)",
+      }}
     >
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className={`flex justify-between items-center ${isMobile ? 'h-14' : isTablet ? 'h-16' : 'h-20'} py-4`}>
-          {/* Logo */}
-          <div className="flex-shrink-0 flex items-center">
-            <Link to="/" className="flex items-center">
-              <img
-                src={`${import.meta.env.BASE_URL}ColorLogo.png`}
-                alt="Yogini Arts"
-                className={`${getLogoSize()} w-auto object-contain`}
+      <div className="mx-auto grid max-w-6xl grid-cols-3 items-center gap-4 px-4 py-4">
+        <Link to={isAdmin ? "/admin/dashboard" : "/"} className="flex items-center gap-2 justify-self-start">
+          <svg className="h-9 w-auto" viewBox="0 0 180 181" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <g clipPath="url(#cz-logo)">
+              <path d="M179.938 104.968C174.068 136.468 157.075 159.321 128.033 172.6C85.7055 192.056 36.8899 176.615 12.791 137.086C1.97741 118.865 -1.7301 99.4095 0.741575 78.4097C5.37597 41.66 33.8003 10.7779 70.8755 2.13091C106.097 -5.89844 144.717 9.23379 165.108 39.8071C172.523 50.9246 177.467 62.9686 179.629 76.248C179.629 76.8656 179.938 77.7921 179.938 78.4097C179.32 78.7185 179.011 78.7185 179.011 78.7185C161.71 79.3362 144.408 78.7185 128.033 74.0862C121.545 72.2333 116.91 66.3657 116.91 59.5716V52.1599C116.91 48.1452 112.585 45.6747 109.186 47.8364L98.6819 54.0128L86.9414 60.4981L66.55 72.2333L49.5572 82.1155L42.7601 86.1302C39.3616 87.9831 39.3616 92.9243 42.7601 95.086L49.5572 99.1007L66.859 108.983L86.9414 120.409L98.9908 127.203L109.495 133.38C112.894 135.233 117.219 132.762 117.219 129.056V121.953C117.219 115.468 121.545 109.601 127.724 107.439C139.156 103.733 151.205 102.189 163.563 102.498H177.467C179.629 101.88 180.247 102.807 179.938 104.968Z"
+                fill={dark ? "#E5E1DA" : "#412460"}
+                className="transition-colors duration-500"
               />
-            </Link>
-          </div>
+            </g>
+            <defs>
+              <clipPath id="cz-logo">
+                <rect width="180" height="181" fill="white"/>
+              </clipPath>
+            </defs>
+          </svg>
+        </Link>
 
-          {/* Navigation - Show on Tablet and Desktop */}
-          {(isTablet || isDesktop) && (
-            <nav className={`flex items-center ${getNavSpacing()}`}>
-              {navigation.map((item) => {
-                const isActive =
-                  location.pathname === item.path ||
-                  (item.path !== '/' && location.pathname.startsWith(item.path));
-                return (
-                  <Link
-                    key={item.name}
-                    to={item.path}
-                    className={`group relative inline-block font-medium transition-colors duration-300 pb-1 ${
-                      isTabletPortrait ? 'text-xs' : isTabletLandscapeSmallDesktop ? 'text-sm' : 'text-sm'
-                    } ${
-                      isActive ? 'text-[#A53223]' : 'text-gray-800 hover:text-[#A53223]'
-                    }`}
-                  >
-                    {item.name}
-                    <span
-                      className={`absolute bottom-0 left-0 h-0.5 rounded-full transition-all duration-300 nav-underline ${
-                        isActive ? 'w-0 opacity-0' : 'w-0 opacity-0 group-hover:w-full group-hover:opacity-100'
-                      }`}
-                      style={{ minHeight: '2px' }}
-                    ></span>
-                  </Link>
-                );
-              })}
+        <div className="justify-self-center">
+          {!isAdmin ? (
+            <nav className={`hidden md:flex flex-nowrap items-center justify-center gap-6 text-sm font-medium whitespace-nowrap transition-colors duration-500 ${dark ? "text-white/70" : "text-cz-ink/80"}`}>
+              <Link to="/#partner" className={`transition-colors duration-300 ${dark ? "hover:text-white" : "hover:text-cz-ink"}`}>
+                Become our Partner
+              </Link>
+              <Link to="/#contact" className={`transition-colors duration-300 ${dark ? "hover:text-white" : "hover:text-cz-ink"}`}>
+                Contact Us
+              </Link>
+            </nav>
+          ) : (
+            <nav className="hidden md:flex flex-nowrap items-center justify-center gap-6 text-sm font-semibold text-cz-ink/80 whitespace-nowrap">
+              <NavLink
+                to="/admin/dashboard"
+                end
+                className={({ isActive }) =>
+                  [
+                    "rounded-full px-4 py-2 transition-colors whitespace-nowrap",
+                    isActive ? "bg-cz-secondary-light text-white" : "hover:bg-cz-paper/60 hover:text-cz-ink"
+                  ].join(" ")
+                }
+              >
+                Dashboard
+              </NavLink>
+              {role === "superadmin" ? (
+                <>
+              <NavLink
+                to="/admin/addgoods"
+                end
+                className={({ isActive }) =>
+                  [
+                    "rounded-full px-4 py-2 transition-colors whitespace-nowrap",
+                    isActive ? "bg-cz-secondary-light text-white" : "hover:bg-cz-paper/60 hover:text-cz-ink"
+                  ].join(" ")
+                }
+              >
+                Add Goods
+              </NavLink>
+              <NavLink
+                to="/admin/landingrate"
+                end
+                className={({ isActive }) =>
+                  [
+                    "rounded-full px-4 py-2 transition-colors whitespace-nowrap",
+                    isActive ? "bg-cz-secondary-light text-white" : "hover:bg-cz-paper/60 hover:text-cz-ink"
+                  ].join(" ")
+                }
+              >
+                Landing Rate
+              </NavLink>
+              <NavLink
+                to="/admin/goodscalculator"
+                end
+                className={({ isActive }) =>
+                  [
+                    "rounded-full px-4 py-2 transition-colors whitespace-nowrap",
+                    isActive ? "bg-cz-secondary-light text-white" : "hover:bg-cz-paper/60 hover:text-cz-ink"
+                  ].join(" ")
+                }
+              >
+                Goods Calculator
+              </NavLink>
+                </>
+              ) : null}
             </nav>
           )}
-
-          {/* Language Toggle & CTA Button */}
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* Language Toggle Button */}
-            <button
-              onClick={toggleLanguage}
-              className={`flex items-center justify-center rounded-lg text-[#1e3a8a] transition-colors duration-200 hover:opacity-80 ${
-                isMobile ? 'h-8 w-8' : isTabletPortrait ? 'h-9 w-9' : 'h-10 w-10'
-              }`}
-            >
-              <FlagIcon
-                flagSrc={i18n.language === "en" ? `${import.meta.env.BASE_URL}China.svg` : `${import.meta.env.BASE_URL}USA.svg`}
-                className={isMobile ? "h-6 w-6" : isTabletPortrait ? "h-6 w-6" : "h-7 w-7"}
-              />
-            </button>
-
-            {/* Contact Us CTA (maroon rectangle with cream text) */}
-            {(isTablet || isDesktop) && (
-              <Link
-                to="/contact"
-                className={`bg-[#A53223] text-[#FFFBE9] rounded-full font-medium hover:opacity-90 transition-opacity ${
-                  isTabletPortrait ? 'px-3 py-2 text-xs' : 'px-4 py-2 text-sm'
-                }`}
-              >
-                {t('navigation.contactUs')}
-              </Link>
-            )}
-
-            {/* Mobile Menu Toggle Button */}
-            {isMobile && (
-              <button
-                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                className="ml-2 p-2 text-gray-800 hover:text-gray-900"
-                aria-label="Toggle menu"
-              >
-                <svg
-                  className="w-6 h-6"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  {isMobileMenuOpen ? (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  ) : (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                  )}
-                </svg>
-              </button>
-            )}
-          </div>
         </div>
 
-        {/* Mobile Menu */}
-        {isMobile && isMobileMenuOpen && (
-          <div className="border-t border-gray-300 py-3">
-            <div className="px-4 space-y-2">
-              {navigation.map((item) => {
-                const isActive =
-                  location.pathname === item.path ||
-                  (item.path !== '/' && location.pathname.startsWith(item.path));
-                return (
-                  <Link
-                    key={item.name}
-                    to={item.path}
-                    onClick={() => setIsMobileMenuOpen(false)}
-                    className={`group block relative font-medium py-2 pb-3 transition-colors duration-300 ${
-                      isActive ? 'text-[#A53223]' : 'text-gray-800 hover:text-[#A53223]'
-                    }`}
-                  >
-                    {item.name}
-                    <span
-                      className={`absolute bottom-1 left-0 h-0.5 rounded-full transition-all duration-300 nav-underline ${
-                        isActive ? 'w-0 opacity-0' : 'w-0 opacity-0 group-hover:w-full group-hover:opacity-100'
-                      }`}
-                      style={{ minHeight: '2px' }}
-                    ></span>
-                  </Link>
-                );
-              })}
-
-              {/* Mobile Contact Us CTA */}
-              <Link
-                to="/contact"
-                onClick={() => setIsMobileMenuOpen(false)}
-                className="block w-full text-center bg-[#A53223] text-[#FFFBE9] px-4 py-2 rounded-full text-sm font-medium hover:opacity-90 transition-opacity mt-3"
+        <nav className="flex items-center gap-2 justify-self-end">
+          {isAdmin ? (
+            <>
+              <div className="inline-block transform scale-[.90] origin-center mr-2">
+                <RateToggle currency={rateCurrency} setCurrency={onRateCurrencyChange} className="mr-0" />
+              </div>
+              <button
+                type="button"
+                className="rounded-full bg-cz-main px-4 py-2 text-sm font-semibold text-cz-paper hover:bg-cz-main/90"
+                onClick={onLogout}
               >
-                {t('navigation.contactUs')}
-              </Link>
-            </div>
-          </div>
-        )}
+                Logout
+              </button>
+            </>
+          ) : (
+            <Link
+              to="/admin/login"
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition-colors duration-500 ${dark ? "bg-cz-secondary-light text-white hover:bg-cz-secondary-light/90" : "bg-cz-main text-cz-paper hover:bg-cz-main/90"}`}
+            >
+              Login
+            </Link>
+          )}
+        </nav>
       </div>
     </header>
   );
-};
-
-export default Header;
-
-
+}

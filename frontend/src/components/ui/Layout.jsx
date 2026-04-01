@@ -1,40 +1,51 @@
-import { useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import LanguageToggle from './LanguageToggle';
+import { useState, useEffect, useCallback } from 'react';
+import { useLocation } from 'react-router-dom';
+import Header from '../Header';
 
-const Layout = ({ children, showNavigation = false }) => {
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { t } = useTranslation();
+const Layout = ({ children }) => {
+  const location = useLocation();
+  const isLanding = location.pathname === '/';
+  const [heroTypingDone, setHeroTypingDone] = useState(false);
+  const [headerVisible, setHeaderVisible] = useState(!isLanding);
+  const [lastScrollY, setLastScrollY] = useState(0);
 
-  const navigation = [
-    { name: t('navigation.home'), href: '/' },
-    { name: t('navigation.about'), href: '/about' },
-    { name: t('navigation.thangka'), href: '/thangka' },
-    { name: t('navigation.soundBowls'), href: '/sound-bowls' },
-    { name: t('navigation.sacredItems'), href: '/sacred-items' },
-    { name: t('navigation.contact'), href: '/contact' },
-  ];
+  // Listen for the hero typing completion event from Section1
+  useEffect(() => {
+    if (!isLanding) {
+      setHeroTypingDone(true);
+      setHeaderVisible(true);
+      return;
+    }
+    setHeroTypingDone(false);
+    setHeaderVisible(false);
+
+    const onTypingDone = () => {
+      setHeroTypingDone(true);
+      setHeaderVisible(true);
+    };
+    window.addEventListener('hero-typing-done', onTypingDone);
+    return () => window.removeEventListener('hero-typing-done', onTypingDone);
+  }, [isLanding]);
+
+  const handleScroll = useCallback(() => {
+    if (!heroTypingDone) return;
+    const currentY = window.scrollY;
+    if (isLanding) {
+      setHeaderVisible(currentY <= 50 || currentY < lastScrollY);
+    } else {
+      setHeaderVisible(currentY <= 50 || currentY < lastScrollY);
+    }
+    setLastScrollY(currentY);
+  }, [isLanding, lastScrollY, heroTypingDone]);
+
+  useEffect(() => {
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [handleScroll]);
 
   return (
-    <div className="min-h-screen w-full bg-gray-50 flex flex-col">
-      {/* Navigation - Only show when needed */}
-      {showNavigation && (
-        <nav className="bg-white shadow-sm border-b border-gray-200">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex justify-between items-center h-16">
-              {/* Logo */}
-              <div className="flex-shrink-0 flex items-center">
-                <h1 className="h1-heading text-xl font-bold text-primary-700">Yogini Arts</h1>
-              </div>
-
-              {/* Language Toggle */}
-              <div className="flex items-center">
-                <LanguageToggle />
-              </div>
-            </div>
-          </div>
-        </nav>
-      )}
+    <div className="min-h-screen w-full flex flex-col" style={{ backgroundColor: isLanding ? '#2A1740' : undefined }}>
+      <Header visible={headerVisible} />
 
       {/* Main content */}
       <main className="w-full flex-1">

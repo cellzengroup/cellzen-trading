@@ -3,10 +3,10 @@ import useScrollReveal from "./useScrollReveal";
 
 const MARKETS = [
   {
-    flag: "🇨🇳",
+    flag: "\u{1F1E8}\u{1F1F3}",
     country: "China",
     role: "Sourcing Hub",
-    desc: "Direct access to thousands of verified factories across all major manufacturing regions — Guangdong, Zhejiang, Jiangsu, and beyond.",
+    desc: "Direct access to thousands of verified factories across all major manufacturing regions \u2014 Guangdong, Zhejiang, Jiangsu, and beyond.",
     color: "from-red-500 to-orange-500",
     bgGlow: "bg-red-500/10",
     stats: [
@@ -15,7 +15,7 @@ const MARKETS = [
     ],
   },
   {
-    flag: "🇦🇺",
+    flag: "\u{1F1E6}\u{1F1FA}",
     country: "Australia",
     role: "Growing Market",
     desc: "Serving Australian businesses with reliable, cost-effective sourcing solutions. Shipping by sea, air, or express delivery.",
@@ -27,7 +27,7 @@ const MARKETS = [
     ],
   },
   {
-    flag: "🇳🇵",
+    flag: "\u{1F1F3}\u{1F1F5}",
     country: "Nepal",
     role: "Growing Market",
     desc: "Connecting Nepalese businesses with Chinese manufacturers at competitive prices, handling all logistics and customs clearance.",
@@ -45,7 +45,7 @@ export default function Section4() {
   const [hovered, setHovered] = useState(null);
 
   return (
-    <section ref={ref} className="relative bg-gradient-to-b from-[#1a0a2e] to-cz-main py-24 overflow-hidden">
+    <section ref={ref} className="relative bg-gradient-to-b from-[#2e1845] to-cz-main py-24 overflow-hidden">
       {/* Animated grid */}
       <div className="absolute inset-0 opacity-[0.05]" style={{ backgroundImage: "linear-gradient(rgba(255,255,255,.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.1) 1px, transparent 1px)", backgroundSize: "60px 60px" }} />
 
@@ -115,7 +115,7 @@ export default function Section4() {
         <div className={`mt-12 flex justify-center transition-all duration-700 delay-700 ${visible ? "opacity-100" : "opacity-0"}`}>
           <div className="inline-flex items-center gap-3 rounded-full border border-white/10 bg-white/5 px-6 py-3 backdrop-blur-sm">
             <div className="flex -space-x-1">
-              {["🇨🇳", "🇦🇺", "🇳🇵"].map((f, i) => (
+              {["\u{1F1E8}\u{1F1F3}", "\u{1F1E6}\u{1F1FA}", "\u{1F1F3}\u{1F1F5}"].map((f, i) => (
                 <span key={i} className="text-lg">{f}</span>
               ))}
             </div>

@@ -5,7 +5,7 @@ export default function Section6() {
   const [ref, visible] = useScrollReveal(0.15);
 
   return (
-    <section ref={ref} className="relative py-24 overflow-hidden bg-gradient-to-br from-cz-main via-[#3d1f5e] to-[#1a0a2e]">
+    <section ref={ref} className="relative py-24 overflow-hidden bg-gradient-to-br from-cz-main via-[#553278] to-[#2e1845]">
       {/* Animated gradient orbs */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[600px] w-[600px] rounded-full bg-cz-secondary-light/5 blur-[120px] animate-pulse-slow" />
       <div className="absolute top-0 right-0 h-[300px] w-[300px] rounded-full bg-cz-main/20 blur-[80px] animate-pulse-slow" style={{ animationDelay: "3s" }} />
@@ -21,7 +21,7 @@ export default function Section6() {
         <blockquote
           className={`mt-8 premium-font-galdgdersemi text-2xl leading-relaxed text-white sm:text-3xl lg:text-4xl transition-all duration-1000 delay-200 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}
         >
-          To make global trade simple, affordable, and accessible for every business — no matter the size.
+          To make global trade simple, affordable, and accessible for every business \u2014 no matter the size.
         </blockquote>
 
         <div className={`mt-8 transition-all duration-700 delay-500 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}>

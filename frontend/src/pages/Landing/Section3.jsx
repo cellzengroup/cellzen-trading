@@ -5,7 +5,7 @@ const STEPS = [
   {
     num: "01",
     title: "You tell us what you need",
-    desc: "Share your product requirements — type, quantity, specifications, and quality standards.",
+    desc: "Share your product requirements \u2014 type, quantity, specifications, and quality standards.",
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -25,7 +25,7 @@ const STEPS = [
   {
     num: "03",
     title: "We send you a detailed quote",
-    desc: "Includes product cost, shipping, and all applicable fees — no hidden charges.",
+    desc: "Includes product cost, shipping, and all applicable fees \u2014 no hidden charges.",
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -45,7 +45,7 @@ const STEPS = [
   {
     num: "05",
     title: "We handle shipping and delivery",
-    desc: "From China to your door in Australia or Nepal — including freight, customs, and delivery.",
+    desc: "From China to your door in Australia or Nepal \u2014 including freight, customs, and delivery.",
     icon: (
       <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />

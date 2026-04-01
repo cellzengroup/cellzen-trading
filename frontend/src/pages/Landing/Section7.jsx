@@ -10,7 +10,7 @@ const REASONS = [
       </svg>
     ),
     title: "One Point of Contact",
-    desc: "From sourcing to delivery — you deal with one dedicated team throughout the entire process.",
+    desc: "From sourcing to delivery \u2014 you deal with one dedicated team throughout the entire process.",
   },
   {
     icon: (
@@ -19,7 +19,7 @@ const REASONS = [
       </svg>
     ),
     title: "Any Product, Any Industry",
-    desc: "Electronics, clothing, furniture, machinery — if it's manufactured, we can source and ship it.",
+    desc: "Electronics, clothing, furniture, machinery \u2014 if it's manufactured, we can source and ship it.",
   },
   {
     icon: (
@@ -28,7 +28,7 @@ const REASONS = [
       </svg>
     ),
     title: "Competitive Pricing",
-    desc: "Direct factory relationships mean better prices — often 15-30% below market rates.",
+    desc: "Direct factory relationships mean better prices \u2014 often 15-30% below market rates.",
   },
   {
     icon: (
@@ -38,7 +38,7 @@ const REASONS = [
       </svg>
     ),
     title: "Full Transparency",
-    desc: "Detailed quotes, real-time updates, and no hidden charges — ever.",
+    desc: "Detailed quotes, real-time updates, and no hidden charges \u2014 ever.",
   },
   {
     icon: (
@@ -56,7 +56,7 @@ const REASONS = [
       </svg>
     ),
     title: "Trusted for All Order Sizes",
-    desc: "Whether it's a small trial order or a full container — we handle it with the same care.",
+    desc: "Whether it's a small trial order or a full container \u2014 we handle it with the same care.",
   },
 ];
 
@@ -110,12 +110,12 @@ export default function Section7() {
         </div>
 
         {/* CTA */}
-        <div className={`mt-20 rounded-2xl bg-gradient-to-r from-cz-main to-[#3d1f5e] p-10 text-center transition-all duration-700 delay-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
+        <div className={`mt-20 rounded-2xl bg-gradient-to-r from-cz-main to-[#553278] p-10 text-center transition-all duration-700 delay-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
           <h3 className="premium-font-galdgdersemi text-2xl text-white sm:text-3xl">
             Ready to simplify your imports?
           </h3>
           <p className="mx-auto mt-3 max-w-lg text-sm text-white/60">
-            Get in touch today and let us handle the sourcing, negotiation, and shipping — so you can focus on growing your business.
+            Get in touch today and let us handle the sourcing, negotiation, and shipping \u2014 so you can focus on growing your business.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
             <a
