@@ -128,7 +128,8 @@ export default function Section1() {
   const [introFading, setIntroFading] = useState(false);
   const [emailValue, setEmailValue] = useState("");
   const [productValue, setProductValue] = useState("");
-  const [introStep, setIntroStep] = useState("email"); // "email" | "product"
+  const [isNepal, setIsNepal] = useState(null); // null = loading, true/false = detected
+  const [introStep, setIntroStep] = useState(null); // set after geo detection
 
   // Cinematic intro typewriter
   const GREETING = "Hey there, We are a global sourcing agent and We are ready to help you.";
@@ -143,6 +144,23 @@ export default function Section1() {
   const [typingDone, setTypingDone] = useState(false);
   const [cursorVisible, setCursorVisible] = useState(true);
   const [showCursor, setShowCursor] = useState(true);
+
+  // Detect user country via IP geolocation
+  useEffect(() => {
+    if (entered) return;
+    fetch("https://ipapi.co/json/")
+      .then((res) => res.json())
+      .then((data) => {
+        const nepal = data.country_code === "NP";
+        setIsNepal(nepal);
+        setIntroStep(nepal ? "email" : "product");
+      })
+      .catch(() => {
+        // Fallback: treat as non-Nepal (show only product)
+        setIsNepal(false);
+        setIntroStep("product");
+      });
+  }, [entered]);
 
   // Logo reveal after short delay
   useEffect(() => {
@@ -177,8 +195,11 @@ export default function Section1() {
     initAudio();
     playCinematicBoom();
 
-    // Save lead to backend
-    api.post("/api/leads", { email: emailValue, product: productValue }).catch(() => {});
+    // Save lead to backend — only include email for Nepal users
+    const payload = isNepal
+      ? { email: emailValue, product: productValue }
+      : { product: productValue };
+    api.post("/api/leads", payload).catch(() => {});
 
     setIntroFading(true);
     setTimeout(() => {
@@ -190,9 +211,11 @@ export default function Section1() {
   function handleSubmit(e) {
     e.preventDefault();
     if (introStep === "email") {
+      // Nepal user: validate email, then move to product step
       if (!emailValue.trim()) return;
       setIntroStep("product");
     } else {
+      // Product step (final step for everyone)
       handleEnter();
     }
   }
@@ -326,7 +349,7 @@ export default function Section1() {
                     style={{ caretColor: "#B99353" }}
                     autoFocus
                   />
-                ) : (
+                ) : introStep === "product" ? (
                   <input
                     key="product"
                     type="text"
@@ -337,6 +360,10 @@ export default function Section1() {
                     style={{ caretColor: "#B99353" }}
                     autoFocus
                   />
+                ) : (
+                  <div className="w-full rounded-full border border-white/15 bg-white/5 px-6 py-4 pr-14 text-sm text-white/30 backdrop-blur-md">
+                    Loading...
+                  </div>
                 )}
                 <button
                   type="submit"

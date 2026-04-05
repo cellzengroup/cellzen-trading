@@ -9,6 +9,9 @@ const Layout = ({ children }) => {
   const [headerVisible, setHeaderVisible] = useState(!isLanding);
   const [lastScrollY, setLastScrollY] = useState(0);
 
+  // Track whether the hero typing animation has ever completed this session
+  const [heroEverCompleted, setHeroEverCompleted] = useState(false);
+
   // Listen for the hero typing completion event from Section1
   useEffect(() => {
     if (!isLanding) {
@@ -16,16 +19,25 @@ const Layout = ({ children }) => {
       setHeaderVisible(true);
       return;
     }
+
+    // If hero animation already played before, show header immediately
+    if (heroEverCompleted) {
+      setHeroTypingDone(true);
+      setHeaderVisible(true);
+      return;
+    }
+
     setHeroTypingDone(false);
     setHeaderVisible(false);
 
     const onTypingDone = () => {
       setHeroTypingDone(true);
+      setHeroEverCompleted(true);
       setHeaderVisible(true);
     };
     window.addEventListener('hero-typing-done', onTypingDone);
     return () => window.removeEventListener('hero-typing-done', onTypingDone);
-  }, [isLanding]);
+  }, [isLanding, heroEverCompleted]);
 
   const handleScroll = useCallback(() => {
     if (!heroTypingDone) return;
@@ -44,7 +56,7 @@ const Layout = ({ children }) => {
   }, [handleScroll]);
 
   return (
-    <div className="min-h-screen w-full flex flex-col" style={{ backgroundColor: isLanding ? '#2A1740' : undefined }}>
+    <div className="min-h-screen w-full flex flex-col" style={{ backgroundColor: '#2A1740' }}>
       <Header visible={headerVisible} />
 
       {/* Main content */}

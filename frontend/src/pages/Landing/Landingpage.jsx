@@ -15,8 +15,8 @@ export default function Landingpage() {
       <main className="flex-grow">
         <Section1 />
         <Section2 />
-        <Section3 />
         <Section4 />
+        <Section3 />
         <Section5 />
         <Section6 />
         <Section7 />

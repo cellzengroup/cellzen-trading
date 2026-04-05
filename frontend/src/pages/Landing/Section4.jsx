@@ -51,10 +51,7 @@ export default function Section4() {
 
       <div className="relative z-10 mx-auto max-w-6xl px-6">
         <div className={`text-center transition-all duration-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
-          <span className="inline-block rounded-full border border-cz-secondary-light/30 bg-cz-secondary-light/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-cz-secondary-light">
-            Global Reach
-          </span>
-          <h2 className="mt-4 premium-font-galdgderbold text-3xl text-white sm:text-4xl lg:text-5xl">
+          <h2 className="premium-font-galdgderbold text-3xl text-white sm:text-4xl lg:text-5xl">
             Markets We Serve
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-base text-white/60">
