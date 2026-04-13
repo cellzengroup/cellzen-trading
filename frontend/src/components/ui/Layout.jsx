@@ -5,6 +5,7 @@ import Header from '../Header';
 const Layout = ({ children }) => {
   const location = useLocation();
   const isLanding = location.pathname === '/';
+  const isContact = location.pathname === '/contact';
   const [heroTypingDone, setHeroTypingDone] = useState(false);
   const [headerVisible, setHeaderVisible] = useState(!isLanding);
   const [lastScrollY, setLastScrollY] = useState(0);
@@ -41,6 +42,7 @@ const Layout = ({ children }) => {
 
   const handleScroll = useCallback(() => {
     if (!heroTypingDone) return;
+    if (isContact) { setHeaderVisible(true); return; }
     const currentY = window.scrollY;
     if (isLanding) {
       setHeaderVisible(currentY <= 50 || currentY < lastScrollY);
@@ -48,7 +50,7 @@ const Layout = ({ children }) => {
       setHeaderVisible(currentY <= 50 || currentY < lastScrollY);
     }
     setLastScrollY(currentY);
-  }, [isLanding, lastScrollY, heroTypingDone]);
+  }, [isLanding, isContact, lastScrollY, heroTypingDone]);
 
   useEffect(() => {
     window.addEventListener('scroll', handleScroll, { passive: true });
@@ -56,7 +58,7 @@ const Layout = ({ children }) => {
   }, [handleScroll]);
 
   return (
-    <div className="min-h-screen w-full flex flex-col" style={{ backgroundColor: '#2A1740' }}>
+    <div className="min-h-screen w-full flex flex-col" style={{ backgroundColor: isContact ? '#FFFFFF' : '#2A1740' }}>
       <Header visible={headerVisible} />
 
       {/* Main content */}

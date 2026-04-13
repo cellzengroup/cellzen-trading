@@ -118,15 +118,15 @@ export default function Section7() {
             Get in touch today and let us handle the sourcing, negotiation, and shipping \u2014 so you can focus on growing your business.
           </p>
           <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
-            <a
-              href="#contact"
+            <Link
+              to="/contact"
               className="group inline-flex items-center gap-2 rounded-full bg-cz-secondary-light px-8 py-3 text-sm font-bold text-white transition-all duration-300 hover:shadow-[0_0_30px_rgba(185,147,83,0.4)] hover:scale-105"
             >
               Contact Us
               <svg className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
               </svg>
-            </a>
+            </Link>
             <Link
               to="/customer"
               className="inline-flex items-center gap-2 rounded-full border border-white/30 px-8 py-3 text-sm font-semibold text-white transition-all duration-300 hover:border-white/60 hover:bg-white/10 hover:scale-105"

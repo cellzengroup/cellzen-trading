@@ -25,10 +25,12 @@ function isSectionDark(el) {
 export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChange, onLogout, visible = true }) {
   const location = useLocation();
   const isLanding = location.pathname === "/";
-  const [dark, setDark] = useState(isLanding);
+  const isContact = location.pathname === "/contact";
+  const [dark, setDark] = useState(isLanding && !isContact);
   const headerRef = useRef(null);
 
   const detectBackground = useCallback(() => {
+    if (isContact) { setDark(false); return; }
     const headerEl = headerRef.current;
     if (!headerEl) { setDark(isLanding); return; }
     const headerBottom = headerEl.getBoundingClientRect().bottom;
@@ -42,7 +44,7 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
     if (!el) { setDark(isLanding); return; }
     const section = el.closest("section") || el;
     setDark(isSectionDark(section));
-  }, [isLanding]);
+  }, [isLanding, isContact]);
 
   useEffect(() => {
     setDark(isLanding);
@@ -68,7 +70,7 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
           WebkitBackdropFilter: "blur(40px) saturate(120%)",
           borderRadius: "9999px",
           border: dark ? "1px solid rgba(255, 255, 255, 0.15)" : "1px solid rgba(45, 45, 45, 0.12)",
-          boxShadow: "0 8px 32px rgba(0, 0, 0, 0.08)",
+          boxShadow: isContact ? "none" : "0 8px 32px rgba(0, 0, 0, 0.08)",
         }}
       >
         {/* Logo */}
@@ -101,13 +103,10 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
               <Link to="/#partner" className={`transition-colors duration-300 ${dark ? "hover:text-white" : "hover:text-[#2D2D2D]"}`}>
                 Partner
               </Link>
-              <Link to="/#pricing" className={`transition-colors duration-300 ${dark ? "hover:text-white" : "hover:text-[#2D2D2D]"}`}>
-                Pricing
-              </Link>
               <Link to="/#faq" className={`transition-colors duration-300 ${dark ? "hover:text-white" : "hover:text-[#2D2D2D]"}`}>
                 FAQs
               </Link>
-              <Link to="/#contact" className={`transition-colors duration-300 ${dark ? "hover:text-white" : "hover:text-[#2D2D2D]"}`}>
+              <Link to="/contact" className={`transition-colors duration-300 ${dark ? "hover:text-white" : "hover:text-[#2D2D2D]"}`}>
                 Contact
               </Link>
             </nav>
@@ -198,7 +197,6 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
               className="rounded-full bg-[#B99353] px-5 py-2 text-sm font-semibold text-white transition-colors duration-300 flex items-center gap-2 hover:bg-[#B99353]/85"
             >
               Get Started
-              <span aria-hidden="true">&rarr;</span>
             </Link>
           )}
         </nav>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../../api/client";
 
 const FULL_TEXT = "We Make It Global.";
@@ -293,7 +294,7 @@ export default function Section1() {
                 <div className="relative">
                       <svg className="relative h-20 w-20 sm:h-24 sm:w-24 mx-auto" viewBox="0 0 180 181" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <g clipPath="url(#cz-intro)">
-                      <path d="M179.938 104.968C174.068 136.468 157.075 159.321 128.033 172.6C85.7055 192.056 36.8899 176.615 12.791 137.086C1.97741 118.865 -1.7301 99.4095 0.741575 78.4097C5.37597 41.66 33.8003 10.7779 70.8755 2.13091C106.097 -5.89844 144.717 9.23379 165.108 39.8071C172.523 50.9246 177.467 62.9686 179.629 76.248C179.629 76.8656 179.938 77.7921 179.938 78.4097C179.32 78.7185 179.011 78.7185 179.011 78.7185C161.71 79.3362 144.408 78.7185 128.033 74.0862C121.545 72.2333 116.91 66.3657 116.91 59.5716V52.1599C116.91 48.1452 112.585 45.6747 109.186 47.8364L98.6819 54.0128L86.9414 60.4981L66.55 72.2333L49.5572 82.1155L42.7601 86.1302C39.3616 87.9831 39.3616 92.9243 42.7601 95.086L49.5572 99.1007L66.859 108.983L86.9414 120.409L98.9908 127.203L109.495 133.38C112.894 135.233 117.219 132.762 117.219 129.056V121.953C117.219 115.468 121.545 109.601 127.724 107.439C139.156 103.733 151.205 102.189 163.563 102.498H177.467C179.629 101.88 180.247 102.807 179.938 104.968Z" fill="#E5E1DA"/>
+                      <path d="M179.938 104.968C174.068 136.468 157.075 159.321 128.033 172.6C85.7055 192.056 36.8899 176.615 12.791 137.086C1.97741 118.865 -1.7301 99.4095 0.741575 78.4097C5.37597 41.66 33.8003 10.7779 70.8755 2.13091C106.097 -5.89844 144.717 9.23379 165.108 39.8071C172.523 50.9246 177.467 62.9686 179.629 76.248C179.629 76.8656 179.938 77.7921 179.938 78.4097C179.32 78.7185 179.011 78.7185 179.011 78.7185C161.71 79.3362 144.408 78.7185 128.033 74.0862C121.545 72.2333 116.91 66.3657 116.91 59.5716V52.1599C116.91 48.1452 112.585 45.6747 109.186 47.8364L98.6819 54.0128L86.9414 60.4981L66.55 72.2333L49.5572 82.1155L42.7601 86.1302C39.3616 87.9831 39.3616 92.9243 42.7601 95.086L49.5572 99.1007L66.859 108.983L86.9414 120.409L98.9908 127.203L109.495 133.38C112.894 135.233 117.219 132.762 117.219 129.056V121.953C117.219 115.468 121.545 109.601 127.724 107.439C139.156 103.733 151.205 102.189 163.563 102.498H177.467C179.629 101.88 180.247 102.807 179.938 104.968Z" fill="#EAE8E5"/>
                     </g>
                     <defs>
                       <clipPath id="cz-intro"><rect width="180" height="181" fill="white"/></clipPath>
@@ -305,7 +306,7 @@ export default function Section1() {
 
               {/* Typewriter greeting text */}
               <div className="mt-8 text-center min-h-[5rem]">
-                <p className="premium-font-galdgdersemi text-base sm:text-lg lg:text-xl leading-relaxed" style={{ color: "#E5E1DA" }}>
+                <p className="premium-font-galdgdersemi text-base sm:text-lg lg:text-xl leading-relaxed" style={{ color: "#EAE8E5" }}>
                   {greetTyped <= 11
                     ? <span style={{ color: "#B99353" }}>{GREETING.slice(0, greetTyped)}</span>
                     : <><span style={{ color: "#B99353" }}>{GREETING.slice(0, 11)}</span>{GREETING.slice(11, greetTyped)}</>
@@ -327,7 +328,7 @@ export default function Section1() {
             <div className="relative mb-6">
               <svg className="relative h-12 w-12" viewBox="0 0 180 181" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <g clipPath="url(#cz-input)">
-                  <path d="M179.938 104.968C174.068 136.468 157.075 159.321 128.033 172.6C85.7055 192.056 36.8899 176.615 12.791 137.086C1.97741 118.865 -1.7301 99.4095 0.741575 78.4097C5.37597 41.66 33.8003 10.7779 70.8755 2.13091C106.097 -5.89844 144.717 9.23379 165.108 39.8071C172.523 50.9246 177.467 62.9686 179.629 76.248C179.629 76.8656 179.938 77.7921 179.938 78.4097C179.32 78.7185 179.011 78.7185 179.011 78.7185C161.71 79.3362 144.408 78.7185 128.033 74.0862C121.545 72.2333 116.91 66.3657 116.91 59.5716V52.1599C116.91 48.1452 112.585 45.6747 109.186 47.8364L98.6819 54.0128L86.9414 60.4981L66.55 72.2333L49.5572 82.1155L42.7601 86.1302C39.3616 87.9831 39.3616 92.9243 42.7601 95.086L49.5572 99.1007L66.859 108.983L86.9414 120.409L98.9908 127.203L109.495 133.38C112.894 135.233 117.219 132.762 117.219 129.056V121.953C117.219 115.468 121.545 109.601 127.724 107.439C139.156 103.733 151.205 102.189 163.563 102.498H177.467C179.629 101.88 180.247 102.807 179.938 104.968Z" fill="#E5E1DA"/>
+                  <path d="M179.938 104.968C174.068 136.468 157.075 159.321 128.033 172.6C85.7055 192.056 36.8899 176.615 12.791 137.086C1.97741 118.865 -1.7301 99.4095 0.741575 78.4097C5.37597 41.66 33.8003 10.7779 70.8755 2.13091C106.097 -5.89844 144.717 9.23379 165.108 39.8071C172.523 50.9246 177.467 62.9686 179.629 76.248C179.629 76.8656 179.938 77.7921 179.938 78.4097C179.32 78.7185 179.011 78.7185 179.011 78.7185C161.71 79.3362 144.408 78.7185 128.033 74.0862C121.545 72.2333 116.91 66.3657 116.91 59.5716V52.1599C116.91 48.1452 112.585 45.6747 109.186 47.8364L98.6819 54.0128L86.9414 60.4981L66.55 72.2333L49.5572 82.1155L42.7601 86.1302C39.3616 87.9831 39.3616 92.9243 42.7601 95.086L49.5572 99.1007L66.859 108.983L86.9414 120.409L98.9908 127.203L109.495 133.38C112.894 135.233 117.219 132.762 117.219 129.056V121.953C117.219 115.468 121.545 109.601 127.724 107.439C139.156 103.733 151.205 102.189 163.563 102.498H177.467C179.629 101.88 180.247 102.807 179.938 104.968Z" fill="#EAE8E5"/>
                 </g>
                 <defs>
                   <clipPath id="cz-input"><rect width="180" height="181" fill="white"/></clipPath>
@@ -397,10 +398,10 @@ export default function Section1() {
           <div className="relative z-10 px-6 w-full flex items-center justify-center overflow-hidden -mt-16">
             {!typingDone ? (
               <span className="premium-font-galdgderbold text-3xl sm:text-4xl md:text-5xl lg:text-6xl leading-[1] whitespace-nowrap">
-                <span style={{ color: "#E5E1DA" }}>{leftText}</span>
+                <span style={{ color: "#EAE8E5" }}>{leftText}</span>
                 {rightText && (
                   <>
-                    <span style={{ color: "#E5E1DA" }}>{rightText.startsWith("It") ? rightText.slice(0, 3) : ""}</span>
+                    <span style={{ color: "#EAE8E5" }}>{rightText.startsWith("It") ? rightText.slice(0, 3) : ""}</span>
                     {rightText.length > 3 && (
                       <span className="bg-gradient-to-r from-cz-secondary-light via-yellow-300 to-cz-secondary-light bg-clip-text text-transparent">
                         {rightText.slice(3)}
@@ -413,7 +414,7 @@ export default function Section1() {
                     className="inline-block w-[3px] ml-1 rounded-sm"
                     style={{
                       height: "0.85em",
-                      backgroundColor: "#E5E1DA",
+                      backgroundColor: "#EAE8E5",
                       opacity: cursorVisible ? 1 : 0,
                       verticalAlign: "baseline",
                       transition: "opacity 0.1s",
@@ -427,7 +428,7 @@ export default function Section1() {
                   className="premium-font-galdgderbold text-3xl sm:text-4xl md:text-5xl lg:text-6xl leading-[1] whitespace-nowrap"
                   style={{
                     transform: `translateX(-${splitDistance}%) scale(${titleScale})`,
-                    color: "#E5E1DA",
+                    color: "#EAE8E5",
                   }}
                 >
                   We Make{"\u00A0"}
@@ -438,7 +439,7 @@ export default function Section1() {
                     transform: `translateX(${splitDistance}%) scale(${titleScale})`,
                   }}
                 >
-                  <span style={{ color: "#E5E1DA" }}>It </span>
+                  <span style={{ color: "#EAE8E5" }}>It </span>
                   <span className="bg-gradient-to-r from-cz-secondary-light via-yellow-300 to-cz-secondary-light bg-clip-text text-transparent">
                     Global.
                   </span>
@@ -512,12 +513,12 @@ export default function Section1() {
                 </svg>
                 <span className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/25 to-white/0 translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-700" />
               </a>
-              <a href="#contact" className="group inline-flex items-center gap-3 rounded-full border border-white/25 bg-white/5 px-8 py-4 text-sm font-semibold text-white backdrop-blur-md transition-all duration-300 hover:border-white/50 hover:bg-white/15 hover:scale-105">
+              <Link to="/contact" className="group inline-flex items-center gap-3 rounded-full border border-white/25 bg-white/5 px-8 py-4 text-sm font-semibold text-white backdrop-blur-md transition-all duration-300 hover:border-white/50 hover:bg-white/15 hover:scale-105">
                 <svg className="h-4 w-4 text-cz-secondary-light transition-transform duration-300 group-hover:scale-110" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                 </svg>
                 Contact Us
-              </a>
+              </Link>
             </div>
           </div>
         </div>

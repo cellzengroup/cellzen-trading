@@ -5,6 +5,7 @@ const InventoryApp = lazy(() => import('./inventory/InventoryApp'));
 import { useTranslation } from 'react-i18next';
 import Layout from './components/ui/Layout';
 import Landingpage from './pages/Landing/Landingpage';
+import Contact from './pages/Contact';
 
 function App() {
   const { i18n } = useTranslation();
@@ -60,6 +61,7 @@ function App() {
             <Layout showNavigation={false}>
               <Routes>
                 <Route path="/" element={<Landingpage />} />
+                <Route path="/contact" element={<Contact />} />
                 <Route path="/*" element={<Landingpage />} />
               </Routes>
             </Layout>
