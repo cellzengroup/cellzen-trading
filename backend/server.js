@@ -1,5 +1,4 @@
 const express = require('express');
-const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const bodyParser = require('body-parser');
@@ -126,48 +125,17 @@ app.use(notFoundHandler);
 // Error handling middleware (must be last)
 app.use(errorHandler);
 
-// Database connection
-const connectDB = async () => {
-  try {
-    console.log('🔌 Connecting to MongoDB...');
-    
-    await mongoose.connect(config.MONGO_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    
-    console.log('✅ MongoDB connected successfully');
-    
-    // Log database name
-    console.log(`📊 Database: ${mongoose.connection.name}`);
-    
-  } catch (error) {
-    console.error('❌ MongoDB connection failed:', error.message);
-    console.log('🔄 Server will continue without MongoDB (some features disabled)');
-    console.log('💡 To enable full functionality, please ensure MongoDB is running');
-  }
-};
-
-// Handle MongoDB connection events
-mongoose.connection.on('disconnected', () => {
-  console.log('⚠️ MongoDB disconnected');
-});
-
-mongoose.connection.on('error', (err) => {
-  console.error('❌ MongoDB error:', err);
-});
-
 // Graceful shutdown
 const gracefulShutdown = () => {
   console.log('\n🛑 Shutting down gracefully...');
-  
   if (sequelize) {
-    sequelize.close().then(() => console.log('📊 PostgreSQL connection closed'));
-  }
-  mongoose.connection.close(() => {
-    console.log('📊 MongoDB connection closed');
+    sequelize.close().then(() => {
+      console.log('📊 PostgreSQL connection closed');
+      process.exit(0);
+    });
+  } else {
     process.exit(0);
-  });
+  }
 };
 
 // Handle shutdown signals
@@ -176,9 +144,7 @@ process.on('SIGINT', gracefulShutdown);
 
 // Start server
 const startServer = async () => {
-  await connectDB();
-
-  // Connect to PostgreSQL (Inventory system)
+  // Connect to PostgreSQL / Supabase
   if (sequelize) {
     try {
       await sequelize.authenticate();

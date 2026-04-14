@@ -1,6 +1,6 @@
 const nodemailer = require('nodemailer');
 const path = require('path');
-const Counter = require('../models/Counter');
+const { getNext } = require('../models/Counter');
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -18,7 +18,7 @@ async function generateInquiryNo() {
   const dd = String(now.getDate()).padStart(2, '0');
   const yy = now.getFullYear().toString().slice(-2);
   const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const num = await Counter.getNext('inquiry');
+  const num = await getNext('inquiry');
   return `CZN-${dd}${yy}${mm}-${String(num).padStart(4, '0')}`;
 }
 

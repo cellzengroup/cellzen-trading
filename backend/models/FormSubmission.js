@@ -1,32 +1,34 @@
-const mongoose = require('mongoose');
+const { DataTypes } = require('sequelize');
 const crypto = require('crypto');
+const sequelize = require('../config/postgres');
 
-const formSubmissionSchema = new mongoose.Schema({
-  token: {
-    type: String,
-    unique: true,
-    default: () => crypto.randomBytes(16).toString('hex')
-  },
-  formType: {
-    type: String,
-    required: true,
-    enum: ['thangka', 'soundBowls', 'sacredItems', 'contact']
-  },
-  data: {
-    type: mongoose.Schema.Types.Mixed,
-    required: true
-  },
-  submittedAt: {
-    type: Date,
-    default: Date.now
-  }
-}, {
-  timestamps: true
-});
+const FormSubmission = sequelize
+  ? sequelize.define('FormSubmission', {
+      id: {
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
+        primaryKey: true,
+      },
+      token: {
+        type: DataTypes.STRING,
+        unique: true,
+        defaultValue: () => crypto.randomBytes(16).toString('hex'),
+      },
+      formType: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        validate: {
+          isIn: [['thangka', 'soundBowls', 'sacredItems', 'contact']],
+        },
+      },
+      data: {
+        type: DataTypes.JSONB,
+        allowNull: false,
+      },
+    }, {
+      tableName: 'form_submissions',
+      timestamps: true,
+    })
+  : null;
 
-// Index for faster queries
-formSubmissionSchema.index({ formType: 1, createdAt: -1 });
-formSubmissionSchema.index({ token: 1 });
-
-module.exports = mongoose.model('FormSubmission', formSubmissionSchema);
-
+module.exports = FormSubmission;
