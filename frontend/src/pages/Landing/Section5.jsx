@@ -55,8 +55,8 @@ export default function Section5() {
   const [selectedMode, setSelectedMode] = useState(1);
 
   return (
-    <section ref={ref} className="relative bg-cz-paper py-24 overflow-hidden">
-      <div className="relative z-10 mx-auto max-w-6xl px-6">
+    <section ref={ref} className="relative bg-cz-paper py-16 sm:py-24 overflow-hidden">
+      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6">
         <div className={`text-center transition-all duration-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
           <span className="inline-block rounded-full bg-cz-main/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-cz-main">
             End-to-End
@@ -70,7 +70,7 @@ export default function Section5() {
         </div>
 
         {/* Shipping modes */}
-        <div className="mt-16 grid gap-6 md:grid-cols-3">
+        <div className="mt-10 sm:mt-16 grid gap-4 sm:gap-6 grid-cols-1 sm:grid-cols-2 md:grid-cols-3">
           {SHIPPING_MODES.map((sm, i) => (
             <button
               key={sm.mode}
@@ -116,7 +116,7 @@ export default function Section5() {
         </div>
 
         {/* Logistics pipeline */}
-        <div className={`mt-16 rounded-2xl border border-cz-ink/5 bg-white p-8 transition-all duration-700 delay-500 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
+        <div className={`mt-10 sm:mt-16 rounded-2xl border border-cz-ink/5 bg-white p-5 sm:p-8 transition-all duration-700 delay-500 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
           <h3 className="text-lg font-bold text-cz-ink mb-6">Full Logistics Pipeline</h3>
 
           <div className="flex flex-wrap items-center gap-2">

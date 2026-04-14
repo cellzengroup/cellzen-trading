@@ -65,12 +65,12 @@ export default function Section7() {
   const [hoveredIdx, setHoveredIdx] = useState(null);
 
   return (
-    <section ref={ref} className="relative bg-white py-24 overflow-hidden">
+    <section ref={ref} className="relative bg-white py-16 sm:py-24 overflow-hidden">
       {/* Decorative circles */}
       <div className="absolute -top-40 -right-40 h-80 w-80 rounded-full border border-cz-main/5" />
       <div className="absolute -bottom-20 -left-20 h-60 w-60 rounded-full border border-cz-secondary-light/5" />
 
-      <div className="relative z-10 mx-auto max-w-6xl px-6">
+      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6">
         <div className={`text-center transition-all duration-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
           <span className="inline-block rounded-full bg-cz-secondary-light/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-cz-secondary-light">
             The Cellzen Advantage
@@ -80,7 +80,7 @@ export default function Section7() {
           </h2>
         </div>
 
-        <div className="mt-16 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-10 sm:mt-16 grid gap-4 sm:gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {REASONS.map((r, i) => (
             <div
               key={r.title}
@@ -110,8 +110,8 @@ export default function Section7() {
         </div>
 
         {/* CTA */}
-        <div className={`mt-20 rounded-2xl bg-gradient-to-r from-cz-main to-[#553278] p-10 text-center transition-all duration-700 delay-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
-          <h3 className="premium-font-galdgdersemi text-2xl text-white sm:text-3xl">
+        <div className={`mt-12 sm:mt-20 rounded-2xl bg-gradient-to-r from-cz-main to-[#553278] p-6 sm:p-10 text-center transition-all duration-700 delay-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
+          <h3 className="premium-font-galdgdersemi text-xl text-white sm:text-2xl md:text-3xl">
             Ready to simplify your imports?
           </h3>
           <p className="mx-auto mt-3 max-w-lg text-sm text-white/60">

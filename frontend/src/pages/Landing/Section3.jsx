@@ -59,11 +59,10 @@ export default function Section3() {
   const [activeStep, setActiveStep] = useState(0);
 
   return (
-    <section ref={ref} id="how-it-works" className="relative bg-white py-24 overflow-hidden">
-      {/* Decorative side gradient */}
+    <section ref={ref} id="how-it-works" className="relative bg-white py-16 sm:py-24 overflow-hidden">
       <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-cz-main via-cz-secondary-light to-cz-main opacity-20" />
 
-      <div className="relative z-10 mx-auto max-w-6xl px-6">
+      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6">
         <div className={`text-center transition-all duration-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
           <span className="inline-block rounded-full bg-cz-secondary-light/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-cz-secondary-light">
             Simple Process
@@ -76,7 +75,7 @@ export default function Section3() {
           </p>
         </div>
 
-        <div className="mt-16 grid gap-12 lg:grid-cols-[280px_1fr] items-start">
+        <div className="mt-10 sm:mt-16 grid gap-8 sm:gap-12 lg:grid-cols-[280px_1fr] items-start">
           {/* Step navigator */}
           <div className="hidden lg:flex flex-col gap-2">
             {STEPS.map((s, i) => (

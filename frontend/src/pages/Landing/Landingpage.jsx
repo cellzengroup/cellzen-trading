@@ -18,11 +18,11 @@ function GuideCTA() {
   };
 
   return (
-    <section className="bg-[#EAE8E5] py-20">
-      <div className="mx-auto max-w-6xl px-6">
-        <div className="grid items-center gap-12 lg:grid-cols-2">
+    <section className="bg-[#EAE8E5] py-16 sm:py-20">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6">
+        <div className="grid items-center gap-10 sm:gap-12 lg:grid-cols-2">
           <div>
-            <h2 className="premium-font-galdgderbold text-2xl text-[#2D2D2D] sm:text-3xl leading-tight">
+            <h2 className="premium-font-galdgderbold text-xl sm:text-2xl md:text-3xl text-[#2D2D2D] leading-tight">
               Get Our Product Sourcing<br />& Pricing Guide
             </h2>
             <p className="mt-4 text-sm leading-relaxed text-[#2D2D2D]/60">
@@ -33,7 +33,7 @@ function GuideCTA() {
               The guide will be sent to you as an email. We'll never sell your details, including your
               email, and it's easy to unsubscribe at any time.
             </p>
-            <form onSubmit={handleSubmit} className="mt-8">
+            <form onSubmit={handleSubmit} className="mt-6 sm:mt-8">
               <div className="flex flex-col gap-4 sm:flex-row">
                 <input
                   name="firstName"
@@ -62,12 +62,12 @@ function GuideCTA() {
               </button>
             </form>
           </div>
-          <div className="relative flex items-center justify-center">
+          <div className="relative hidden sm:flex items-center justify-center">
             <div
               className="absolute h-72 w-72 rounded-full opacity-30"
               style={{ background: "radial-gradient(circle, #B99353 0%, transparent 70%)", right: "10%", top: "50%", transform: "translateY(-50%)" }}
             />
-            <div className="relative z-10 flex h-[400px] w-[220px] items-center justify-center overflow-hidden rounded-[2rem] border-4 border-[#2D2D2D]/10 bg-white shadow-2xl">
+            <div className="relative z-10 flex h-[340px] sm:h-[400px] w-[200px] sm:w-[220px] items-center justify-center overflow-hidden rounded-[2rem] border-4 border-[#2D2D2D]/10 bg-white shadow-2xl">
               <div className="flex flex-col items-center justify-center px-4 text-center">
                 <svg className="h-12 w-auto mb-4" viewBox="0 0 180 181" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <g clipPath="url(#cz-guide)">

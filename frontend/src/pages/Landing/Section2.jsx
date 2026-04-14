@@ -79,20 +79,20 @@ export default function Section2() {
             <span className="text-xs font-semibold uppercase tracking-[0.3em] text-cz-main/60">
               About Us
             </span>
-            <h2 className="mt-4 premium-font-galdgderbold text-5xl text-cz-ink sm:text-6xl lg:text-7xl xl:text-8xl leading-[0.95]">
+            <h2 className="mt-4 premium-font-galdgderbold text-4xl text-cz-ink sm:text-5xl lg:text-7xl xl:text-8xl leading-[0.95]">
               Who We{" "}
               <span className="text-cz-main">Are</span>
             </h2>
           </div>
 
-          <div className={`mt-12 grid gap-0 lg:grid-cols-[1fr_1px_1fr] items-start transition-all duration-1000 delay-300 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
-            <p className="text-lg leading-[1.8] text-cz-ink/70 pr-0 lg:pr-12">
+          <div className={`mt-8 sm:mt-12 grid gap-0 lg:grid-cols-[1fr_1px_1fr] items-start transition-all duration-1000 delay-300 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
+            <p className="text-base sm:text-lg leading-[1.8] text-cz-ink/70 pr-0 lg:pr-12">
               <span className="font-semibold text-cz-ink">Cellzen Trading</span> is a global
               sourcing and trading company connecting businesses worldwide
               with manufacturers and suppliers across China.
             </p>
             <div className="hidden lg:block w-px h-full bg-cz-ink/10" />
-            <p className="text-base leading-[1.8] text-cz-ink/50 pl-0 lg:pl-12 mt-4 lg:mt-0">
+            <p className="text-sm sm:text-base leading-[1.8] text-cz-ink/50 pl-0 lg:pl-12 mt-4 lg:mt-0">
               Founded with a mission to make international trade simple and accessible, we act as
               the trusted bridge between our clients and the world's largest manufacturing hub —
               your single point of contact from sourcing to delivery, anywhere in the world.

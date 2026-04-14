@@ -53,7 +53,7 @@ function EarthModel() {
 
 function GlobeCanvas() {
   return (
-    <div style={{ width: "560px", height: "560px" }}>
+    <div className="w-full max-w-[560px] mx-auto" style={{ aspectRatio: "1 / 1" }}>
       <Canvas
         camera={{ position: [0, 0, 3.8], fov: 40, near: 0.1, far: 100 }}
         gl={{ antialias: true, alpha: true }}
@@ -151,31 +151,31 @@ export default function Section4() {
             className="absolute inset-0 flex items-center justify-center pointer-events-none"
             style={{ opacity: phase1Opacity }}
           >
-            <div className="mx-auto max-w-6xl px-6 w-full pointer-events-auto">
-              <div className="grid gap-12 lg:grid-cols-2 items-center">
+            <div className="mx-auto max-w-6xl px-4 sm:px-6 w-full pointer-events-auto">
+              <div className="grid gap-8 lg:gap-12 grid-cols-1 lg:grid-cols-2 items-center">
 
-                {/* 3D Globe — fades with the text */}
-                <motion.div className="flex justify-center items-center" style={{ opacity: textOpacity }}>
+                {/* 3D Globe */}
+                <motion.div className="flex justify-center items-center order-2 lg:order-1" style={{ opacity: textOpacity }}>
                   <GlobeCanvas />
                 </motion.div>
 
                 {/* Intro text + tabs */}
-                <motion.div style={{ opacity: textOpacity, y: textY }}>
-                  <h3 className="premium-font-galdgderbold text-3xl text-white sm:text-4xl lg:text-[2.6rem] leading-[1.15]">
+                <motion.div style={{ opacity: textOpacity, y: textY }} className="order-1 lg:order-2">
+                  <h3 className="premium-font-galdgderbold text-2xl text-white sm:text-3xl lg:text-[2.6rem] leading-[1.15]">
                     We Are Connecting Global Business Success With{" "}
                     <span className="text-cz-secondary-light">Trading</span>
                   </h3>
-                  <p className="mt-5 text-sm leading-[1.9] text-white/50">
+                  <p className="mt-4 sm:mt-5 text-sm leading-[1.9] text-white/50">
                     Strategically positioned across 10+ countries through fully integrated sourcing
                     operations — a single point of contact for your global supply chain needs.
                   </p>
-                  <div className="mt-8 flex">
+                  <div className="mt-6 sm:mt-8 flex">
                     {TABS.map((t, i) => (
                       <button
                         key={t.tab}
                         type="button"
                         onClick={() => setActiveTab(i)}
-                        className={`flex-1 py-3.5 text-xs font-bold uppercase tracking-wider transition-all duration-300 ${activeTab === i ? "bg-cz-secondary-dark text-white" : "bg-white/10 text-white/60 hover:text-white"}`}
+                        className={`flex-1 py-3 sm:py-3.5 text-xs font-bold uppercase tracking-wider transition-all duration-300 ${activeTab === i ? "bg-cz-secondary-dark text-white" : "bg-white/10 text-white/60 hover:text-white"}`}
                         style={{ borderRadius: 0 }}
                       >
                         {t.tab}
@@ -183,8 +183,8 @@ export default function Section4() {
                     ))}
                   </div>
                   <div className="bg-white/5 border border-white/10 border-t-0 overflow-hidden backdrop-blur-sm">
-                    <div className="p-6 sm:p-8">
-                      <h4 className="font-bold text-white text-lg leading-tight">{TABS[activeTab].cardTitle}</h4>
+                    <div className="p-5 sm:p-8">
+                      <h4 className="font-bold text-white text-base sm:text-lg leading-tight">{TABS[activeTab].cardTitle}</h4>
                       <p className="mt-2.5 text-xs leading-relaxed text-white/50">{TABS[activeTab].desc}</p>
                     </div>
                   </div>
@@ -199,18 +199,18 @@ export default function Section4() {
             className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
             style={{ opacity: phase2Opacity, backgroundColor: "#EAE8E5" }}
           >
-            <div className="mx-auto max-w-5xl px-6 w-full pointer-events-auto">
+            <div className="mx-auto max-w-5xl px-4 sm:px-6 w-full pointer-events-auto">
 
-              <motion.div className="text-center mb-10" style={{ opacity: headingOpacity, y: headingY }}>
-                <h2 className="premium-font-galdgderbold text-3xl text-cz-main sm:text-4xl lg:text-5xl">
+              <motion.div className="text-center mb-8 sm:mb-10" style={{ opacity: headingOpacity, y: headingY }}>
+                <h2 className="premium-font-galdgderbold text-2xl text-cz-main sm:text-4xl lg:text-5xl">
                   Markets We Serve
                 </h2>
-                <p className="mx-auto mt-3 max-w-xl text-base text-[#2D2D2D]/60">
+                <p className="mx-auto mt-3 max-w-xl text-sm sm:text-base text-[#2D2D2D]/60">
                   Strategically positioned across three countries to deliver maximum value.
                 </p>
               </motion.div>
 
-              <div className="grid gap-5 sm:grid-cols-3">
+              <div className="grid gap-4 sm:gap-5 grid-cols-1 sm:grid-cols-3">
                 {MARKETS.map((m, i) => (
                   <MarketCard key={m.country} m={m} i={i} progress={scrollYProgress} />
                 ))}
