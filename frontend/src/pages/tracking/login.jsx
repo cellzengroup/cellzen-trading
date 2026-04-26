@@ -13,7 +13,7 @@ const TRACKING_FEATURES = [
 const API_URL = import.meta.env.VITE_API_URL
   || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
 
-const ACCOUNT_TYPES = ["Logistics", "Customer", "Suppliers"];
+const ACCOUNT_TYPES = ["Costumers", "Logistics", "Suppliers", "Distributor", "Partners"];
 const flagUrl = (code) => `https://flagcdn.com/w40/${code.toLowerCase()}.png`;
 const flagUrl2x = (code) => `https://flagcdn.com/w80/${code.toLowerCase()}.png`;
 
@@ -21,7 +21,9 @@ const getDashboardPath = (accountType) => {
   const normalized = (accountType || "").toLowerCase();
   if (normalized === "logistics") return "/tracking/trackingpage/logisticsdashboard";
   if (normalized === "suppliers" || normalized === "supplier") return "/tracking/trackingpage/supplierdashboard";
-  return "/tracking/trackingpage/costumerdashboard";
+  if (normalized === "distributor") return "/tracking/trackingpage/distributordashboard";
+  if (normalized === "partners" || normalized === "partner") return "/tracking/trackingpage/partnersdashboard";
+  return "/tracking/trackingpage/costumersdashboard";
 };
 
 export default function TrackingLogin({ initialMode = "signin" }) {
@@ -108,7 +110,8 @@ export default function TrackingLogin({ initialMode = "signin" }) {
     <>
       <section className="min-h-screen overflow-x-hidden bg-white">
         <div className="grid min-h-screen w-full xl:grid-cols-[1.08fr_0.92fr]">
-          <div className="relative hidden min-h-screen flex-col items-center justify-center overflow-hidden bg-[#EAE8E5] px-8 py-12 text-center xl:flex">
+          <div className="sticky top-0 hidden h-screen overflow-hidden bg-[#EAE8E5] px-8 py-12 text-center xl:block">
+            <div className="relative flex min-h-full flex-col items-center justify-center overflow-hidden">
             <div className="relative mb-6 flex h-[185px] w-full max-w-[470px] items-center justify-center sm:mb-8 sm:h-[250px] xl:h-[330px] xl:max-w-[620px]">
               <div className="absolute left-1 top-16 z-20 hidden border border-[#412460]/10 bg-white px-3 py-2 text-left sm:left-4 sm:top-20 sm:block sm:px-4 sm:py-3 xl:left-2 xl:top-24 xl:px-5 xl:py-4">
                 <p className="text-[10px] font-semibold text-[#2D2D2D]/45 xl:text-xs">Logistics documents</p>
@@ -157,10 +160,12 @@ export default function TrackingLogin({ initialMode = "signin" }) {
             <p className="mt-2 max-w-sm text-[11px] leading-relaxed text-[#2D2D2D]/45 sm:mt-3 sm:max-w-md sm:text-xs xl:max-w-lg xl:text-sm">
               Manage your Cellzen shipment updates, documents, and delivery status in one clean tracking workspace.
             </p>
+            </div>
           </div>
 
-          <div className="flex min-h-screen items-center justify-center bg-white px-5 py-9 sm:px-10 sm:py-12">
-            <div className="w-full max-w-[330px] sm:max-w-[360px] xl:max-w-[420px]">
+          <div className="h-screen overflow-y-auto bg-white">
+            <div className="flex min-h-full items-center justify-center px-5 py-9 sm:px-10 sm:py-12">
+              <div className="w-full max-w-[330px] sm:max-w-[360px] xl:max-w-[420px]">
               <Link to="/" className="mx-auto mb-6 flex items-center justify-center sm:mb-8" aria-label="Cellzen Trading home">
                 <img
                   src="/Images/DarkLogo.svg"
@@ -400,6 +405,7 @@ export default function TrackingLogin({ initialMode = "signin" }) {
                 </button>
               </form>
 
+              </div>
             </div>
           </div>
         </div>

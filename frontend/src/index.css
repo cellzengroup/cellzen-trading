@@ -255,6 +255,34 @@ body {
   background: rgba(45, 45, 45, 0.05);
 }
 
+.admin-portal-scrollbar,
+.admin-portal-scrollbar * {
+  scrollbar-color: rgba(45, 45, 45, 0.01) transparent;
+  scrollbar-width: thin;
+}
+
+.admin-portal-scrollbar::-webkit-scrollbar,
+.admin-portal-scrollbar *::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.admin-portal-scrollbar::-webkit-scrollbar-track,
+.admin-portal-scrollbar *::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.admin-portal-scrollbar::-webkit-scrollbar-thumb,
+.admin-portal-scrollbar *::-webkit-scrollbar-thumb {
+  background: rgba(45, 45, 45, 0.01);
+  border-radius: 999px;
+}
+
+.admin-portal-scrollbar::-webkit-scrollbar-thumb:hover,
+.admin-portal-scrollbar *::-webkit-scrollbar-thumb:hover {
+  background: rgba(45, 45, 45, 0.08);
+}
+
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-galdgder);
   font-weight: 600;

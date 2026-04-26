@@ -13,6 +13,7 @@ const STEPS = [
 
 const flagUrl   = (code) => `https://flagcdn.com/w40/${code.toLowerCase()}.png`;
 const flagUrl2x = (code) => `https://flagcdn.com/w80/${code.toLowerCase()}.png`;
+const wechatQrSrc = "/wechat.png?v=2";
 
 export default function Contact() {
   const [form, setForm]                   = useState({ name: "", email: "", message: "" });
@@ -121,9 +122,21 @@ export default function Contact() {
                         <a href="https://www.instagram.com/cellzentrading/?fbclid=IwY2xjawRLFB1leHRuA2FlbQIxMQBicmlkETFyblJ5U1ZTdHJPS01LVXdqc3J0YwZhcHBfaWQBMAABHlcnPi-mAS0ecZQkeWpI4dcALg7dIV5r_Hjt7nDLwGb7T5MNEOrnpwk07wTK_aem__RJak-V5H97PJBwECpaPUw" target="_blank" rel="noopener noreferrer" className="text-[#2D2D2D]/40 transition hover:text-[#412460]" aria-label="Instagram">
                           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><rect x="2" y="2" width="20" height="20" rx="5" /><circle cx="12" cy="12" r="5" /><circle cx="17.5" cy="6.5" r="1.5" fill="currentColor" stroke="none" /></svg>
                         </a>
-                        <a href="#" className="text-[#2D2D2D]/40 transition hover:text-[#412460]" aria-label="WeChat">
-                          <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 24 24"><path d="M8.5 11a1 1 0 100-2 1 1 0 000 2zm5-1a1 1 0 11-2 0 1 1 0 012 0zm-1.27 5.88c-2.94.36-5.58-.7-6.88-2.54-.2.02-.4.04-.6.04C2.11 13.38 0 11.5 0 9.19S2.11 5 4.75 5c2.3 0 4.2 1.44 4.63 3.38.37-.06.75-.1 1.12-.1 3.59 0 6.5 2.46 6.5 5.5 0 1.17-.42 2.26-1.14 3.15.28 1.07.89 2.07.89 2.07s-1.97-.35-2.82-.82c-.59.2-1.22.34-1.89.38a6.7 6.7 0 01-.41.02z"/></svg>
-                        </a>
+                        <div className="group relative z-50">
+                          <button type="button" className="text-[#2D2D2D]/40 transition hover:text-[#412460] focus:text-[#412460] focus:outline-none" aria-label="WeChat QR code">
+                            <svg className="h-5 w-5" fill="currentColor" viewBox="0 0 3535 3082">
+                              <path d="M341.08 2299C395.4 2189.7 449.73 2080.4 497.97 1983.35C396.74 1881.36 289.82 1792.19 205.42 1685.24C-87.4304 1314.17 -64.1704 800.13 256.06 452.43C582.63 97.8499 995.52 -29.4301 1466.38 5.58991C1754.05 26.9799 2014.04 124.71 2240.99 303.83C2423.2 447.64 2553 628.88 2617.5 853.93C2620.49 864.35 2620.73 875.55 2623.21 893.21C2586.14 889.67 2552 884.59 2517.73 883.4C2112.23 869.39 1744.71 971.94 1443.26 1253.79C1177.3 1502.46 1056.53 1806.45 1126.68 2173.47C1127.34 2176.9 1126 2180.71 1124.12 2197.46C1037.1 2175.39 951.04 2155.7 866.39 2131.14C827.57 2119.88 794.64 2117.39 755.66 2134.93C622.1 2195.05 486.49 2250.63 351.67 2307.94C348.14 2304.96 344.61 2301.98 341.08 2299ZM1049.69 661.51C1050.73 572.03 975.73 495.51 885.97 494.46C796.47 493.42 719.93 568.4 718.88 658.14C717.84 747.62 792.84 824.15 882.6 825.19C972.1 826.23 1048.64 751.25 1049.68 661.51H1049.69ZM1767.83 825.19C1857.44 825.41 1933.38 749.83 1933.6 660.2C1933.82 570.61 1858.22 494.69 1768.57 494.47C1678.96 494.25 1603.02 569.83 1602.8 659.46C1602.58 749.05 1678.18 824.97 1767.83 825.19Z" />
+                              <path d="M3296.42 3081.81C3202.58 3041.74 3108.74 3001.67 3014.91 2961.59C2977.77 2945.73 2938.43 2933.6 2903.92 2913.28C2785.68 2843.65 2663.36 2849.83 2529.7 2859.99C2112.47 2891.7 1746.69 2771.81 1479.73 2430.94C1257.34 2146.99 1281.11 1747.3 1526.29 1479.37C1729.8 1256.98 1986.08 1144.4 2281.44 1111.54C2580.03 1078.31 2861.6 1131.86 3115.74 1293.84C3372.25 1457.33 3536.24 1683.22 3534.69 2000.11C3533.59 2224.87 3428.29 2404.88 3268.27 2555.52C3232.27 2589.41 3193.41 2621.55 3151.57 2647.6C3114.17 2670.88 3114.17 2691.34 3133.06 2727.38C3192.56 2840.95 3248.31 2956.48 3305.51 3071.25C3302.48 3074.77 3299.45 3078.29 3296.41 3081.81H3296.42ZM2265.07 1766.16C2266.11 1676.68 2191.11 1600.16 2101.35 1599.11C2011.85 1598.07 1935.31 1673.05 1934.26 1762.79C1933.22 1852.27 2008.22 1928.79 2097.98 1929.84C2187.48 1930.88 2264.02 1855.9 2265.06 1766.16H2265.07ZM2763.88 1599.11C2674.31 1598.33 2597.99 1673.46 2597.21 1763.2C2596.43 1852.75 2671.58 1929.05 2761.34 1929.83C2850.91 1930.61 2927.22 1855.48 2928.01 1765.74C2928.79 1676.19 2853.64 1599.89 2763.88 1599.11Z" />
+                            </svg>
+                          </button>
+                          <div className="invisible pointer-events-none absolute bottom-full left-1/2 z-[9999] mb-3 -translate-x-1/2 translate-y-2 scale-95 rounded-lg bg-white p-3 opacity-0 shadow-2xl ring-1 ring-black/15 transition duration-200 group-hover:visible group-hover:translate-y-0 group-hover:scale-100 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:scale-100 group-focus-within:opacity-100">
+                            <div
+                              aria-label="WeChat QR code"
+                              className="h-32 w-32 bg-contain bg-center bg-no-repeat"
+                              style={{ backgroundImage: `url("${wechatQrSrc}")` }}
+                            />
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>

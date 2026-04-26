@@ -112,4 +112,42 @@ async function sendContactEmail({ name, email, phone, country, message }) {
   return transporter.sendMail(mailOptions);
 }
 
-module.exports = { sendContactEmail };
+/**
+ * Send newsletter subscription email to Cellzen team
+ */
+async function sendNewsletterEmail({ email }) {
+  const date = formatDate(new Date());
+
+  const mailOptions = {
+    from: `"Cellzen Trading" <${process.env.EMAIL_USER}>`,
+    to: process.env.EMAIL_TO,
+    replyTo: email,
+    subject: `New newsletter subscription — ${email}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; border: 1px solid #e0e0e0; overflow: hidden;">
+        <div style="background-color: #412460; padding: 18px 24px;">
+          <h2 style="color: #ffffff; margin: 0; font-size: 20px;">New Newsletter Subscription</h2>
+        </div>
+        <div style="background-color: #EAE8E5; padding: 24px;">
+          <p style="margin: 0 0 14px; color: #2D2D2D; font-size: 15px;">Someone subscribed from the Cellzen Trading website footer.</p>
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 12px 0; border-bottom: 1px solid #d4d0c8; color: #888; font-size: 13px; width: 90px;">Email</td>
+              <td style="padding: 12px 0; border-bottom: 1px solid #d4d0c8; color: #2D2D2D; font-size: 15px;">
+                <a href="mailto:${email}" style="color: #412460; text-decoration: none;">${email}</a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 12px 0; color: #888; font-size: 13px;">Date</td>
+              <td style="padding: 12px 0; color: #2D2D2D; font-size: 15px;">${date}</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    `,
+  };
+
+  return transporter.sendMail(mailOptions);
+}
+
+module.exports = { sendContactEmail, sendNewsletterEmail };

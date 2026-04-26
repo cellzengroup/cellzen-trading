@@ -13,15 +13,21 @@ import Tracking from './pages/tracking/Tracking';
 import TrackingLogin from './pages/tracking/login';
 import ResetPassword from './pages/tracking/reset';
 import AdminLogin from './pages/auth/admin/AdminLogin';
+import AdminPortal from './pages/auth/admin/adminPortal';
 import AdminDashboard from './pages/auth/admin/adminDashboard';
+import AdminManagements from './pages/auth/admin/adminmanagements';
 import AdminInventory from './pages/auth/admin/admininventory';
-import AdminProducts from './pages/auth/admin/adminproducts';
+import AdminProducts from './pages/auth/admin/adminProducts/adminproducts';
+import AddProducts from './pages/auth/admin/adminProducts/AddProducts';
 import AdminCustomers from './pages/auth/admin/admincustomers';
 import AdminReports from './pages/auth/admin/adminreports';
+import AdminNotifications from './pages/auth/admin/adminnotifications';
 import AdminSettings from './pages/auth/admin/adminsettings';
-import CostumerDashboard from './pages/tracking/trackingpage/costumer/costumerdashboard';
+import CostumersDashboard from './pages/tracking/trackingpage/costumers/costumersdashboard';
 import SupplierDashboard from './pages/tracking/trackingpage/suppliers/supplierdashboard';
 import LogisticsDashboard from './pages/tracking/trackingpage/logistics/logisticsdashboard';
+import DistributorDashboard from './pages/tracking/trackingpage/distributor/distributordashboard';
+import PartnersDashboard from './pages/tracking/trackingpage/partners/partnersdashboard';
 import Portfolio from './pages/portfolio';
 import Notices from './pages/notices';
 import FAQ from './components/FAQ';
@@ -80,23 +86,40 @@ function App() {
 
         {/* Customer tracking login - standalone page without site header/footer */}
         <Route path="/admin-login" element={<AdminLogin />} />
-        <Route path="/admin-dashboard" element={<AdminDashboard />} />
+        <Route
+          path="/admin-dashboard"
+          element={
+            <AdminPortal activePage="Home" title="Welcome to Admin Dashboard" eyebrow="Manage your Cellzen operations, products, reports, and settings">
+              <AdminDashboard />
+            </AdminPortal>
+          }
+        />
+        <Route path="/admin-managements" element={<AdminManagements />} />
         <Route path="/admin-inventory" element={<AdminInventory />} />
         <Route path="/admin-products" element={<AdminProducts />} />
+        <Route path="/admin-products/add-products" element={<AddProducts />} />
+        <Route path="/admin-products/edit/:productId" element={<AddProducts />} />
         <Route path="/admin-customers" element={<AdminCustomers />} />
         <Route path="/admin-costumers" element={<Navigate to="/admin-customers" replace />} />
         <Route path="/admin-reports" element={<AdminReports />} />
+        <Route path="/admin-notifications" element={<AdminNotifications />} />
         <Route path="/admin-settings" element={<AdminSettings />} />
         <Route path="/login" element={<TrackingLogin initialMode="signin" />} />
         <Route path="/reset" element={<ResetPassword />} />
         <Route path="/tracking/login" element={<Navigate to="/login" replace />} />
         <Route path="/tracking/signup" element={<Navigate to="/login" replace />} />
-        <Route path="/tracking/trackingpage/costumerdashboard" element={<CostumerDashboard />} />
+        <Route path="/tracking/trackingpage/costumersdashboard" element={<CostumersDashboard />} />
+        <Route path="/tracking/trackingpage/costumerdashboard" element={<Navigate to="/tracking/trackingpage/costumersdashboard" replace />} />
         <Route path="/tracking/trackingpage/supplierdashboard" element={<SupplierDashboard />} />
         <Route path="/tracking/trackingpage/logisticsdashboard" element={<LogisticsDashboard />} />
-        <Route path="/trackingpage/costumerdashboard" element={<Navigate to="/tracking/trackingpage/costumerdashboard" replace />} />
+        <Route path="/tracking/trackingpage/distributordashboard" element={<DistributorDashboard />} />
+        <Route path="/tracking/trackingpage/partnersdashboard" element={<PartnersDashboard />} />
+        <Route path="/trackingpage/costumersdashboard" element={<Navigate to="/tracking/trackingpage/costumersdashboard" replace />} />
+        <Route path="/trackingpage/costumerdashboard" element={<Navigate to="/tracking/trackingpage/costumersdashboard" replace />} />
         <Route path="/trackingpage/supplierdashboard" element={<Navigate to="/tracking/trackingpage/supplierdashboard" replace />} />
         <Route path="/trackingpage/logisticsdashboard" element={<Navigate to="/tracking/trackingpage/logisticsdashboard" replace />} />
+        <Route path="/trackingpage/distributordashboard" element={<Navigate to="/tracking/trackingpage/distributordashboard" replace />} />
+        <Route path="/trackingpage/partnersdashboard" element={<Navigate to="/tracking/trackingpage/partnersdashboard" replace />} />
 
         {/* Main Website */}
         <Route

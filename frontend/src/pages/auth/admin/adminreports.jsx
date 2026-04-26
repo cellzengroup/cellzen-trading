@@ -13,7 +13,7 @@ export default function AdminReports() {
     <AdminPageShell activePage="Reports" title="Reports" eyebrow="Cellzen Business Reports">
       <div className="grid gap-4 md:grid-cols-2">
         {REPORTS.map((report) => (
-          <div key={report.title} className="border border-[#E1E3EE] bg-white p-5">
+          <div key={report.title} className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-[#412460]">{report.title}</h2>

@@ -1,5 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const { Op } = require('sequelize');
 const User = require('../models/User');
 const { authenticate, generateToken } = require('../middleware/auth');
 
@@ -34,6 +35,22 @@ const buildAdminUserPayload = (matched, hashedPassword) => ({
   role: matched.role,
   accountType: 'Admin',
 });
+
+const ENROLLMENT_TYPES = [
+  { key: 'costumers', label: 'Costumers', aliases: ['Costumers', 'Customers', 'Customer'] },
+  { key: 'distributors', label: 'Distributors', aliases: ['Distributor', 'Distributors'] },
+  { key: 'logistics', label: 'Logistics', aliases: ['Logistics'] },
+  { key: 'partners', label: 'Partners', aliases: ['Partners', 'Partner'] },
+  { key: 'suppliers', label: 'Suppliers', aliases: ['Suppliers', 'Supplier'] },
+];
+
+const requireAdmin = (req, res, next) => {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role !== 'admin' && role !== 'superadmin' && req.user?.accountType !== 'Admin') {
+    return res.status(403).json({ success: false, message: 'Admin access is required' });
+  }
+  next();
+};
 
 // POST /admin-login
 router.post('/admin-login', async (req, res) => {
@@ -165,6 +182,40 @@ router.post('/login', async (req, res) => {
 // GET /me
 router.get('/me', authenticate, async (req, res) => {
   res.json({ success: true, user: req.user });
+});
+
+// GET /enrollments
+router.get('/enrollments', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+
+    const [total, typeCounts] = await Promise.all([
+      User.count({ where: { role: 'customer' } }),
+      Promise.all(
+        ENROLLMENT_TYPES.map(async (type) => ({
+          key: type.key,
+          label: type.label,
+          count: await User.count({
+            where: {
+              role: 'customer',
+              accountType: { [Op.in]: type.aliases },
+            },
+          }),
+        }))
+      ),
+    ]);
+
+    res.json({
+      success: true,
+      total,
+      types: typeCounts,
+    });
+  } catch (error) {
+    console.error('Enrollment summary error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load enrollment summary' });
+  }
 });
 
 module.exports = router;

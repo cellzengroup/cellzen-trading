@@ -18,7 +18,7 @@ const FormSubmission = sequelize
         type: DataTypes.STRING,
         allowNull: false,
         validate: {
-          isIn: [['thangka', 'soundBowls', 'sacredItems', 'contact']],
+          isIn: [['thangka', 'soundBowls', 'sacredItems', 'contact', 'newsletter']],
         },
       },
       data: {

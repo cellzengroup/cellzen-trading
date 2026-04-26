@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const FormSubmission = require('../models/FormSubmission');
-const { sendContactEmail } = require('../services/emailService');
+const { sendContactEmail, sendNewsletterEmail } = require('../services/emailService');
 const { sendContactWhatsApp } = require('../services/whatsappService');
 
 // Health check
@@ -83,6 +83,31 @@ router.post('/contact', async (req, res, next) => {
     res.json({
       success: true,
       message: 'Message sent successfully',
+      ...(token && { token }),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Submit newsletter subscription
+router.post('/newsletter', async (req, res, next) => {
+  try {
+    const email = String(req.body.email || '').trim();
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: 'A valid email address is required',
+      });
+    }
+
+    await sendNewsletterEmail({ email });
+    const token = await saveSubmission('newsletter', { email });
+
+    res.json({
+      success: true,
+      message: 'Subscription received successfully',
       ...(token && { token }),
     });
   } catch (error) {

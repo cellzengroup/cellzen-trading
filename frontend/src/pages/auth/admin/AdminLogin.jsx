@@ -36,26 +36,29 @@ export default function AdminLogin() {
   return (
     <section className="min-h-screen bg-[#EAE8E5]">
       <div className="grid min-h-screen lg:grid-cols-[290px_1fr] xl:grid-cols-[320px_1fr]">
-        <div className="hidden bg-cz-login-panel p-5 text-white lg:flex lg:flex-col lg:justify-between">
-          <Link to="/" aria-label="Cellzen Trading home">
-            <img src="/Images/DarkLogo.svg" alt="Cellzen Trading" className="h-10 w-auto brightness-0 invert" />
-          </Link>
+        <div className="sticky top-0 hidden h-screen overflow-hidden bg-cz-login-panel p-5 text-white lg:block">
+          <div className="flex min-h-full flex-col justify-between">
+            <Link to="/" aria-label="Cellzen Trading home">
+              <img src="/Images/DarkLogo.svg" alt="Cellzen Trading" className="h-10 w-auto brightness-0 invert" />
+            </Link>
 
-          <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[#B99353]">Admin Portal</p>
-            <h1 className="mt-4 premium-font-galdgderbold text-3xl leading-tight xl:text-4xl">
-              Secure access for Cellzen operations.
-            </h1>
-            <p className="mt-4 text-xs leading-relaxed text-white/58 xl:text-sm">
-              Sign in to manage inventory, products, reports, shipments, and operational tools.
-            </p>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[#B99353]">Admin Portal</p>
+              <h1 className="mt-4 premium-font-galdgderbold text-3xl leading-tight xl:text-4xl">
+                Secure access for Cellzen operations.
+              </h1>
+              <p className="mt-4 text-xs leading-relaxed text-white/58 xl:text-sm">
+                Sign in to manage inventory, products, reports, shipments, and operational tools.
+              </p>
+            </div>
+
+            <p className="text-xs text-white/35">Cellzen Trading Administration</p>
           </div>
-
-          <p className="text-xs text-white/35">Cellzen Trading Administration</p>
         </div>
 
-        <div className="flex min-h-screen items-center justify-center bg-white p-5">
-          <div className="w-full max-w-[390px]">
+        <div className="h-screen overflow-y-auto bg-white">
+          <div className="flex min-h-full items-center justify-center p-5">
+            <div className="w-full max-w-[390px]">
             <div className="mb-8 text-center">
               <img src="/Images/DarkLogo.svg" alt="Cellzen Trading" className="mx-auto h-14 w-auto" />
               <h2 className="mt-8 text-2xl font-semibold uppercase tracking-wide text-[#2D2D2D]">
@@ -124,6 +127,7 @@ export default function AdminLogin() {
             <Link to="/" className="mt-7 block text-center text-xs font-semibold text-[#412460] hover:text-[#B99353]">
               Back to website
             </Link>
+            </div>
           </div>
         </div>
       </div>

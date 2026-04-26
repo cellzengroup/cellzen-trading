@@ -45,6 +45,11 @@ const baseAllowedOrigins = envOrigins || (isProduction ? defaultProdOrigins : de
 const corsOrigin = (origin, callback) => {
   // Allow requests with no origin (like mobile apps or curl requests)
   if (!origin) return callback(null, true);
+
+  // In development, allow Vite localhost and LAN preview URLs.
+  if (!isProduction) {
+    return callback(null, true);
+  }
   
   // Check if origin is in the allowed list
   if (baseAllowedOrigins.includes(origin)) {
@@ -170,6 +175,7 @@ const startServer = async () => {
     console.log('   POST /api/forms/soundBowls - Submit Sound Bowls form');
     console.log('   POST /api/forms/sacredItems - Submit Sacred Items form');
     console.log('   POST /api/forms/contact - Submit Contact form');
+    console.log('   POST /api/forms/newsletter - Submit newsletter subscription');
     console.log('   GET  /api/forms/submission/:token - Get submission by token');
     console.log('   GET  /api/forms/submissions/:formType - Get submissions by type');
     console.log('\n✨ Ready to accept form submissions!');

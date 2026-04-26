@@ -2,11 +2,19 @@ const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 
 const BUCKET = process.env.SUPABASE_STORAGE_BUCKET || 'product-images';
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
+const BUCKET_OPTIONS = {
+  public: true,
+  fileSizeLimit: MAX_FILE_SIZE_BYTES,
+  allowedMimeTypes: ALLOWED_MIME_TYPES,
+};
 
 let supabase = null;
+let bucketReady = false;
 
 if (supabaseUrl && supabaseServiceKey) {
   supabase = createClient(supabaseUrl, supabaseServiceKey);
@@ -19,12 +27,14 @@ if (supabaseUrl && supabaseServiceKey) {
  * Upload an image buffer to Supabase Storage.
  * Returns the public URL on success, or null on failure.
  */
-async function uploadImage(fileBuffer, originalName) {
+async function uploadStorageFile(fileBuffer, originalName, folder = 'products') {
   if (!supabase) throw new Error('Supabase Storage is not configured');
 
   const ext = path.extname(originalName).toLowerCase();
   const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
-  const filePath = `products/${uniqueName}`;
+  const filePath = `${folder}/${uniqueName}`;
+
+  await ensureBucketReady();
 
   const { error } = await supabase.storage
     .from(BUCKET)
@@ -37,6 +47,54 @@ async function uploadImage(fileBuffer, originalName) {
 
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(filePath);
   return data.publicUrl;
+}
+
+async function ensureBucketReady() {
+  if (bucketReady) return;
+
+  const { data: bucket, error: getBucketError } = await supabase.storage.getBucket(BUCKET);
+  if (!getBucketError && bucket) {
+    const { error: updateBucketError } = await supabase.storage.updateBucket(BUCKET, BUCKET_OPTIONS);
+    if (updateBucketError) throw updateBucketError;
+    await updateBucketViaStorageApi();
+    bucketReady = true;
+    return;
+  }
+
+  const { error: createBucketError } = await supabase.storage.createBucket(BUCKET, BUCKET_OPTIONS);
+
+  if (createBucketError) throw createBucketError;
+  await updateBucketViaStorageApi();
+  bucketReady = true;
+}
+
+async function updateBucketViaStorageApi() {
+  const response = await fetch(`${supabaseUrl}/storage/v1/bucket/${encodeURIComponent(BUCKET)}`, {
+    method: 'PUT',
+    headers: {
+      apikey: supabaseServiceKey,
+      Authorization: `Bearer ${supabaseServiceKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      public: true,
+      file_size_limit: MAX_FILE_SIZE_BYTES,
+      allowed_mime_types: ALLOWED_MIME_TYPES,
+    }),
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Failed to update Supabase bucket file size limit: ${message}`);
+  }
+}
+
+async function uploadImage(fileBuffer, originalName) {
+  return uploadStorageFile(fileBuffer, originalName, 'products');
+}
+
+async function uploadPdf(fileBuffer, originalName) {
+  return uploadStorageFile(fileBuffer, originalName, 'product-pdfs');
 }
 
 /**
@@ -96,8 +154,8 @@ async function downloadImage(publicUrl) {
 }
 
 function getMimeType(ext) {
-  const types = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
+  const types = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp', '.pdf': 'application/pdf' };
   return types[ext] || 'image/jpeg';
 }
 
-module.exports = { uploadImage, deleteImage, downloadImage, BUCKET };
+module.exports = { uploadImage, uploadPdf, deleteImage, downloadImage, BUCKET };

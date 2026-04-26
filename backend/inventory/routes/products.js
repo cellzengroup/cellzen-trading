@@ -5,20 +5,23 @@ const path = require('path');
 const { Product, Location, Inventory } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const cache = require('../cache');
-const { uploadImage, deleteImage } = require('../../config/supabase');
+const { uploadImage, uploadPdf, deleteImage } = require('../../config/supabase');
 
 const router = express.Router();
 
 // Multer config — memory storage so we can forward the buffer to Supabase
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB per file
   fileFilter: (req, file, cb) => {
-    const allowed = /jpeg|jpg|png|gif|webp/;
-    const ext = allowed.test(path.extname(file.originalname).toLowerCase());
-    const mime = allowed.test(file.mimetype);
-    if (ext && mime) return cb(null, true);
-    cb(new Error('Only image files are allowed'));
+    const ext = path.extname(file.originalname).toLowerCase();
+    const isImageField = file.fieldname === 'image' || file.fieldname === 'image2';
+    const isPdfField = file.fieldname === 'pdf_files';
+    const imageAllowed = /jpeg|jpg|png|gif|webp/;
+
+    if (isImageField && imageAllowed.test(ext) && imageAllowed.test(file.mimetype)) return cb(null, true);
+    if (isPdfField && ext === '.pdf' && file.mimetype === 'application/pdf') return cb(null, true);
+    cb(new Error('Only image files or PDF documents are allowed'));
   },
 });
 
@@ -70,16 +73,32 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // POST / - create product (with optional image upload)
-router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, { name: 'image2', maxCount: 1 }]), async (req, res) => {
+router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, { name: 'image2', maxCount: 1 }, { name: 'pdf_files', maxCount: 10 }]), async (req, res) => {
   try {
-    const { name, description, image_url, image_url_2, barcode, cost_price, retail_price, wholesale_price, category, weight, size } = req.body;
+    const {
+      name,
+      description,
+      image_url,
+      image_url_2,
+      barcode,
+      cost_price,
+      retail_price,
+      wholesale_price,
+      category,
+      supplier_name,
+      supplier_email,
+      supplier_phone,
+      factory_location,
+      weight,
+      size,
+    } = req.body;
 
     const rawQty = req.body.quantity;
     const qty = Math.max(1, Number(rawQty) || 1);
     console.log('[Create Product] quantity received:', rawQty, '→ parsed:', qty);
 
-    if (!name) {
-      return res.status(400).json({ success: false, message: 'Product name is required' });
+    if (!category) {
+      return res.status(400).json({ success: false, message: 'Category is required' });
     }
 
     // Use uploaded file (→ Supabase), or provided URL (ignore ephemeral blob: URLs)
@@ -93,19 +112,15 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
       finalImageUrl2 = await uploadImage(req.files.image2[0].buffer, req.files.image2[0].originalname);
     }
 
-    const product = await Product.create({
-      name,
-      description,
-      image_url: finalImageUrl,
-      image_url_2: finalImageUrl2,
-      barcode: barcode || null,
-      cost_price: cost_price || 0,
-      retail_price: retail_price || 0,
-      wholesale_price: wholesale_price || 0,
-      category: category || null,
-      weight: weight || null,
-      size: size || null,
-    });
+    const pdfFiles = req.files?.pdf_files || [];
+    const pdfFileIndex = Number(req.body.pdf_file_index);
+    const uploadedPdfs = await Promise.all(
+      pdfFiles.map(async (file) => ({
+        name: file.originalname,
+        size: file.size,
+        url: await uploadPdf(file.buffer, file.originalname),
+      }))
+    );
 
     // Ensure default location exists
     let locations = await Location.findAll();
@@ -115,40 +130,67 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
       locations = await Location.findAll();
     }
 
-    // Auto stock-in at Guangzhou Warehouse
-    const [gzInv, gzCreated] = await Inventory.findOrCreate({
-      where: { product_id: product.id, location_id: guangzhou.id },
-      defaults: { quantity: qty },
-    });
-    if (!gzCreated) {
-      await gzInv.update({ quantity: gzInv.quantity + qty });
-    }
-
-    // Create inventory records (quantity 0) at other locations + log transaction in parallel
     const { Transaction } = require('../models');
-    await Promise.all([
-      ...locations
-        .filter((loc) => loc.id !== guangzhou.id)
-        .map((loc) =>
-          Inventory.findOrCreate({
-            where: { product_id: product.id, location_id: loc.id },
-            defaults: { quantity: 0 },
-          })
-        ),
-      Transaction.create({
-        type: 'stock_in',
-        product_id: product.id,
-        to_location_id: guangzhou.id,
-        quantity: qty,
-        notes: `Auto stock-in on product creation (qty: ${qty})`,
-        created_by: req.user?.id || null,
-      }),
-    ]);
+    const pdfGroups = uploadedPdfs.length ? uploadedPdfs.map((pdf) => [pdf]) : [[]];
+    const createdProducts = [];
+
+    for (const pdfGroup of pdfGroups) {
+      const pdfName = pdfGroup[0]?.name;
+      const product = await Product.create({
+        name: pdfName ? `${name || supplier_name || category} - ${pdfName}` : name || supplier_name || category,
+        description,
+        image_url: finalImageUrl,
+        image_url_2: finalImageUrl2,
+        barcode: pdfGroups.length === 1 ? barcode || null : null,
+        cost_price: cost_price || 0,
+        retail_price: retail_price || 0,
+        wholesale_price: wholesale_price || 0,
+        category: category || null,
+        supplier_name: supplier_name || null,
+        supplier_email: supplier_email || null,
+        supplier_phone: supplier_phone || null,
+        factory_location: factory_location || null,
+        pdf_files: pdfGroup,
+        weight: weight || null,
+        size: size || null,
+      });
+
+      createdProducts.push(product);
+
+      // Auto stock-in at Guangzhou Warehouse
+      const [gzInv, gzCreated] = await Inventory.findOrCreate({
+        where: { product_id: product.id, location_id: guangzhou.id },
+        defaults: { quantity: qty },
+      });
+      if (!gzCreated) {
+        await gzInv.update({ quantity: gzInv.quantity + qty });
+      }
+
+      // Create inventory records (quantity 0) at other locations + log transaction in parallel
+      await Promise.all([
+        ...locations
+          .filter((loc) => loc.id !== guangzhou.id)
+          .map((loc) =>
+            Inventory.findOrCreate({
+              where: { product_id: product.id, location_id: loc.id },
+              defaults: { quantity: 0 },
+            })
+          ),
+        Transaction.create({
+          type: 'stock_in',
+          product_id: product.id,
+          to_location_id: guangzhou.id,
+          quantity: qty,
+          notes: `Auto stock-in on product creation (qty: ${qty})`,
+          created_by: req.user?.id || null,
+        }),
+      ]);
+    }
 
     cache.invalidate('products');
     cache.invalidate('summary');
     cache.invalidate('inventory');
-    res.status(201).json({ success: true, data: product });
+    res.status(201).json({ success: true, data: createdProducts.length === 1 ? createdProducts[0] : createdProducts });
   } catch (error) {
     if (error.name === 'SequelizeUniqueConstraintError') {
       return res.status(400).json({ success: false, message: 'Barcode already exists' });
@@ -159,14 +201,30 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
 });
 
 // PUT /:id - update product (with optional image upload)
-router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, { name: 'image2', maxCount: 1 }]), async (req, res) => {
+router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, { name: 'image2', maxCount: 1 }, { name: 'pdf_files', maxCount: 10 }]), async (req, res) => {
   try {
     const product = await Product.findByPk(req.params.id);
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    const { name, description, image_url, image_url_2, barcode, cost_price, retail_price, wholesale_price, category, weight, size } = req.body;
+    const {
+      name,
+      description,
+      image_url,
+      image_url_2,
+      barcode,
+      cost_price,
+      retail_price,
+      wholesale_price,
+      category,
+      supplier_name,
+      supplier_email,
+      supplier_phone,
+      factory_location,
+      weight,
+      size,
+    } = req.body;
 
     // Use uploaded file (→ Supabase), or provided URL, or keep existing (ignore ephemeral blob: URLs)
     let finalImageUrl = image_url !== undefined ? ((image_url && image_url.startsWith('blob:')) ? product.image_url : image_url) : product.image_url;
@@ -185,6 +243,47 @@ router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 },
       }
     }
 
+    const pdfFiles = req.files?.pdf_files || [];
+    const pdfFileIndex = Number(req.body.pdf_file_index);
+    const uploadedPdfs = await Promise.all(
+      pdfFiles.map(async (file) => ({
+        name: file.originalname,
+        size: file.size,
+        url: await uploadPdf(file.buffer, file.originalname),
+      }))
+    );
+    const existingPdfs = Array.isArray(product.pdf_files) ? product.pdf_files : [];
+    const selectedPdf = Number.isInteger(pdfFileIndex) && pdfFileIndex >= 0 ? existingPdfs[pdfFileIndex] : existingPdfs[0];
+    const finalPdfFiles = uploadedPdfs.length ? [uploadedPdfs[0]] : selectedPdf ? [selectedPdf] : existingPdfs.slice(0, 1);
+
+    if (existingPdfs.length > 1 && Number.isInteger(pdfFileIndex) && pdfFileIndex >= 0 && existingPdfs[pdfFileIndex]) {
+      const remainingPdfs = existingPdfs.filter((_, index) => index !== pdfFileIndex);
+      const splitProduct = await Product.create({
+        name: name !== undefined ? name : product.name,
+        description: description !== undefined ? description : product.description,
+        image_url: finalImageUrl,
+        image_url_2: finalImageUrl2,
+        barcode: null,
+        cost_price: cost_price !== undefined ? cost_price : product.cost_price,
+        retail_price: retail_price !== undefined ? retail_price : product.retail_price,
+        wholesale_price: wholesale_price !== undefined ? wholesale_price : product.wholesale_price,
+        category: category !== undefined ? category : product.category,
+        supplier_name: supplier_name !== undefined ? supplier_name : product.supplier_name,
+        supplier_email: supplier_email !== undefined ? supplier_email : product.supplier_email,
+        supplier_phone: supplier_phone !== undefined ? supplier_phone : product.supplier_phone,
+        factory_location: factory_location !== undefined ? factory_location : product.factory_location,
+        pdf_files: finalPdfFiles,
+        weight: weight !== undefined ? weight : product.weight,
+        size: size !== undefined ? size : product.size,
+      });
+
+      await product.update({ pdf_files: remainingPdfs });
+      cache.invalidate('products');
+      cache.invalidate('summary');
+      cache.invalidate('inventory');
+      return res.json({ success: true, data: splitProduct });
+    }
+
     await product.update({
       name: name !== undefined ? name : product.name,
       description: description !== undefined ? description : product.description,
@@ -195,6 +294,11 @@ router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 },
       retail_price: retail_price !== undefined ? retail_price : product.retail_price,
       wholesale_price: wholesale_price !== undefined ? wholesale_price : product.wholesale_price,
       category: category !== undefined ? category : product.category,
+      supplier_name: supplier_name !== undefined ? supplier_name : product.supplier_name,
+      supplier_email: supplier_email !== undefined ? supplier_email : product.supplier_email,
+      supplier_phone: supplier_phone !== undefined ? supplier_phone : product.supplier_phone,
+      factory_location: factory_location !== undefined ? factory_location : product.factory_location,
+      pdf_files: finalPdfFiles,
       weight: weight !== undefined ? weight : product.weight,
       size: size !== undefined ? size : product.size,
     });
@@ -255,6 +359,16 @@ router.delete('/:id', authenticate, async (req, res) => {
     const product = await Product.findByPk(req.params.id);
     if (!product) {
       return res.status(404).json({ success: false, message: 'Product not found' });
+    }
+
+    const pdfFileIndex = Number(req.query.pdfFileIndex);
+    const existingPdfs = Array.isArray(product.pdf_files) ? product.pdf_files : [];
+    if (existingPdfs.length > 1 && Number.isInteger(pdfFileIndex) && pdfFileIndex >= 0 && existingPdfs[pdfFileIndex]) {
+      await product.update({ pdf_files: existingPdfs.filter((_, index) => index !== pdfFileIndex) });
+      cache.invalidate('products');
+      cache.invalidate('inventory');
+      cache.invalidate('summary');
+      return res.json({ success: true, message: 'Product catalog deleted' });
     }
 
     // Delete images from Supabase Storage

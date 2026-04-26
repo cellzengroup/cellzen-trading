@@ -48,6 +48,27 @@ const Product = sequelize
         type: DataTypes.STRING,
         allowNull: true,
       },
+      supplier_name: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      supplier_email: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      supplier_phone: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      factory_location: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      pdf_files: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+        defaultValue: [],
+      },
       weight: {
         type: DataTypes.STRING,
         allowNull: true,

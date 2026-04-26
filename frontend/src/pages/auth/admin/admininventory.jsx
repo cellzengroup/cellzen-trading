@@ -20,7 +20,7 @@ export default function AdminInventory() {
       <div className="grid gap-4 lg:grid-cols-3">
         {metrics.map((metric) => {
           return (
-            <div key={metric.label} className="border border-[#E1E3EE] bg-white p-5">
+            <div key={metric.label} className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
               <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#2D2D2D]/40">{metric.label}</p>
               <p className="mt-3 text-3xl font-bold text-[#412460]">{metric.value}</p>
             </div>
@@ -28,7 +28,7 @@ export default function AdminInventory() {
         })}
       </div>
 
-      <div className="mt-4 border border-[#E1E3EE] bg-white p-5">
+      <div className="mt-4 rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
         <h2 className="text-lg font-semibold">Inventory List</h2>
         <div className="mt-5 overflow-x-auto">
           <table className="w-full min-w-[720px] text-left text-sm">
