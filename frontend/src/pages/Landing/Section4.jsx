@@ -1,225 +1,303 @@
-import { useRef, useState, Suspense, useEffect } from "react";
-import { motion, useScroll, useTransform } from "framer-motion";
-import { Canvas } from "@react-three/fiber";
-import { useGLTF, OrbitControls } from "@react-three/drei";
-import * as THREE from "three";
+import { useState, useEffect, Fragment } from "react";
+import { motion } from "framer-motion";
+import useScrollReveal from "./useScrollReveal";
 
-useGLTF.preload("/Images/earth.glb");
+const CARD_W = 1024; // px — full card width (main + callout panel)
+const CARD_GAP = 32;  // px — gap between cards
+const REPEATS = 3;    // render 3 copies of steps for infinite loop illusion
 
-const MARKETS = [
+const STEP_MS = 4800;
+
+const STEPS = [
   {
-    flag: "🇨🇳", country: "China", role: "Sourcing Hub",
-    desc: "Direct access to thousands of verified factories across all major manufacturing regions — Guangdong, Zhejiang, Jiangsu, and beyond.",
-    color: "from-red-500 to-orange-500",
-    stats: [{ label: "Factory Partners", value: "200+" }, { label: "Product Categories", value: "50+" }],
+    num: "01", short: "Requirements",
+    title: "Tell us what you need",
+    desc: "Share your product requirements — type, quantity, specifications, and quality standards. The more detail you provide, the better we can match you with the right supplier.",
+    callout: { value: "24 hrs", label: "Average response time" },
+    icon: (
+      <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="butt" strokeLinejoin="miter" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+      </svg>
+    ),
   },
   {
-    flag: "🇦🇺", country: "Australia", role: "Growing Market",
-    desc: "Serving Australian businesses with reliable, cost-effective sourcing solutions. Shipping by sea, air, or express delivery.",
-    color: "from-blue-500 to-cyan-500",
-    stats: [{ label: "Delivery Options", value: "3" }, { label: "Transit Time", value: "10-25 days" }],
+    num: "02", short: "Sourcing",
+    title: "We source from verified factories",
+    desc: "We contact verified manufacturers across China, compare options, and negotiate on your behalf to get the best price and quality combination available.",
+    callout: { value: "200+", label: "Verified factory partners" },
+    icon: (
+      <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="butt" strokeLinejoin="miter" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+    ),
   },
   {
-    flag: "🇳🇵", country: "Nepal", role: "Growing Market",
-    desc: "Connecting Nepalese businesses with Chinese manufacturers at competitive prices, handling all logistics and customs clearance.",
-    color: "from-red-600 to-blue-600",
-    stats: [{ label: "Customs Support", value: "Full" }, { label: "Pricing", value: "Best Rate" }],
+    num: "03", short: "Quotation",
+    title: "We send you a detailed quote",
+    desc: "Includes product cost, shipping, and all applicable fees — no hidden charges, no surprises. You see exactly what you're paying for before committing.",
+    callout: { value: "Zero", label: "Hidden fees" },
+    icon: (
+      <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="butt" strokeLinejoin="miter" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      </svg>
+    ),
+  },
+  {
+    num: "04", short: "Order",
+    title: "You approve — we place the order",
+    desc: "Once you confirm, we place the order directly with the factory and manage production updates, keeping you informed at every stage of manufacturing.",
+    callout: { value: "48 hrs", label: "Production update cycle" },
+    icon: (
+      <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="butt" strokeLinejoin="miter" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    ),
+  },
+  {
+    num: "05", short: "Delivery",
+    title: "We handle shipping to your door",
+    desc: "From China to Australia or Nepal — we manage freight, customs clearance, and last-mile delivery so you receive your goods without the paperwork or hassle.",
+    callout: { value: "Door-to-door", label: "Full logistics coverage" },
+    icon: (
+      <svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <path strokeLinecap="butt" strokeLinejoin="miter" d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />
+      </svg>
+    ),
   },
 ];
 
-const TABS = [
-  { tab: "Global Reach", cardTitle: "A Worldwide Sourcing Network", desc: "We connect businesses around the world with trusted manufacturers. Our team handles everything — sourcing, negotiation, quality checks, and logistics — so you can focus on growing your business." },
-  { tab: "Our Markets", cardTitle: "A Trusted Global Partner", desc: "Strategically positioned across 10+ countries with fully integrated operations. We deliver quality products at competitive prices, with full transparency and reliable delivery every step of the way." },
-];
+export default function Section3() {
+  const [sectionRef, visible] = useScrollReveal(0.1);
+  const [virtualPos, setVirtualPos] = useState(STEPS.length); // start in middle copy
+  const [progress, setProgress] = useState(0);
+  const [instant, setInstant] = useState(false);
 
-function EarthModel() {
-  const { scene } = useGLTF("/Images/earth.glb");
+  const active = ((virtualPos % STEPS.length) + STEPS.length) % STEPS.length;
 
   useEffect(() => {
-    if (!scene) return;
-    const box = new THREE.Box3().setFromObject(scene);
-    const center = new THREE.Vector3();
-    const size = new THREE.Vector3();
-    box.getCenter(center);
-    box.getSize(size);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const scale = 2.0 / maxDim;
-    scene.scale.setScalar(scale);
-    scene.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
-  }, [scene]);
+    if (!visible) return;
+    let start = performance.now();
+    let raf;
 
-  return <primitive object={scene} />;
-}
+    const tick = (now) => {
+      const pct = (now - start) / STEP_MS;
+      if (pct >= 1) {
+        setVirtualPos((prev) => prev + 1);
+        setProgress(0);
+        start = now;
+      } else {
+        setProgress(pct);
+      }
+      raf = requestAnimationFrame(tick);
+    };
 
-function GlobeCanvas() {
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [visible, virtualPos]);
+
+  const goTo = (i) => {
+    const currentActive = ((virtualPos % STEPS.length) + STEPS.length) % STEPS.length;
+    let diff = i - currentActive;
+    if (diff > STEPS.length / 2) diff -= STEPS.length;
+    if (diff < -STEPS.length / 2) diff += STEPS.length;
+    setVirtualPos((prev) => prev + diff);
+    setProgress(0);
+  };
+
+  // After a slide completes, if we've drifted into an outer copy, silently
+  // snap back to the equivalent position in the middle copy.
+  const handleAnimationComplete = () => {
+    if (instant) {
+      setInstant(false);
+      return;
+    }
+    if (virtualPos >= STEPS.length * 2) {
+      setInstant(true);
+      setVirtualPos((prev) => prev - STEPS.length);
+    } else if (virtualPos < STEPS.length) {
+      setInstant(true);
+      setVirtualPos((prev) => prev + STEPS.length);
+    }
+  };
+
+  const RENDERED = Array.from({ length: REPEATS }).flatMap(() => STEPS);
+
   return (
-    <div className="w-full max-w-[560px] mx-auto" style={{ aspectRatio: "1 / 1" }}>
-      <Canvas
-        camera={{ position: [0, 0, 3.8], fov: 40, near: 0.1, far: 100 }}
-        gl={{ antialias: true, alpha: true }}
-        style={{ background: "transparent", width: "100%", height: "100%" }}
-      >
-        <ambientLight intensity={0.4} color="#412460" />
-        <directionalLight position={[4, 3, 4]} intensity={1.6} />
-        <directionalLight position={[-4, -2, -4]} intensity={0.8} color="#412460" />
-        <Suspense fallback={null}>
-          <EarthModel />
-        </Suspense>
-        <OrbitControls
-          enableZoom={false}
-          enablePan={false}
-          autoRotate={true}
-          autoRotateSpeed={1.0}
-        />
-      </Canvas>
-    </div>
-  );
-}
+    <section ref={sectionRef} id="how-it-works" className="relative bg-white py-20 sm:py-28 overflow-hidden">
 
-function MarketCard({ m, i, progress }) {
-  // Stagger in, hold at full opacity, then fade out together near section end
-  const start = 0.44 + i * 0.02;
-  const end   = 0.48 + i * 0.02;
-  const opacity = useTransform(progress, [start, end, 0.88, 0.96], [0, 1, 1, 0]);
-  const y = useTransform(progress, [start, end], [30, 0]);
-  return (
-    <motion.div
-      style={{ opacity, y }}
-      className="group relative rounded-2xl border border-[#412460]/10 bg-white/70 backdrop-blur-md overflow-hidden hover:border-[#412460]/25 hover:scale-[1.02] shadow-sm hover:shadow-md transition-all duration-500"
-    >
-      <div className={`h-1 bg-gradient-to-r ${m.color}`} />
-      <div className="relative z-10 p-5">
-        <div className="flex items-center gap-3 mb-3">
-          <span className="text-3xl">{m.flag}</span>
-          <div>
-            <h3 className="text-base font-bold text-cz-main">{m.country}</h3>
-            <span className={`inline-block rounded-full bg-gradient-to-r ${m.color} px-2 py-0.5 text-[10px] font-semibold text-white`}>
-              {m.role}
-            </span>
-          </div>
+      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6">
+
+        {/* Header */}
+        <div className={`text-center mb-14 sm:mb-20 transition-all duration-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
+          <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[#B99353] mb-3">Simple Process</p>
+          <h2 className="premium-font-galdgderbold text-3xl text-[#2D2D2D] sm:text-4xl lg:text-5xl">
+            How It Works
+          </h2>
+          <p className="mx-auto mt-4 max-w-xl text-sm text-[#2D2D2D]/55">
+            From first contact to final delivery — a clear, transparent process built around your needs.
+          </p>
         </div>
-        <p className="text-xs leading-relaxed text-[#2D2D2D]/55 mb-3">{m.desc}</p>
-        <div className="grid grid-cols-2 gap-2">
-          {m.stats.map((stat) => (
-            <div key={stat.label} className="rounded-lg bg-[#412460]/5 border border-[#412460]/5 p-2 text-center group-hover:border-[#412460]/10 group-hover:bg-[#412460]/10 transition-all duration-300">
-              <div className="text-sm font-bold text-cz-secondary-dark">{stat.value}</div>
-              <div className="text-[9px] uppercase tracking-wider text-[#2D2D2D]/40">{stat.label}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </motion.div>
-  );
-}
 
-export default function Section4() {
-  const containerRef = useRef(null);
-  const [activeTab, setActiveTab] = useState(0);
+        {/* Timeline */}
+        <div className={`relative flex items-start mb-10 transition-all duration-700 delay-200 ${visible ? "opacity-100" : "opacity-0"}`}>
+          {STEPS.map((s, i) => {
+            const isActive = active === i;
+            const isDone = i < active;
+            const connectorFill = isDone ? 1 : isActive ? progress : 0;
 
-  const { scrollYProgress } = useScroll({
-    target: containerRef,
-    offset: ["start start", "end end"],
-  });
-
-  /* ── Phase 1: Globe + intro text (0 → 0.45) ── */
-  const phase1Opacity = useTransform(scrollYProgress, [0, 0.05, 0.38, 0.46], [0, 1, 1, 0]);
-  const textOpacity   = useTransform(scrollYProgress, [0, 0.07, 0.30, 0.40], [0, 1, 1, 0]);
-  const textY         = useTransform(scrollYProgress, [0, 0.07, 0.30, 0.40], [30, 0, 0, -20]);
-
-  /* ── Phase 2: fade in → hold → fade out before section ends ── */
-  // Fade in at 0.36–0.42, hold, then fade out at 0.88–0.95
-  const phase2Opacity  = useTransform(scrollYProgress, [0.36, 0.42, 0.88, 0.96], [0, 1, 1, 0]);
-  const headingOpacity = useTransform(scrollYProgress, [0.38, 0.44, 0.88, 0.96], [0, 1, 1, 0]);
-  const headingY       = useTransform(scrollYProgress, [0.38, 0.44], [28, 0]);
-
-  return (
-    <section ref={containerRef} className="relative" style={{ height: "700vh" }}>
-      <div className="sticky top-0 h-screen w-full overflow-hidden bg-gradient-to-b from-[#2e1845] to-cz-main">
-
-        <div
-          className="absolute inset-0 opacity-[0.05]"
-          style={{
-            backgroundImage: "linear-gradient(rgba(255,255,255,.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.1) 1px, transparent 1px)",
-            backgroundSize: "60px 60px",
-          }}
-        />
-
-        <div className="relative z-10 flex h-full flex-col items-center justify-center">
-
-          {/* ═══ PHASE 1 — 3D Globe + Intro Text ═══ */}
-          <motion.div
-            className="absolute inset-0 flex items-center justify-center pointer-events-none"
-            style={{ opacity: phase1Opacity }}
-          >
-            <div className="mx-auto max-w-6xl px-4 sm:px-6 w-full pointer-events-auto">
-              <div className="grid gap-8 lg:gap-12 grid-cols-1 lg:grid-cols-2 items-center">
-
-                {/* 3D Globe */}
-                <motion.div className="flex justify-center items-center order-2 lg:order-1" style={{ opacity: textOpacity }}>
-                  <GlobeCanvas />
-                </motion.div>
-
-                {/* Intro text + tabs */}
-                <motion.div style={{ opacity: textOpacity, y: textY }} className="order-1 lg:order-2">
-                  <h3 className="premium-font-galdgderbold text-2xl text-white sm:text-3xl lg:text-[2.6rem] leading-[1.15]">
-                    We Are Connecting Global Business Success With{" "}
-                    <span className="text-cz-secondary-light">Trading</span>
-                  </h3>
-                  <p className="mt-4 sm:mt-5 text-sm leading-[1.9] text-white/50">
-                    Strategically positioned across 10+ countries through fully integrated sourcing
-                    operations — a single point of contact for your global supply chain needs.
-                  </p>
-                  <div className="mt-6 sm:mt-8 flex">
-                    {TABS.map((t, i) => (
-                      <button
-                        key={t.tab}
-                        type="button"
-                        onClick={() => setActiveTab(i)}
-                        className={`flex-1 py-3 sm:py-3.5 text-xs font-bold uppercase tracking-wider transition-all duration-300 ${activeTab === i ? "bg-cz-secondary-dark text-white" : "bg-white/10 text-white/60 hover:text-white"}`}
-                        style={{ borderRadius: 0 }}
-                      >
-                        {t.tab}
-                      </button>
-                    ))}
+            return (
+              <Fragment key={s.num}>
+                <button
+                  type="button"
+                  onClick={() => goTo(i)}
+                  className="relative flex flex-col items-center group shrink-0"
+                >
+                  {/* Circle */}
+                  <div className={`w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center border-2 transition-all duration-300 ${
+                    isActive
+                      ? "bg-[#412460] border-[#412460] scale-110 shadow-lg shadow-[#412460]/25"
+                      : isDone
+                      ? "bg-[#412460] border-[#412460]"
+                      : "bg-white border-[#412460]/20 group-hover:border-[#412460]/50"
+                  }`}>
+                    {isDone ? (
+                      <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                        <path strokeLinecap="butt" d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : (
+                      <span className={`text-[11px] font-bold transition-colors duration-200 ${
+                        isActive ? "text-white" : "text-[#412460]/40 group-hover:text-[#412460]/80"
+                      }`}>
+                        {s.num}
+                      </span>
+                    )}
                   </div>
-                  <div className="bg-white/5 border border-white/10 border-t-0 overflow-hidden backdrop-blur-sm">
-                    <div className="p-5 sm:p-8">
-                      <h4 className="font-bold text-white text-base sm:text-lg leading-tight">{TABS[activeTab].cardTitle}</h4>
-                      <p className="mt-2.5 text-xs leading-relaxed text-white/50">{TABS[activeTab].desc}</p>
+                  {/* Label */}
+                  <span className={`hidden sm:block mt-2.5 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors duration-200 ${
+                    isActive ? "text-[#412460]" : isDone ? "text-[#412460]/40" : "text-[#2D2D2D]/25 group-hover:text-[#2D2D2D]/55"
+                  }`}>
+                    {s.short}
+                  </span>
+                </button>
+
+                {/* Connector */}
+                {i < STEPS.length - 1 && (
+                  <div className="flex-1 h-[2px] bg-[#412460]/8 relative mx-1 sm:mx-2 mt-[18px] sm:mt-[19px] shrink">
+                    <div
+                      className="absolute inset-y-0 left-0 bg-[#B99353]"
+                      style={{ width: `${connectorFill * 100}%`, transition: "width 0.08s linear" }}
+                    />
+                  </div>
+                )}
+              </Fragment>
+            );
+          })}
+        </div>
+
+      </div>
+
+      {/* Full-width carousel strip */}
+      <div className="relative w-full overflow-hidden py-6">
+        <motion.div
+          className="flex"
+          style={{ gap: `${CARD_GAP}px`, willChange: "transform" }}
+          animate={{ x: `calc(50% - ${(virtualPos + 0.5) * (CARD_W + CARD_GAP) - CARD_GAP / 2}px)` }}
+          transition={instant ? { duration: 0 } : { duration: 1.8, ease: [0.42, 0, 0.58, 1] }}
+          onAnimationComplete={handleAnimationComplete}
+        >
+          {RENDERED.map((s, pos) => {
+            const isActive = pos === virtualPos;
+            const stepIndex = pos % STEPS.length;
+            return (
+              <motion.div
+                key={pos}
+                onClick={() => goTo(stepIndex)}
+                style={{ width: `${CARD_W}px`, transformOrigin: "center center" }}
+                animate={{
+                  scale: isActive ? 1.04 : 0.9,
+                  opacity: isActive ? 1 : 0.3,
+                }}
+                transition={instant ? { duration: 0 } : { duration: 1.8, ease: [0.42, 0, 0.58, 1] }}
+                whileHover={!isActive ? { opacity: 0.55 } : {}}
+                className="shrink-0 cursor-pointer grid grid-cols-[1fr_280px] items-stretch"
+              >
+                {/* Main panel */}
+                <div className="relative overflow-hidden bg-[#F7F6F4] p-8 sm:p-12">
+                  <div
+                    className="absolute -right-2 -top-2 font-black text-[#412460]/[0.04] leading-none select-none pointer-events-none"
+                    style={{ fontSize: "11rem" }}
+                  >
+                    {s.num}
+                  </div>
+
+                  <div className="relative z-10 flex flex-col h-full">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#B99353] mb-4">
+                      Step {s.num}
+                    </p>
+                    <h3 className="premium-font-galdgderbold text-2xl sm:text-[1.85rem] text-[#2D2D2D] mb-4 leading-tight">
+                      {s.title}
+                    </h3>
+                    <p className="text-sm leading-[1.85] text-[#2D2D2D]/55 max-w-lg">
+                      {s.desc}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Callout panel */}
+                <div className="relative bg-[#412460] p-8 sm:p-10 flex flex-col justify-between min-h-[260px] overflow-hidden">
+                  <div
+                    className="absolute inset-0 opacity-[0.06] pointer-events-none"
+                    style={{
+                      backgroundImage: "radial-gradient(circle, #fff 1px, transparent 1px)",
+                      backgroundSize: "20px 20px",
+                    }}
+                  />
+                  <div className="relative z-10 w-12 h-12 bg-white/10 flex items-center justify-center text-white mb-auto">
+                    {s.icon}
+                  </div>
+                  <div className="relative z-10 mt-8">
+                    <div className="text-3xl sm:text-4xl font-black text-[#B99353] leading-none mb-2">
+                      {s.callout.value}
+                    </div>
+                    <div className="text-xs text-white/45 uppercase tracking-widest">
+                      {s.callout.label}
                     </div>
                   </div>
-                </motion.div>
-
-              </div>
-            </div>
-          </motion.div>
-
-          {/* ═══ PHASE 2 — Markets We Serve + Cards ═══ */}
-          <motion.div
-            className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
-            style={{ opacity: phase2Opacity, backgroundColor: "#EAE8E5" }}
-          >
-            <div className="mx-auto max-w-5xl px-4 sm:px-6 w-full pointer-events-auto">
-
-              <motion.div className="text-center mb-8 sm:mb-10" style={{ opacity: headingOpacity, y: headingY }}>
-                <h2 className="premium-font-galdgderbold text-2xl text-cz-main sm:text-4xl lg:text-5xl">
-                  Markets We Serve
-                </h2>
-                <p className="mx-auto mt-3 max-w-xl text-sm sm:text-base text-[#2D2D2D]/60">
-                  Strategically positioned across three countries to deliver maximum value.
-                </p>
+                </div>
               </motion.div>
+            );
+          })}
+        </motion.div>
+      </div>
 
-              <div className="grid gap-4 sm:gap-5 grid-cols-1 sm:grid-cols-3">
-                {MARKETS.map((m, i) => (
-                  <MarketCard key={m.country} m={m} i={i} progress={scrollYProgress} />
-                ))}
-              </div>
+      {/* Nav controls */}
+      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6 mt-8 flex items-center justify-center gap-3">
+        <button
+          type="button"
+          onClick={() => goTo((active - 1 + STEPS.length) % STEPS.length)}
+          className="flex items-center gap-2 px-5 py-2.5 border border-[#412460]/15 text-xs font-semibold text-[#412460]/50 hover:border-[#412460]/40 hover:text-[#412460] transition-all duration-200"
+        >
+          ← Prev
+        </button>
+        <button
+          type="button"
+          onClick={() => goTo((active + 1) % STEPS.length)}
+          className="flex items-center gap-2 px-5 py-2.5 bg-[#412460] text-xs font-semibold text-white hover:bg-[#412460]/85 transition-all duration-200"
+        >
+          Next →
+        </button>
 
-
-            </div>
-          </motion.div>
-
+        <div className="flex items-center gap-1.5 ml-3">
+          {STEPS.map((_, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => goTo(i)}
+              className={`transition-all duration-200 ${
+                i === active ? "w-5 h-1.5 bg-[#412460]" : "w-1.5 h-1.5 bg-[#412460]/20 hover:bg-[#412460]/50"
+              }`}
+            />
+          ))}
         </div>
       </div>
     </section>

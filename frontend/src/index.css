@@ -2,6 +2,10 @@
 
 @source "../../tailwind.config.js";
 
+html, body, #root {
+  background-color: #2A1740;
+}
+
 @theme {
   --color-primary-50: #F5F3F0;
   --color-primary-100: #E8E0D6;
@@ -17,7 +21,8 @@
 
   --color-cz-main: #412460;
   --color-cz-ink: #2D2D2D;
-  --color-cz-paper: #E5E1DA;
+  --color-cz-paper: #E8E6E2;
+  --color-cz-login-panel: #2A1740;
   --color-cz-secondary-light: #B99353;
   --color-cz-secondary-dark: #B99353;
 
@@ -214,7 +219,8 @@
 :root {
   --cz-main: #512d70;
   --cz-ink: #3e3d3d;
-  --cz-paper: #E5E1DA;
+  --cz-paper: #E8E6E2;
+  --cz-login-panel: #2A1740;
   --cz-secondary-light: #b99353;
   --cz-secondary-dark: #ededed;
 
@@ -244,7 +250,6 @@ body {
 }
 ::-webkit-scrollbar-thumb:horizontal {
   background: rgba(45, 45, 45, 0.01);
-  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:horizontal:hover {
   background: rgba(45, 45, 45, 0.05);

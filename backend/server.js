@@ -8,6 +8,7 @@ const { errorHandler, notFoundHandler } = require('./middleware/validation');
 
 // Import routes
 const formsRoutes = require('./routes/forms');
+const customerAuthRoutes = require('./routes/customerAuth');
 const inventoryRoutes = require('./inventory/routes');
 const sequelize = require('./config/postgres');
 
@@ -103,6 +104,7 @@ app.get('/api/health', (req, res) => {
 
 // API Routes
 app.use('/api/forms', formsRoutes);
+app.use('/api/customer/auth', customerAuthRoutes);
 app.use('/api/inventory', inventoryRoutes);
 
 // Catch-all route — serve frontend index.html for non-API routes when dist exists

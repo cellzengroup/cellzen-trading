@@ -5,8 +5,8 @@ export default function Section6() {
   const [ref, visible] = useScrollReveal(0.15);
 
   return (
-    <section ref={ref} className="relative py-24 overflow-hidden bg-gradient-to-br from-cz-main via-[#553278] to-[#2e1845]">
-      {/* Animated gradient orbs */}
+    <section ref={ref} className="relative py-24 overflow-hidden bg-[#2A1740]">
+      {/* Soft background orbs */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-[600px] w-[600px] rounded-full bg-cz-secondary-light/5 blur-[120px] animate-pulse-slow" />
       <div className="absolute top-0 right-0 h-[300px] w-[300px] rounded-full bg-cz-main/20 blur-[80px] animate-pulse-slow" style={{ animationDelay: "3s" }} />
 
@@ -21,11 +21,11 @@ export default function Section6() {
         <blockquote
           className={`mt-8 premium-font-galdgdersemi text-2xl leading-relaxed text-white sm:text-3xl lg:text-4xl transition-all duration-1000 delay-200 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}
         >
-          To make global trade simple, affordable, and accessible for every business \u2014 no matter the size.
+          We make global trade simpler, more affordable, and easier to access for businesses of every size.
         </blockquote>
 
         <div className={`mt-8 transition-all duration-700 delay-500 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"}`}>
-          <div className="inline-block h-px w-24 bg-gradient-to-r from-transparent via-cz-secondary-light to-transparent" />
+          <div className="inline-block h-px w-24 bg-cz-secondary-light/70" />
           <p className="mt-4 text-sm font-semibold uppercase tracking-[0.3em] text-cz-secondary-light">
             Our Mission
           </p>
@@ -64,9 +64,9 @@ export default function Section6() {
           ].map((v, i) => (
             <div
               key={v.title}
-              className="group rounded-xl border border-white/10 bg-white/5 p-6 backdrop-blur-sm transition-all duration-300 hover:border-cz-secondary-light/30 hover:bg-white/10 hover:scale-105 cursor-default"
+              className="group rounded-xl border border-white/15 bg-white/[0.08] p-6 shadow-[0_18px_45px_rgba(0,0,0,0.18)] backdrop-blur-2xl transition-all duration-300 hover:border-cz-secondary-light/35 hover:bg-white/[0.14] hover:shadow-[0_22px_55px_rgba(0,0,0,0.24)] hover:scale-105 cursor-default"
             >
-              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-cz-secondary-light/10 text-cz-secondary-light transition-all duration-300 group-hover:bg-cz-secondary-light group-hover:text-white group-hover:shadow-lg">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-white/10 text-cz-secondary-light shadow-inner backdrop-blur-xl transition-all duration-300 group-hover:bg-cz-secondary-light group-hover:text-white group-hover:shadow-lg">
                 {v.icon}
               </div>
               <h4 className="font-bold text-white">{v.title}</h4>

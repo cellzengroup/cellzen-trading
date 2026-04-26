@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from "react";
 import axios from "axios";
-import Footer from "../components/ui/Footer";
+import Footer from "../components/Footer";
 import CountrySelector from "../components/ui/CountrySelector";
 import { countries } from "../components/countries";
 
@@ -71,9 +71,7 @@ export default function Contact() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-white" style={{ width: "100vw", marginLeft: "calc(-50vw + 50%)", marginTop: "-2rem", marginBottom: "-2rem" }}>
-      <main className="flex-grow">
-
+    <>
         {/* ═══ SECTION 1 — Hero ═══ */}
         <section className="bg-white pt-24 pb-16 sm:pt-28 sm:pb-20">
           <div className="mx-auto max-w-6xl px-4 sm:px-6">
@@ -91,7 +89,7 @@ export default function Contact() {
                 </p>
 
                 {/* Contact Info Grid */}
-                <div className="mt-8 sm:mt-10 grid grid-cols-1 xs:grid-cols-2 gap-6 sm:gap-8">
+                <div className="mt-8 sm:mt-10 grid grid-cols-2 gap-6 sm:gap-8">
                   {/* Contacts */}
                   <div>
                     <h4 className="text-xs font-bold uppercase tracking-wider text-[#2D2D2D]">Contacts</h4>
@@ -269,7 +267,6 @@ export default function Contact() {
         </section>
 
         <Footer />
-      </main>
-    </div>
+    </>
   );
 }

@@ -2,43 +2,49 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import RateToggle from "./RateToggle";
 
-function isSectionDark(el) {
-  if (!el) return true;
-  const bg = el.style?.background || el.style?.backgroundColor || "";
-  const cls = el.className || "";
+function isSectionDark(elements) {
+  if (!elements || elements.length === 0) return true;
   const darkKeywords = ["#2A1740", "#412460", "#2e1845", "#553278", "cz-main"];
-  if (darkKeywords.some(k => bg.includes(k) || cls.includes(k))) return true;
-  const lightKeywords = ["bg-white", "bg-cz-paper", "bg-[#E5E1DA]"];
-  if (lightKeywords.some(k => cls.includes(k))) return false;
-  const computed = window.getComputedStyle(el).backgroundColor;
-  if (computed) {
-    const match = computed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-    if (match) {
-      const brightness = (parseInt(match[1]) * 299 + parseInt(match[2]) * 587 + parseInt(match[3]) * 114) / 1000;
-      return brightness < 128;
+  const lightKeywords = ["#E5E1DA", "#EAE8E5", "#ffffff", "bg-white", "bg-cz-paper"];
+  for (const el of elements) {
+    const inlineStyle = (el.style?.backgroundColor || el.style?.background || "").trim();
+    const bgCls = (el.className || "").split(/\s+/).filter(c => /^bg-/.test(c)).join(" ");
+    if (darkKeywords.some(k => inlineStyle.includes(k) || bgCls.includes(k))) return true;
+    if (lightKeywords.some(k => inlineStyle.includes(k) || bgCls.includes(k))) return false;
+    const computed = window.getComputedStyle(el).backgroundColor;
+    if (computed && computed !== "rgba(0, 0, 0, 0)" && computed !== "transparent") {
+      const match = computed.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (match) {
+        const brightness = (parseInt(match[1]) * 299 + parseInt(match[2]) * 587 + parseInt(match[3]) * 114) / 1000;
+        return brightness < 128;
+      }
     }
   }
   return true;
 }
 
 const NAV_LINKS = [
-  { label: "Home",    to: "/" },
-  { label: "About",   to: "/#about" },
-  { label: "Partner", to: "/#partner" },
-  { label: "FAQs",    to: "/#faq" },
-  { label: "Contact", to: "/contact" },
+  { label: "Home", to: "/" },
+  { label: "About", to: "/about" },
+  { label: "Shipments", to: "/shipments" },
+  { label: "Tracking", to: "/tracking" },
+  { label: "Portfolio", to: "/portfolio" },
+  { label: "Notices", to: "/notices" },
 ];
 
 export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChange, onLogout, visible = true }) {
   const location = useLocation();
   const isLanding = location.pathname === "/";
   const isContact = location.pathname === "/contact";
-  const [dark, setDark] = useState(isLanding && !isContact);
+  const [dark, setDark] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const headerRef = useRef(null);
 
+    const DARK_HERO = ["/", "/about", "/shipments", "/tracking", "/portfolio", "/notices", "/faq", "/support", "/help-center"];
+
   const detectBackground = useCallback(() => {
     if (isContact) { setDark(false); return; }
+    if (DARK_HERO.includes(location.pathname) && window.scrollY < 80) { setDark(true); return; }
     const headerEl = headerRef.current;
     if (!headerEl) { setDark(isLanding); return; }
     const headerBottom = headerEl.getBoundingClientRect().bottom;
@@ -46,16 +52,14 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
     const probeY = headerBottom + 2;
     headerEl.style.pointerEvents = "none";
     headerEl.style.visibility = "hidden";
-    const el = document.elementFromPoint(probeX, probeY);
+    const elements = document.elementsFromPoint(probeX, probeY);
     headerEl.style.pointerEvents = "";
     headerEl.style.visibility = "";
-    if (!el) { setDark(isLanding); return; }
-    const section = el.closest("section") || el;
-    setDark(isSectionDark(section));
-  }, [isLanding, isContact]);
+    if (!elements || elements.length === 0) { setDark(isLanding); return; }
+    setDark(isSectionDark(elements));
+  }, [isLanding, isContact, location.pathname]);
 
   useEffect(() => {
-    setDark(isLanding);
     detectBackground();
     window.addEventListener("scroll", detectBackground, { passive: true });
     return () => window.removeEventListener("scroll", detectBackground);
@@ -72,7 +76,7 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
   return (
     <header
       ref={headerRef}
-      className="sticky top-0 z-50 transition-all duration-700 ease-out px-4 pt-3"
+      className="sticky top-0 z-50 transition-all duration-700 ease-out px-4 py-3"
       style={{
         backgroundColor: "transparent",
         transform: visible ? "translateY(0)" : "translateY(-120%)",
@@ -111,9 +115,14 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
           {!isAdmin ? (
             <nav className={`hidden md:flex flex-nowrap items-center justify-center gap-8 text-sm font-medium whitespace-nowrap transition-colors duration-500 ${textColor}`}>
               {NAV_LINKS.map(({ label, to }) => (
-                <Link key={label} to={to} className={`transition-colors duration-300 ${hoverColor}`}>
+                <NavLink
+                  key={label}
+                  to={to}
+                  end={to === "/"}
+                  className={({ isActive }) => `transition-colors duration-300 ${isActive ? "text-[#B99353]" : hoverColor}`}
+                >
                   {label}
-                </Link>
+                </NavLink>
               ))}
             </nav>
           ) : (
@@ -161,10 +170,10 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
             </>
           ) : (
             <Link
-              to="/admin/login"
+              to="/contact"
               className="hidden sm:flex rounded-full bg-[#B99353] px-5 py-2 text-sm font-semibold text-white transition-colors duration-300 items-center gap-2 hover:bg-[#B99353]/85"
             >
-              Get Started
+              Get a Quote
             </Link>
           )}
 
@@ -201,25 +210,26 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
           >
             <nav className="flex flex-col">
               {NAV_LINKS.map(({ label, to }, i) => (
-                <Link
+                <NavLink
                   key={label}
                   to={to}
+                  end={to === "/"}
                   onClick={() => setMenuOpen(false)}
-                  className={`px-4 py-3 text-sm font-medium rounded-xl transition-colors duration-200
-                    ${dark ? "text-white/80 hover:text-white hover:bg-white/10" : "text-[#2D2D2D]/70 hover:text-[#2D2D2D] hover:bg-[#2D2D2D]/6"}
+                  className={({ isActive }) => `px-4 py-3 text-sm font-medium rounded-xl transition-colors duration-200
+                    ${isActive ? "text-[#B99353]" : dark ? "text-white/80 hover:text-white hover:bg-white/10" : "text-[#2D2D2D]/70 hover:text-[#2D2D2D] hover:bg-[#2D2D2D]/6"}
                     ${i < NAV_LINKS.length - 1 ? (dark ? "border-b border-white/5" : "border-b border-[#2D2D2D]/5") : ""}
                   `}
                 >
                   {label}
-                </Link>
+                </NavLink>
               ))}
               <div className="pt-3 pb-1 px-1">
                 <Link
-                  to="/admin/login"
+                  to="/contact"
                   onClick={() => setMenuOpen(false)}
                   className="block w-full text-center rounded-full bg-[#B99353] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#B99353]/85"
                 >
-                  Get Started
+                  Get a Quote
                 </Link>
               </div>
             </nav>

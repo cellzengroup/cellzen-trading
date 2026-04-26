@@ -14,7 +14,7 @@ export default function ProtectedRoute({ children }) {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/inventorymanagement/login" replace />;
+    return <Navigate to="/admin-login" replace />;
   }
 
   return children;

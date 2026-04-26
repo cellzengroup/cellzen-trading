@@ -5,6 +5,91 @@ const { authenticate, generateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
+const ADMIN_CREDENTIALS = [
+  {
+    identifier: 'CellzenTrading',
+    email: 'admin@cellzentrading.com',
+    username: 'CellzenTrading',
+    password: 'Cellzen2025@',
+    name: 'Cellzen Trading Admin',
+    role: 'superadmin',
+  },
+  {
+    identifier: 'ersubodhpokhrel@gmail.com',
+    email: 'ersubodhpokhrel@gmail.com',
+    username: 'ersubodhpokhrel',
+    password: 'Subodh2060@',
+    name: 'Subodh Pokhrel',
+    role: 'superadmin',
+  },
+];
+
+const buildAdminUserPayload = (matched, hashedPassword) => ({
+  name: matched.name,
+  firstName: matched.name.split(' ')[0],
+  lastName: matched.name.split(' ').slice(1).join(' '),
+  username: matched.username,
+  email: matched.email,
+  password: hashedPassword,
+  role: matched.role,
+  accountType: 'Admin',
+});
+
+// POST /admin-login
+router.post('/admin-login', async (req, res) => {
+  try {
+    const { identifier, password } = req.body;
+
+    if (!identifier || !password) {
+      return res.status(400).json({ success: false, message: 'ID/email and password are required' });
+    }
+
+    const matched = ADMIN_CREDENTIALS.find((credential) => {
+      const normalizedIdentifier = identifier.trim().toLowerCase();
+      return (
+        (credential.identifier.toLowerCase() === normalizedIdentifier
+          || credential.email.toLowerCase() === normalizedIdentifier
+          || credential.username.toLowerCase() === normalizedIdentifier)
+        && credential.password === password
+      );
+    });
+
+    if (!matched) {
+      return res.status(401).json({ success: false, message: 'Invalid admin credentials' });
+    }
+
+    let user = await User.findOne({ where: { email: matched.email } });
+
+    if (!user) {
+      const hashedPassword = await bcrypt.hash(matched.password, 10);
+      user = await User.create(buildAdminUserPayload(matched, hashedPassword));
+    } else if (
+      user.name !== matched.name
+      || user.username !== matched.username
+      || user.role !== matched.role
+      || user.accountType !== 'Admin'
+    ) {
+      await user.update({
+        name: matched.name,
+        username: matched.username,
+        role: matched.role,
+        accountType: 'Admin',
+      });
+    }
+
+    const token = generateToken(user);
+
+    res.json({
+      success: true,
+      token,
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    });
+  } catch (error) {
+    console.error('Admin login error:', error);
+    res.status(500).json({ success: false, message: 'Admin login failed' });
+  }
+});
+
 // POST /register
 router.post('/register', async (req, res) => {
   try {

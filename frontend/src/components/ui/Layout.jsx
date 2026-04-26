@@ -2,6 +2,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import Header from '../Header';
 
+
+const PAGE_BG = {
+  '/contact':     '#ffffff',
+  '/help-center': '#2A1740',
+  '/privacy':     '#E5E1DA',
+  '/terms':       '#E5E1DA',
+};
+
 const Layout = ({ children }) => {
   const location = useLocation();
   const isLanding = location.pathname === '/';
@@ -58,7 +66,7 @@ const Layout = ({ children }) => {
   }, [handleScroll]);
 
   return (
-    <div className="min-h-screen w-full flex flex-col" style={{ backgroundColor: isContact ? '#FFFFFF' : '#2A1740' }}>
+    <div className="min-h-screen w-full flex flex-col" style={{ backgroundColor: PAGE_BG[location.pathname] ?? '#2A1740' }}>
       <Header visible={headerVisible} />
 
       {/* Main content */}

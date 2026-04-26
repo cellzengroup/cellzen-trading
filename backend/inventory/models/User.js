@@ -12,6 +12,19 @@ const User = sequelize
         type: DataTypes.STRING,
         allowNull: false,
       },
+      firstName: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      lastName: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      username: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        unique: true,
+      },
       email: {
         type: DataTypes.STRING,
         allowNull: false,
@@ -25,6 +38,18 @@ const User = sequelize
       role: {
         type: DataTypes.STRING,
         defaultValue: 'admin',
+      },
+      accountType: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      country: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      phone: {
+        type: DataTypes.STRING,
+        allowNull: true,
       },
     }, {
       tableName: 'users',

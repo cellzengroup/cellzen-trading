@@ -1,145 +1,375 @@
-import React, { useState } from "react";
-import useScrollReveal from "./useScrollReveal";
+import { useRef, useState, Suspense, useEffect } from "react";
+import { motion, useScroll, useTransform, useSpring } from "framer-motion";
+import WorldMap from "../world-map";
+import { Canvas } from "@react-three/fiber";
+import { useGLTF, OrbitControls } from "@react-three/drei";
+import * as THREE from "three";
 
-const STEPS = [
+useGLTF.preload("/Images/earth.glb");
+
+const MARKETS = [
   {
-    num: "01",
-    title: "You tell us what you need",
-    desc: "Share your product requirements \u2014 type, quantity, specifications, and quality standards.",
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-      </svg>
-    ),
+    flag: "🇨🇳", country: "China", role: "Sourcing Hub",
+    desc: "Direct access to thousands of verified factories across all major manufacturing regions — Guangdong, Zhejiang, Jiangsu, and beyond.",
+    stats: [{ label: "Factory Partners", value: "200+" }, { label: "Product Categories", value: "50+" }],
   },
   {
-    num: "02",
-    title: "We source from Chinese factories",
-    desc: "We contact verified manufacturers, compare options, and negotiate on your behalf.",
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-      </svg>
-    ),
+    flag: "🇳🇵", country: "Nepal", role: "Growing Market",
+    desc: "Connecting Nepalese businesses with Chinese manufacturers, handling all logistics and customs clearance end-to-end.",
+    stats: [{ label: "Customs Support", value: "Full" }, { label: "Pricing", value: "Best Rate" }],
   },
   {
-    num: "03",
-    title: "We send you a detailed quote",
-    desc: "Includes product cost, shipping, and all applicable fees \u2014 no hidden charges.",
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-      </svg>
-    ),
+    flag: "🇮🇳", country: "India", role: "Strategic Hub",
+    desc: "Expanding partnerships with Indian manufacturers and distributors — a key bridge for our South Asian trade operations.",
+    stats: [{ label: "Partner Mills", value: "30+" }, { label: "Trade Routes", value: "Active" }],
   },
   {
-    num: "04",
-    title: "You approve and we place the order",
-    desc: "We confirm with the factory and manage production on your behalf.",
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-    ),
-  },
-  {
-    num: "05",
-    title: "We handle shipping and delivery",
-    desc: "From China to your door in Australia or Nepal \u2014 including freight, customs, and delivery.",
-    icon: (
-      <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 16V6a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h1m8-1a1 1 0 01-1 1H9m4-1V8a1 1 0 011-1h2.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V16a1 1 0 01-1 1h-1m-6-1a1 1 0 001 1h1M5 17a2 2 0 104 0m-4 0a2 2 0 114 0m6 0a2 2 0 104 0m-4 0a2 2 0 114 0" />
-      </svg>
-    ),
+    flag: "🇦🇺", country: "Australia", role: "Active Market",
+    desc: "Serving Australian businesses with reliable, cost-effective sourcing. Sea, air, or express delivery options available.",
+    stats: [{ label: "Delivery Options", value: "3" }, { label: "Transit Time", value: "10–25d" }],
   },
 ];
 
-export default function Section3() {
-  const [ref, visible] = useScrollReveal(0.1);
-  const [activeStep, setActiveStep] = useState(0);
+const TABS = [
+  { tab: "Global Reach", cardTitle: "A Worldwide Sourcing Network", desc: "We connect businesses around the world with trusted manufacturers. Our team handles everything — sourcing, negotiation, quality checks, and logistics — so you can focus on growing your business." },
+  { tab: "Our Markets", cardTitle: "A Trusted Global Partner", desc: "Strategically positioned across 10+ countries with fully integrated operations. We deliver quality products at competitive prices, with full transparency and reliable delivery every step of the way." },
+];
+
+// Final resting position for each card in the stack
+// index 0 = first to enter = bottom of stack (most buried)
+// index 3 = last to enter  = top of stack (most prominent)
+// Diagonal cascade: card 01 at top-left, card 04 at bottom-right.
+// Each card settles with a slight tilt for a natural "tossed-stack" feel.
+const STACK_POS = [
+  { rotate: -3,   y: -120, x: -40 },
+  { rotate:  2,   y:  -40, x: -35 },
+  { rotate: -1.5, y:   20, x:   0 },
+  { rotate:  2.5, y:   85, x:  20 },
+];
+
+// Scroll thresholds — Australia ends at 0.80 with a wide span, leaving 0.20 (20% =
+// ~112vh of scroll) of buffer for the spring to fully settle before the section unpins.
+// Cards finish stacking by 0.60 — leaves a short pause (0.60–0.64) to view the full
+// stack, then the next section (Section4) slides up as a reveal over progress 0.64–0.82.
+const CARD_ENTRY = [
+  { start: 0.02, end: 0.14 },
+  { start: 0.16, end: 0.28 },
+  { start: 0.30, end: 0.42 },
+  { start: 0.44, end: 0.60 },
+];
+
+/* ─────────────────────────────────────────── */
+/*  Earth Globe                                */
+/* ─────────────────────────────────────────── */
+function EarthModel() {
+  const { scene } = useGLTF("/Images/earth.glb");
+  useEffect(() => {
+    if (!scene) return;
+    const box = new THREE.Box3().setFromObject(scene);
+    const center = new THREE.Vector3();
+    const size   = new THREE.Vector3();
+    box.getCenter(center);
+    box.getSize(size);
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const scale  = 2.0 / maxDim;
+    scene.scale.setScalar(scale);
+    scene.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+  }, [scene]);
+  return <primitive object={scene} />;
+}
+
+function GlobeCanvas() {
+  return (
+    <div className="w-full max-w-[560px] mx-auto" style={{ aspectRatio: "1 / 1" }}>
+      <Canvas
+        camera={{ position: [0, 0, 3.8], fov: 40, near: 0.1, far: 100 }}
+        gl={{ antialias: true, alpha: true }}
+        style={{ background: "transparent", width: "100%", height: "100%" }}
+      >
+        <ambientLight intensity={0.4} color="#412460" />
+        <directionalLight position={[4, 3, 4]} intensity={1.6} />
+        <directionalLight position={[-4, -2, -4]} intensity={0.8} color="#412460" />
+        <Suspense fallback={null}>
+          <EarthModel />
+        </Suspense>
+        <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={1.0} />
+      </Canvas>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────── */
+/*  Globe Section                              */
+/* ─────────────────────────────────────────── */
+function GlobeSection() {
+  const [activeTab, setActiveTab] = useState(0);
 
   return (
-    <section ref={ref} id="how-it-works" className="relative bg-white py-16 sm:py-24 overflow-hidden">
-      <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-cz-main via-cz-secondary-light to-cz-main opacity-20" />
+    <section style={{ backgroundColor: "#EAE8E5" }} className="py-20 sm:py-28 lg:py-32">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6">
+        <div className="grid gap-8 lg:gap-12 grid-cols-1 lg:grid-cols-2 items-center">
 
-      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6">
-        <div className={`text-center transition-all duration-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
-          <span className="inline-block rounded-full bg-cz-secondary-light/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-widest text-cz-secondary-light">
-            Simple Process
-          </span>
-          <h2 className="mt-4 premium-font-galdgderbold text-3xl text-cz-ink sm:text-4xl lg:text-5xl">
-            How It Works
-          </h2>
-          <p className="mx-auto mt-4 max-w-2xl text-base text-cz-ink/60">
-            Our process is simple, transparent, and built around your needs.
-          </p>
-        </div>
+          <motion.div
+            className="flex justify-center items-center order-2 lg:order-1"
+            initial={{ opacity: 0, x: -30 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, amount: 0.3 }}
+            transition={{ duration: 0.7 }}
+          >
+            <GlobeCanvas />
+          </motion.div>
 
-        <div className="mt-10 sm:mt-16 grid gap-8 sm:gap-12 lg:grid-cols-[280px_1fr] items-start">
-          {/* Step navigator */}
-          <div className="hidden lg:flex flex-col gap-2">
-            {STEPS.map((s, i) => (
-              <button
-                key={s.num}
-                type="button"
-                onClick={() => setActiveStep(i)}
-                className={`group flex items-center gap-3 rounded-xl px-4 py-3 text-left transition-all duration-300 ${activeStep === i ? "bg-cz-main text-white shadow-lg shadow-cz-main/20" : "hover:bg-cz-main/5 text-cz-ink/60 hover:text-cz-ink"} ${visible ? "opacity-100 translate-x-0" : "opacity-0 -translate-x-8"}`}
-                style={{ transitionDelay: `${300 + i * 100}ms` }}
-              >
-                <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-xs font-bold transition-colors duration-300 ${activeStep === i ? "bg-white/20" : "bg-cz-main/10 text-cz-main"}`}>
-                  {s.num}
-                </span>
-                <span className="text-sm font-medium truncate">{s.title}</span>
-              </button>
-            ))}
-          </div>
-
-          {/* Step cards - mobile shows all, desktop shows active */}
-          <div className="space-y-4 lg:space-y-0">
-            {STEPS.map((s, i) => {
-              const isActive = activeStep === i;
-              return (
-                <div
-                  key={s.num}
-                  className={`rounded-2xl border transition-all duration-500 cursor-pointer ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"} ${isActive ? "border-cz-main/20 bg-gradient-to-br from-cz-main/5 to-cz-secondary-light/5 shadow-lg lg:block" : "border-cz-ink/5 bg-white lg:hidden"}`}
-                  style={{ transitionDelay: `${400 + i * 100}ms` }}
-                  onClick={() => setActiveStep(i)}
+          <motion.div
+            className="order-1 lg:order-2"
+            initial={{ opacity: 0, y: 30 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, amount: 0.3 }}
+            transition={{ duration: 0.7, delay: 0.1 }}
+          >
+            <h3 className="premium-font-galdgderbold text-2xl text-cz-main sm:text-3xl lg:text-[2.6rem] leading-[1.15]">
+              We Are Connecting Global Business Success With{" "}
+              <span className="text-[#B99353]">Trading</span>
+            </h3>
+            <p className="mt-4 sm:mt-5 text-sm leading-[1.9] text-[#2D2D2D]/55">
+              Strategically positioned across 10+ countries through fully integrated sourcing
+              operations — a single point of contact for your global supply chain needs.
+            </p>
+            <div className="mt-6 sm:mt-8 flex">
+              {TABS.map((t, i) => (
+                <button
+                  key={t.tab}
+                  type="button"
+                  onClick={() => setActiveTab(i)}
+                  className={`flex-1 py-3 sm:py-3.5 text-xs font-bold uppercase tracking-wider transition-all duration-300 ${activeTab === i ? "bg-[#412460] text-white" : "bg-[#412460]/10 text-[#412460]/60 hover:text-[#412460]"}`}
+                  style={{ borderRadius: 0 }}
                 >
-                  <div className="p-6 sm:p-8">
-                    <div className="flex items-start gap-5">
-                      <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl transition-all duration-300 ${isActive ? "bg-cz-main text-white shadow-lg shadow-cz-main/20 scale-110" : "bg-cz-main/10 text-cz-main"}`}>
-                        {s.icon}
-                      </div>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-3 mb-2">
-                          <span className="rounded-md bg-cz-secondary-light/10 px-2 py-0.5 text-xs font-bold text-cz-secondary-light">
-                            Step {s.num}
-                          </span>
-                        </div>
-                        <h3 className="text-lg font-bold text-cz-ink">{s.title}</h3>
-                        <p className="mt-2 text-sm leading-relaxed text-cz-ink/60">{s.desc}</p>
-                      </div>
-                    </div>
+                  {t.tab}
+                </button>
+              ))}
+            </div>
+            <div className="bg-[#412460]/5 border border-[#412460]/10 border-t-0 overflow-hidden">
+              <div className="p-5 sm:p-8">
+                <h4 className="font-bold text-[#412460] text-base sm:text-lg leading-tight">{TABS[activeTab].cardTitle}</h4>
+                <p className="mt-2.5 text-xs leading-relaxed text-[#2D2D2D]/50">{TABS[activeTab].desc}</p>
+              </div>
+            </div>
+          </motion.div>
 
-                    {/* Progress bar */}
-                    {isActive && (
-                      <div className="mt-6 flex items-center gap-2">
-                        {STEPS.map((_, j) => (
-                          <div key={j} className="h-1 flex-1 rounded-full bg-cz-ink/10 overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all duration-500 ${j <= i ? "bg-cz-main w-full" : "bg-transparent w-0"}`}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
         </div>
       </div>
     </section>
+  );
+}
+
+/* ─────────────────────────────────────────── */
+/*  Single stacking market card                */
+/* ─────────────────────────────────────────── */
+function MarketStackCard({ m, index, progress }) {
+  const pos   = STACK_POS[index];
+  const entry = CARD_ENTRY[index];
+
+  const rawY      = useTransform(progress, [entry.start, entry.end], [1100, pos.y],     { clamp: true });
+  const rawX      = useTransform(progress, [entry.start, entry.end], [60,   pos.x],     { clamp: true });
+  const rawRotate = useTransform(progress, [entry.start, entry.end], [12,   pos.rotate], { clamp: true });
+
+  // Stiff spring → settles ~0.13s. Combined with the 20% scroll buffer after
+  // Australia's entry, the card is guaranteed to reach its final position and full
+  // opacity before the section unpins.
+  const spring = { stiffness: 260, damping: 30, mass: 0.5 };
+  const y      = useSpring(rawY,      spring);
+  const x      = useSpring(rawX,      spring);
+  const rotate = useSpring(rawRotate, spring);
+
+  // Alternating card treatments: solid purple (0, 2) vs. frosted glass (1, 3)
+  const isGlass = index % 2 === 1;
+
+  const cardStyle = isGlass
+    ? {
+        y, x, rotate, zIndex: index + 1,
+        background: "rgba(255,255,255,0.85)",
+        backdropFilter: "blur(16px) saturate(120%)",
+        WebkitBackdropFilter: "blur(16px) saturate(120%)",
+        border: "1px solid rgba(255,255,255,0.7)",
+        boxShadow: "0 20px 56px rgba(65,36,96,0.22), 0 4px 12px rgba(0,0,0,0.08)",
+        isolation: "isolate",
+      }
+    : {
+        y, x, rotate, zIndex: index + 1,
+        backgroundColor: "#412460",
+        boxShadow: "0 24px 64px rgba(65,36,96,0.35), 0 8px 24px rgba(0,0,0,0.2)",
+        isolation: "isolate",
+      };
+
+  // Color tokens flip based on variant — all at 100% opacity now
+  const watermarkCls    = isGlass ? "text-[#412460]/10"     : "text-white/[0.04]";
+  const dotColor        = isGlass ? "#412460"               : "#fff";
+  const indexCls        = isGlass ? "text-[#412460]"        : "text-[#B99353]";
+  const roleCls         = isGlass ? "text-[#412460] bg-[#412460]/15" : "text-[#B99353] bg-[#B99353]/25";
+  const titleCls        = isGlass ? "text-[#412460]"        : "text-white";
+  const descCls         = isGlass ? "text-[#2D2D2D]"        : "text-white";
+  const statBoxCls      = isGlass ? "bg-[#412460]/10"       : "bg-white/15";
+  const statLabelCls    = isGlass ? "text-[#2D2D2D]"        : "text-white";
+
+  return (
+    <motion.div
+      style={cardStyle}
+      className={`absolute w-[260px] sm:w-[320px] overflow-hidden ${isGlass ? "" : "bg-[#412460]"}`}
+    >
+      {/* Ghost number watermark */}
+      <div
+        className={`absolute -top-3 -left-1 font-black leading-none select-none pointer-events-none ${watermarkCls}`}
+        style={{ fontSize: "clamp(72px, 10vw, 104px)" }}
+      >
+        {String(index + 1).padStart(2, "0")}
+      </div>
+
+      {/* Dot grid */}
+      <div
+        className="absolute inset-0 opacity-[0.06] pointer-events-none"
+        style={{
+          backgroundImage: `radial-gradient(circle, ${dotColor} 1px, transparent 1px)`,
+          backgroundSize: "20px 20px",
+        }}
+      />
+
+      <div className="relative z-10 flex flex-col p-6 sm:p-7" style={{ minHeight: "400px" }}>
+
+        {/* Role badge */}
+        <div className="flex justify-between items-start mb-6">
+          <span className={`text-[10px] font-black uppercase tracking-[0.18em] ${indexCls}`}>
+            {String(index + 1).padStart(2, "0")}.
+          </span>
+          <span className={`text-[9px] font-bold uppercase tracking-widest px-2.5 py-1 ${roleCls}`}>
+            {m.role}
+          </span>
+        </div>
+
+        {/* Country */}
+        <h3 className={`premium-font-galdgderbold text-[1.9rem] sm:text-[2.3rem] leading-tight mb-2 ${titleCls}`}>
+          {m.country}
+        </h3>
+
+        {/* Description */}
+        <p className={`text-[12px] leading-relaxed mb-5 ${descCls}`} style={{ display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+          {m.desc}
+        </p>
+
+        {/* Gold accent line */}
+        <div className="w-8 h-[2px] bg-[#B99353] mb-4" />
+
+        {/* Stats */}
+        <div className="flex gap-2 mt-auto">
+          {m.stats.map(stat => (
+            <div key={stat.label} className={`flex-1 p-2.5 ${statBoxCls}`}>
+              <div className="text-sm font-bold text-[#B99353] leading-none mb-1">{stat.value}</div>
+              <div className={`text-[8px] uppercase tracking-wider leading-tight ${statLabelCls}`}>{stat.label}</div>
+            </div>
+          ))}
+        </div>
+
+      </div>
+    </motion.div>
+  );
+}
+
+/* ─────────────────────────────────────────── */
+/*  Markets We Serve — sticky scroll section   */
+/* ─────────────────────────────────────────── */
+function MarketsSection() {
+  const containerRef = useRef(null);
+
+  const { scrollYProgress } = useScroll({
+    target: containerRef,
+    offset: ["start start", "end end"],
+  });
+
+  const headingOpacity = useTransform(scrollYProgress, [0.02, 0.09], [0, 1]);
+
+  // Pin indicators: each fades 0→1 when its card's entry starts and 1→0 when the next
+  // card's entry starts, so only the currently-active country's pin is ever visible.
+  // Raw values track scroll precisely; springs smooth the on/off transitions.
+  const pinSpring = { stiffness: 90, damping: 22, mass: 0.9 };
+  const pinCnRaw = useTransform(
+    scrollYProgress,
+    [CARD_ENTRY[0].start, CARD_ENTRY[0].start + 0.04, CARD_ENTRY[1].start, CARD_ENTRY[1].start + 0.04],
+    [0, 1, 1, 0],
+    { clamp: true }
+  );
+  const pinNpRaw = useTransform(
+    scrollYProgress,
+    [CARD_ENTRY[1].start, CARD_ENTRY[1].start + 0.04, CARD_ENTRY[2].start, CARD_ENTRY[2].start + 0.04],
+    [0, 1, 1, 0],
+    { clamp: true }
+  );
+  const pinInRaw = useTransform(
+    scrollYProgress,
+    [CARD_ENTRY[2].start, CARD_ENTRY[2].start + 0.04, CARD_ENTRY[3].start, CARD_ENTRY[3].start + 0.04],
+    [0, 1, 1, 0],
+    { clamp: true }
+  );
+  // Australia is the last card — no next card to hand off to, stays visible.
+  const pinAuRaw = useTransform(
+    scrollYProgress,
+    [CARD_ENTRY[3].start, CARD_ENTRY[3].start + 0.04],
+    [0, 1],
+    { clamp: true }
+  );
+  const pinCn = useSpring(pinCnRaw, pinSpring);
+  const pinNp = useSpring(pinNpRaw, pinSpring);
+  const pinIn = useSpring(pinInRaw, pinSpring);
+  const pinAu = useSpring(pinAuRaw, pinSpring);
+
+  return (
+    <section ref={containerRef} className="relative" style={{ height: "560vh" }}>
+      <div
+        className="sticky top-0 h-screen overflow-hidden flex flex-col sm:flex-row items-stretch"
+        style={{ backgroundColor: "#EAE8E5" }}
+      >
+
+        {/* ── Full static world map — centered, no animation. Pins fade in per card via CSS vars. ── */}
+        <motion.div
+          style={{ "--pin-cn": pinCn, "--pin-np": pinNp, "--pin-in": pinIn, "--pin-au": pinAu }}
+          className="absolute inset-0 flex items-center justify-center pointer-events-none select-none z-0"
+        >
+          <WorldMap style={{ maxWidth: "100%", maxHeight: "100%", transform: "translateY(6%)" }} />
+        </motion.div>
+
+        {/* ── LEFT / TOP: card stack (overlays map) ── */}
+        <div className="relative z-10 flex items-center justify-center w-full sm:w-[42%] h-[55vh] sm:h-full overflow-hidden">
+          {MARKETS.map((m, i) => (
+            <MarketStackCard key={m.country} m={m} index={i} progress={scrollYProgress} />
+          ))}
+        </div>
+
+        {/* ── Spacer so the map's center is visible between cards and title ── */}
+        <div className="hidden sm:block flex-1" />
+
+        {/* ── RIGHT: vertical title ── */}
+        <motion.div
+          style={{ opacity: headingOpacity }}
+          className="hidden sm:flex relative z-10 h-full items-center justify-center w-[80px] lg:w-[96px] shrink-0"
+        >
+          <h2
+            className="premium-font-galdgderbold text-xl lg:text-3xl text-[#2D2D2D] whitespace-nowrap select-none"
+            style={{ writingMode: "vertical-rl", transform: "rotate(180deg)", letterSpacing: "0.12em" }}
+          >
+            Markets We Serve
+          </h2>
+        </motion.div>
+
+      </div>
+    </section>
+  );
+}
+
+/* ─────────────────────────────────────────── */
+/*  Export                                     */
+/* ─────────────────────────────────────────── */
+export default function Section4() {
+  return (
+    <>
+      <GlobeSection />
+      <MarketsSection />
+    </>
   );
 }
