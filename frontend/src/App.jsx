@@ -25,18 +25,18 @@ import AdminCustomers from './pages/auth/admin/admincustomers';
 import AdminReports from './pages/auth/admin/adminreports';
 import AdminNotifications from './pages/auth/admin/adminnotifications';
 import AdminSettings from './pages/auth/admin/adminsettings';
-import CustomersDashboard from './pages/auth/admin/customers/CustomersDashboard';
-import CustomersGoodsTracking from './pages/auth/admin/customers/CustomersGoodsTracking';
-import CustomersProducts from './pages/auth/admin/customers/CustomersProducts';
-import CustomersInvoices from './pages/auth/admin/customers/CustomersInvoices';
-import DistributorsDashboard from './pages/auth/admin/distributors/DistributorsDashboard';
-import DistributorsManagement from './pages/auth/admin/distributors/DistributorsManagement';
-import DistributorsGoodsTracking from './pages/auth/admin/distributors/DistributorsGoodsTracking';
-import DistributorsInvoices from './pages/auth/admin/distributors/DistributorsInvoices';
-import PartnersDashboard from './pages/auth/admin/partners/PartnersDashboard';
-import PartnersManagement from './pages/auth/admin/partners/PartnersManagement';
-import PartnersGoodsTracking from './pages/auth/admin/partners/PartnersGoodsTracking';
-import PartnersInvoices from './pages/auth/admin/partners/PartnersInvoices';
+import AdminCustomersDashboard from './pages/auth/admin/customers/CustomersDashboard';
+import AdminCustomersGoodsTracking from './pages/auth/admin/customers/CustomersGoodsTracking';
+import AdminCustomersProducts from './pages/auth/admin/customers/CustomersProducts';
+import AdminCustomersInvoices from './pages/auth/admin/customers/CustomersInvoices';
+import AdminDistributorsDashboard from './pages/auth/admin/distributors/DistributorsDashboard';
+import AdminDistributorsManagement from './pages/auth/admin/distributors/DistributorsManagement';
+import AdminDistributorsGoodsTracking from './pages/auth/admin/distributors/DistributorsGoodsTracking';
+import AdminDistributorsInvoices from './pages/auth/admin/distributors/DistributorsInvoices';
+import AdminPartnersDashboard from './pages/auth/admin/partners/PartnersDashboard';
+import AdminPartnersManagement from './pages/auth/admin/partners/PartnersManagement';
+import AdminPartnersGoodsTracking from './pages/auth/admin/partners/PartnersGoodsTracking';
+import AdminPartnersInvoices from './pages/auth/admin/partners/PartnersInvoices';
 import CostumersDashboard from './pages/tracking/trackingpage/costumers/costumersdashboard';
 import SupplierDashboard from './pages/tracking/trackingpage/suppliers/supplierdashboard';
 import LogisticsDashboard from './pages/tracking/trackingpage/logistics/logisticsdashboard';
@@ -122,22 +122,22 @@ function App() {
         <Route path="/admin-settings" element={<AdminSettings />} />
 
         {/* Customer Admin Panel Routes */}
-        <Route path="/admin/customers/dashboard" element={<CustomersDashboard />} />
-        <Route path="/admin/customers/goods-tracking" element={<CustomersGoodsTracking />} />
-        <Route path="/admin/customers/products" element={<CustomersProducts />} />
-        <Route path="/admin/customers/invoices" element={<CustomersInvoices />} />
+        <Route path="/admin/customers/dashboard" element={<AdminCustomersDashboard />} />
+        <Route path="/admin/customers/goods-tracking" element={<AdminCustomersGoodsTracking />} />
+        <Route path="/admin/customers/products" element={<AdminCustomersProducts />} />
+        <Route path="/admin/customers/invoices" element={<AdminCustomersInvoices />} />
 
         {/* Distributor Admin Panel Routes */}
-        <Route path="/admin/distributors/dashboard" element={<DistributorsDashboard />} />
-        <Route path="/admin/distributors/management" element={<DistributorsManagement />} />
-        <Route path="/admin/distributors/goods-tracking" element={<DistributorsGoodsTracking />} />
-        <Route path="/admin/distributors/invoices" element={<DistributorsInvoices />} />
+        <Route path="/admin/distributors/dashboard" element={<AdminDistributorsDashboard />} />
+        <Route path="/admin/distributors/management" element={<AdminDistributorsManagement />} />
+        <Route path="/admin/distributors/goods-tracking" element={<AdminDistributorsGoodsTracking />} />
+        <Route path="/admin/distributors/invoices" element={<AdminDistributorsInvoices />} />
 
         {/* Partners Admin Panel Routes */}
-        <Route path="/admin/partners/dashboard" element={<PartnersDashboard />} />
-        <Route path="/admin/partners/management" element={<PartnersManagement />} />
-        <Route path="/admin/partners/goods-tracking" element={<PartnersGoodsTracking />} />
-        <Route path="/admin/partners/invoices" element={<PartnersInvoices />} />
+        <Route path="/admin/partners/dashboard" element={<AdminPartnersDashboard />} />
+        <Route path="/admin/partners/management" element={<AdminPartnersManagement />} />
+        <Route path="/admin/partners/goods-tracking" element={<AdminPartnersGoodsTracking />} />
+        <Route path="/admin/partners/invoices" element={<AdminPartnersInvoices />} />
 
         <Route path="/login" element={<TrackingLogin initialMode="signin" />} />
         <Route path="/reset" element={<ResetPassword />} />
