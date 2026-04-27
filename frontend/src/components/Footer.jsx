@@ -32,20 +32,20 @@ const Footer = () => {
 
   return (
     <footer className="bg-[#2D2D2D] text-white">
-      <div className="mx-auto max-w-6xl px-6 pt-14 pb-6">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 pt-10 sm:pt-14 pb-6">
 
         {/* ── Top row: tagline + newsletter ── */}
-        <div className="flex flex-col gap-10 lg:flex-row lg:items-start lg:justify-between pb-12">
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between pb-8 sm:pb-12">
           {/* Tagline */}
-          <h2 className="premium-font-galdgderbold text-3xl sm:text-4xl lg:text-5xl text-white leading-tight">
-            <span className="block whitespace-nowrap">Global Trade,</span>
-            <span className="block whitespace-nowrap">Made Simple.</span>
+          <h2 className="premium-font-galdgderbold text-3xl sm:text-4xl lg:text-5xl text-white leading-tight shrink-0">
+            <span className="block">Global Trade,</span>
+            <span className="block">Made Simple.</span>
           </h2>
 
           {/* Newsletter */}
-          <div className="flex flex-col items-start">
+          <div className="flex flex-col items-start w-full sm:w-auto">
             <p className="text-sm font-semibold text-white mb-3">Get In Touch!</p>
-            <form onSubmit={handleSubscribe} className="flex items-center overflow-hidden border border-white/15 bg-white/5 backdrop-blur-sm w-80">
+            <form onSubmit={handleSubscribe} className="flex items-center overflow-hidden border border-white/15 bg-white/5 backdrop-blur-sm w-full sm:w-80">
               <input
                 type="email"
                 required
@@ -68,17 +68,17 @@ const Footer = () => {
         </div>
 
         {/* ── Middle row: 4 columns ── */}
-        <div className="flex flex-col gap-10 sm:flex-row sm:justify-between pb-10 border-b border-white/10">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-8 sm:flex sm:flex-row sm:flex-wrap sm:justify-between pb-10 border-b border-white/10">
 
           {/* Contact Information */}
-          <div>
+          <div className="col-span-2 sm:col-span-1">
             <h4 className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/50 mb-4">Contact Information</h4>
             <ul className="space-y-3">
               <li className="flex items-start gap-2 text-xs text-white/60">
                 <svg className="h-3.5 w-3.5 mt-0.5 shrink-0 text-[#B99353]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                 </svg>
-                <a href="mailto:cellzengroup@gmail.com" className="hover:text-white transition-colors">cellzengroup@gmail.com</a>
+                <a href="mailto:cellzengroup@gmail.com" className="hover:text-white transition-colors break-all">cellzengroup@gmail.com</a>
               </li>
               <li className="flex items-start gap-2 text-xs text-white/60">
                 <svg className="h-3.5 w-3.5 mt-0.5 shrink-0 text-[#B99353]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

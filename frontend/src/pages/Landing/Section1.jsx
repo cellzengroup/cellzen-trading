@@ -323,7 +323,7 @@ export default function Section1() {
   )}
 
   {/* ── Input field with logo ── */}
-  <div className={`absolute z-10 flex flex-col items-center w-full max-w-md px-6 transition-all duration-1000 ease-out ${showInput ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-16 scale-95 pointer-events-none"}`}>
+  <div className={`absolute z-10 flex flex-col items-center w-full max-w-sm sm:max-w-md px-4 sm:px-6 transition-all duration-1000 ease-out ${showInput ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-16 scale-95 pointer-events-none"}`}>
   {/* Logo above input */}
   <div className="relative mb-6">
   <svg className="relative h-12 w-12" viewBox="0 0 180 181" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -491,29 +491,29 @@ export default function Section1() {
   transform: `translateY(${(1 - revealProgress) * 80}px)`,
   }}
   >
-  <div className="text-center px-6 pointer-events-auto">
-  <h2 className="premium-font-galdgderbold text-3xl text-white sm:text-4xl md:text-5xl lg:text-6xl leading-tight">
+  <div className="text-center px-4 sm:px-6 pointer-events-auto">
+  <h2 className="premium-font-galdgderbold text-2xl text-white sm:text-4xl md:text-5xl lg:text-6xl leading-tight">
   Connecting Global Markets
   </h2>
-  <p className="mt-4 mx-auto max-w-xl text-sm text-white/60 sm:text-base leading-relaxed">
+  <p className="mt-3 sm:mt-4 mx-auto max-w-xl text-xs sm:text-base text-white/60 leading-relaxed">
   Your trusted bridge between China's manufacturers and businesses in Australia & Nepal —
   from sourcing to delivery.
   </p>
   <div
-  className="mt-8 flex flex-wrap items-center justify-center gap-4"
+  className="mt-5 sm:mt-8 flex flex-wrap items-center justify-center gap-3 sm:gap-4"
   style={{
   opacity: Math.max(0, (revealProgress - 0.3) / 0.7),
   transform: `translateY(${Math.max(0, (1 - revealProgress) * 30)}px)`,
   }}
   >
-  <a href="#how-it-works" className="group relative inline-flex items-center gap-3 overflow-hidden  bg-cz-secondary-light px-8 py-4 text-sm font-bold text-white transition-all duration-300 hover:shadow-[0_0_40px_rgba(185,147,83,0.5)] hover:scale-105">
+  <a href="#how-it-works" className="group relative inline-flex items-center gap-2 sm:gap-3 overflow-hidden bg-cz-secondary-light px-5 sm:px-8 py-3 sm:py-4 text-xs sm:text-sm font-bold text-white transition-all duration-300 hover:shadow-[0_0_40px_rgba(185,147,83,0.5)] hover:scale-105">
   <span className="relative z-10">Start Sourcing</span>
   <svg className="relative z-10 h-4 w-4 transition-transform duration-300 group-hover:translate-x-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8l4 4m0 0l-4 4m4-4H3" />
   </svg>
   <span className="absolute inset-0 bg-gradient-to-r from-white/0 via-white/25 to-white/0 translate-x-[-200%] group-hover:translate-x-[200%] transition-transform duration-700" />
   </a>
-  <Link to="/contact" className="group inline-flex items-center gap-3  border border-white/25 bg-white/5 px-8 py-4 text-sm font-semibold text-white backdrop-blur-md transition-all duration-300 hover:border-white/50 hover:bg-white/15 hover:scale-105">
+  <Link to="/contact" className="group inline-flex items-center gap-2 sm:gap-3 border border-white/25 bg-white/5 px-5 sm:px-8 py-3 sm:py-4 text-xs sm:text-sm font-semibold text-white backdrop-blur-md transition-all duration-300 hover:border-white/50 hover:bg-white/15 hover:scale-105">
   <svg className="h-4 w-4 text-cz-secondary-light transition-transform duration-300 group-hover:scale-110" fill="none" viewBox="0 0 24 24" stroke="currentColor">
   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
   </svg>

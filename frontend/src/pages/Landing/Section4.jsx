@@ -1,12 +1,32 @@
 import { useState, useEffect, Fragment } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import useScrollReveal from "./useScrollReveal";
 
-const CARD_W = 1024; // px — full card width (main + callout panel)
-const CARD_GAP = 32;  // px — gap between cards
+const CARD_W = 1024; // px — desktop full card width (main + callout panel)
+const CARD_GAP = 32;  // px — desktop gap between cards
 const REPEATS = 3;    // render 3 copies of steps for infinite loop illusion
 
 const STEP_MS = 4800;
+
+const getCarouselMetrics = () => {
+  if (typeof window === "undefined") return { cardWidth: CARD_W, cardGap: CARD_GAP };
+
+  const width = window.innerWidth;
+
+  if (width < 480) {
+    return { cardWidth: Math.max(288, width - 32), cardGap: 12 };
+  }
+
+  if (width < 768) {
+    return { cardWidth: Math.min(420, width - 40), cardGap: 16 };
+  }
+
+  if (width < 1024) {
+    return { cardWidth: Math.min(720, width - 64), cardGap: 24 };
+  }
+
+  return { cardWidth: CARD_W, cardGap: CARD_GAP };
+};
 
 const STEPS = [
   {
@@ -68,14 +88,16 @@ const STEPS = [
 
 export default function Section3() {
   const [sectionRef, visible] = useScrollReveal(0.1);
+  const prefersReducedMotion = useReducedMotion();
   const [virtualPos, setVirtualPos] = useState(STEPS.length); // start in middle copy
   const [progress, setProgress] = useState(0);
   const [instant, setInstant] = useState(false);
+  const [carouselMetrics, setCarouselMetrics] = useState(getCarouselMetrics);
 
   const active = ((virtualPos % STEPS.length) + STEPS.length) % STEPS.length;
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || prefersReducedMotion) return;
     let start = performance.now();
     let raf;
 
@@ -93,7 +115,14 @@ export default function Section3() {
 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [visible, virtualPos]);
+  }, [visible, virtualPos, prefersReducedMotion]);
+
+  useEffect(() => {
+    const updateMetrics = () => setCarouselMetrics(getCarouselMetrics());
+    updateMetrics();
+    window.addEventListener("resize", updateMetrics);
+    return () => window.removeEventListener("resize", updateMetrics);
+  }, []);
 
   const goTo = (i) => {
     const currentActive = ((virtualPos % STEPS.length) + STEPS.length) % STEPS.length;
@@ -121,25 +150,29 @@ export default function Section3() {
   };
 
   const RENDERED = Array.from({ length: REPEATS }).flatMap(() => STEPS);
+  const { cardWidth, cardGap } = carouselMetrics;
+  const slideTransition = instant || prefersReducedMotion
+    ? { duration: 0 }
+    : { duration: 1.05, ease: [0.22, 1, 0.36, 1] };
 
   return (
-    <section ref={sectionRef} id="how-it-works" className="relative bg-white py-20 sm:py-28 overflow-hidden">
+    <section ref={sectionRef} id="how-it-works" className="relative bg-white py-16 sm:py-24 lg:py-28 overflow-hidden">
 
       <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6">
 
         {/* Header */}
-        <div className={`text-center mb-14 sm:mb-20 transition-all duration-700 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
+        <div className={`text-center mb-8 sm:mb-16 lg:mb-20 transition-all duration-700 motion-reduce:transition-none ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
           <p className="text-[11px] font-bold uppercase tracking-[0.2em] text-[#B99353] mb-3">Simple Process</p>
-          <h2 className="premium-font-galdgderbold text-3xl text-[#2D2D2D] sm:text-4xl lg:text-5xl">
+          <h2 className="premium-font-galdgderbold text-2xl sm:text-4xl lg:text-5xl text-[#2D2D2D] leading-tight">
             How It Works
           </h2>
-          <p className="mx-auto mt-4 max-w-xl text-sm text-[#2D2D2D]/55">
+          <p className="mx-auto mt-3 sm:mt-4 max-w-xl text-xs sm:text-base leading-relaxed text-[#2D2D2D]/55">
             From first contact to final delivery — a clear, transparent process built around your needs.
           </p>
         </div>
 
         {/* Timeline */}
-        <div className={`relative flex items-start mb-10 transition-all duration-700 delay-200 ${visible ? "opacity-100" : "opacity-0"}`}>
+        <div className={`relative flex items-start mb-8 sm:mb-10 transition-all duration-700 delay-200 motion-reduce:transition-none ${visible ? "opacity-100" : "opacity-0"}`}>
           {STEPS.map((s, i) => {
             const isActive = active === i;
             const isDone = i < active;
@@ -150,10 +183,11 @@ export default function Section3() {
                 <button
                   type="button"
                   onClick={() => goTo(i)}
-                  className="relative flex flex-col items-center group shrink-0"
+                  className="relative flex min-h-11 min-w-11 flex-col items-center group shrink-0 touch-manipulation"
+                  aria-label={`Go to step ${s.num}: ${s.short}`}
                 >
                   {/* Circle */}
-                  <div className={`w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center border-2 transition-all duration-300 ${
+                  <div className={`w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center border-2 transition-all duration-300 motion-reduce:transition-none ${
                     isActive
                       ? "bg-[#412460] border-[#412460] scale-110 shadow-lg shadow-[#412460]/25"
                       : isDone
@@ -165,7 +199,7 @@ export default function Section3() {
                         <path strokeLinecap="butt" d="M5 13l4 4L19 7" />
                       </svg>
                     ) : (
-                      <span className={`text-[11px] font-bold transition-colors duration-200 ${
+                      <span className={`text-[11px] font-bold transition-colors duration-200 motion-reduce:transition-none ${
                         isActive ? "text-white" : "text-[#412460]/40 group-hover:text-[#412460]/80"
                       }`}>
                         {s.num}
@@ -173,7 +207,7 @@ export default function Section3() {
                     )}
                   </div>
                   {/* Label */}
-                  <span className={`hidden sm:block mt-2.5 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors duration-200 ${
+                  <span className={`hidden sm:block mt-2.5 text-[10px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors duration-200 motion-reduce:transition-none ${
                     isActive ? "text-[#412460]" : isDone ? "text-[#412460]/40" : "text-[#2D2D2D]/25 group-hover:text-[#2D2D2D]/55"
                   }`}>
                     {s.short}
@@ -197,12 +231,12 @@ export default function Section3() {
       </div>
 
       {/* Full-width carousel strip */}
-      <div className="relative w-full overflow-hidden py-6">
+      <div className="relative w-full overflow-hidden py-4 sm:py-6">
         <motion.div
           className="flex"
-          style={{ gap: `${CARD_GAP}px`, willChange: "transform" }}
-          animate={{ x: `calc(50% - ${(virtualPos + 0.5) * (CARD_W + CARD_GAP) - CARD_GAP / 2}px)` }}
-          transition={instant ? { duration: 0 } : { duration: 1.8, ease: [0.42, 0, 0.58, 1] }}
+          style={{ gap: `${cardGap}px`, willChange: "transform" }}
+          animate={{ x: `calc(50% - ${(virtualPos + 0.5) * (cardWidth + cardGap) - cardGap / 2}px)` }}
+          transition={slideTransition}
           onAnimationComplete={handleAnimationComplete}
         >
           {RENDERED.map((s, pos) => {
@@ -212,20 +246,20 @@ export default function Section3() {
               <motion.div
                 key={pos}
                 onClick={() => goTo(stepIndex)}
-                style={{ width: `${CARD_W}px`, transformOrigin: "center center" }}
+                style={{ width: `${cardWidth}px`, transformOrigin: "center center" }}
                 animate={{
-                  scale: isActive ? 1.04 : 0.9,
-                  opacity: isActive ? 1 : 0.3,
+                  scale: isActive ? 1 : 0.94,
+                  opacity: isActive ? 1 : 0.38,
                 }}
-                transition={instant ? { duration: 0 } : { duration: 1.8, ease: [0.42, 0, 0.58, 1] }}
+                transition={slideTransition}
                 whileHover={!isActive ? { opacity: 0.55 } : {}}
-                className="shrink-0 cursor-pointer grid grid-cols-[1fr_280px] items-stretch"
+                className="shrink-0 cursor-pointer grid grid-cols-1 items-stretch overflow-hidden md:grid-cols-[minmax(0,1fr)_260px] lg:grid-cols-[minmax(0,1fr)_280px]"
               >
                 {/* Main panel */}
-                <div className="relative overflow-hidden bg-[#F7F6F4] p-8 sm:p-12">
+                <div className="relative overflow-hidden bg-[#F7F6F4] p-5 sm:p-8 lg:p-12">
                   <div
                     className="absolute -right-2 -top-2 font-black text-[#412460]/[0.04] leading-none select-none pointer-events-none"
-                    style={{ fontSize: "11rem" }}
+                    style={{ fontSize: "clamp(6rem, 18vw, 11rem)" }}
                   >
                     {s.num}
                   </div>
@@ -234,17 +268,17 @@ export default function Section3() {
                     <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#B99353] mb-4">
                       Step {s.num}
                     </p>
-                    <h3 className="premium-font-galdgderbold text-2xl sm:text-[1.85rem] text-[#2D2D2D] mb-4 leading-tight">
+                    <h3 className="premium-font-galdgderbold text-[1.45rem] sm:text-[1.85rem] text-[#2D2D2D] mb-4 leading-tight">
                       {s.title}
                     </h3>
-                    <p className="text-sm leading-[1.85] text-[#2D2D2D]/55 max-w-lg">
+                    <p className="text-sm leading-[1.75] text-[#2D2D2D]/60 max-w-lg sm:leading-[1.85]">
                       {s.desc}
                     </p>
                   </div>
                 </div>
 
                 {/* Callout panel */}
-                <div className="relative bg-[#412460] p-8 sm:p-10 flex flex-col justify-between min-h-[260px] overflow-hidden">
+                <div className="relative bg-[#412460] p-5 sm:p-8 lg:p-10 flex flex-col justify-between min-h-[180px] sm:min-h-[220px] md:min-h-[260px] overflow-hidden">
                   <div
                     className="absolute inset-0 opacity-[0.06] pointer-events-none"
                     style={{
@@ -255,8 +289,8 @@ export default function Section3() {
                   <div className="relative z-10 w-12 h-12 bg-white/10 flex items-center justify-center text-white mb-auto">
                     {s.icon}
                   </div>
-                  <div className="relative z-10 mt-8">
-                    <div className="text-3xl sm:text-4xl font-black text-[#B99353] leading-none mb-2">
+                  <div className="relative z-10 mt-5 sm:mt-8">
+                    <div className="text-2xl sm:text-4xl font-black text-[#B99353] leading-none mb-2">
                       {s.callout.value}
                     </div>
                     <div className="text-xs text-white/45 uppercase tracking-widest">
@@ -271,18 +305,18 @@ export default function Section3() {
       </div>
 
       {/* Nav controls */}
-      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6 mt-8 flex items-center justify-center gap-3">
+      <div className="relative z-10 mx-auto max-w-6xl px-4 sm:px-6 mt-6 sm:mt-8 flex flex-wrap items-center justify-center gap-3">
         <button
           type="button"
           onClick={() => goTo((active - 1 + STEPS.length) % STEPS.length)}
-          className="flex items-center gap-2 px-5 py-2.5 border border-[#412460]/15 text-xs font-semibold text-[#412460]/50 hover:border-[#412460]/40 hover:text-[#412460] transition-all duration-200"
+          className="flex min-h-11 items-center gap-2 px-5 py-2.5 border border-[#412460]/15 text-xs font-semibold text-[#412460]/50 hover:border-[#412460]/40 hover:text-[#412460] transition-all duration-200 motion-reduce:transition-none"
         >
           ← Prev
         </button>
         <button
           type="button"
           onClick={() => goTo((active + 1) % STEPS.length)}
-          className="flex items-center gap-2 px-5 py-2.5 bg-[#412460] text-xs font-semibold text-white hover:bg-[#412460]/85 transition-all duration-200"
+          className="flex min-h-11 items-center gap-2 px-5 py-2.5 bg-[#412460] text-xs font-semibold text-white hover:bg-[#412460]/85 transition-all duration-200 motion-reduce:transition-none"
         >
           Next →
         </button>
@@ -293,10 +327,15 @@ export default function Section3() {
               key={i}
               type="button"
               onClick={() => goTo(i)}
-              className={`transition-all duration-200 ${
-                i === active ? "w-5 h-1.5 bg-[#412460]" : "w-1.5 h-1.5 bg-[#412460]/20 hover:bg-[#412460]/50"
-              }`}
-            />
+              aria-label={`Go to process step ${i + 1}`}
+              className="flex min-h-11 min-w-6 items-center justify-center"
+            >
+              <span
+                className={`block transition-all duration-200 motion-reduce:transition-none ${
+                  i === active ? "h-1.5 w-5 bg-[#412460]" : "h-1.5 w-1.5 bg-[#412460]/20 hover:bg-[#412460]/50"
+                }`}
+              />
+            </button>
           ))}
         </div>
       </div>

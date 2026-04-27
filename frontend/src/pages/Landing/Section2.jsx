@@ -57,7 +57,7 @@ function StatsStrip() {
 
   return (
   <div ref={stripRef} className={`bg-cz-main transition-all duration-1000 ${stripVisible ? "opacity-100" : "opacity-0"}`}>
-  <div className="mx-auto max-w-5xl px-6 py-10 grid grid-cols-2 md:grid-cols-4 gap-6">
+  <div className="mx-auto max-w-5xl px-4 sm:px-6 py-10 grid grid-cols-2 md:grid-cols-4 gap-4 sm:gap-6">
   {STATS.map((s, i) => (
   <StatItem key={s.label} value={s.value} suffix={s.suffix} label={s.label} delay={i * 200} />
   ))}
@@ -73,13 +73,13 @@ export default function Section2() {
   <section ref={ref} id="who-we-are" className="relative bg-[#EAE8E5] overflow-hidden">
 
   {/* —— Top: Full-width heading with massive negative space —— */}
-  <div className="pt-32 pb-20 px-6">
+  <div className="pt-16 sm:pt-24 lg:pt-32 pb-10 sm:pb-16 px-4 sm:px-6">
   <div className="mx-auto max-w-5xl">
   <div className={`transition-all duration-1000 ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-12"}`}>
   <span className="text-xs font-semibold uppercase tracking-[0.3em] text-cz-main/60">
   About Us
   </span>
-  <h2 className="mt-4 premium-font-galdgderbold text-4xl text-cz-ink sm:text-5xl lg:text-7xl xl:text-8xl leading-[0.95]">
+  <h2 className="mt-4 premium-font-galdgderbold text-[2.5rem] text-cz-ink sm:text-5xl lg:text-7xl xl:text-8xl leading-[0.95]">
   Who We{" "}
   <span className="text-cz-main">Are</span>
   </h2>
