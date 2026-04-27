@@ -29,16 +29,26 @@ export default function AddProducts() {
   const isEditMode = Boolean(productId);
   const clickedEditFile = location.state?.file;
   const clickedEditFileIndex = location.state?.fileIndex;
+
+  // Get prefilled values from navigation state
+  const prefilledCategory = location.state?.category || location.state?.product?.category || "";
+  const prefilledSupplierName = location.state?.supplierName || location.state?.product?.supplier_name || "";
+  const prefilledEmail = location.state?.supplierEmail || location.state?.product?.supplier_email || "";
+  const prefilledPhone = location.state?.supplierPhone || location.state?.product?.supplier_phone || "";
+  const prefilledLocation = location.state?.factoryLocation || location.state?.product?.factory_location || "";
+  const isCategoryLocked = Boolean(prefilledCategory);
+  const isSupplierLocked = Boolean(prefilledSupplierName);
+
   const fileInputRef = useRef(null);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const [fileError, setFileError] = useState("");
   const [formData, setFormData] = useState({
-    supplier_name: "",
-    supplier_email: "",
-    supplier_phone: "",
-    factory_location: "",
-    category: "",
+    supplier_name: prefilledSupplierName,
+    supplier_email: prefilledEmail,
+    supplier_phone: prefilledPhone,
+    factory_location: prefilledLocation,
+    category: prefilledCategory,
   });
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -173,28 +183,111 @@ export default function AddProducts() {
           <form onSubmit={handleSubmit} className="rounded-[28px] border border-[#E8E1EE] bg-[#FBFAF8] p-5 sm:p-6">
             <div className="grid gap-5 md:grid-cols-2">
               <label className="block">
-                <span className="text-xs font-semibold text-[#2D2D2D]/45">Name of the Suppliers</span>
-                <input name="supplier_name" type="text" value={formData.supplier_name} onChange={handleFieldChange} placeholder="Name of the Suppliers" className={FIELD_STYLES} />
+                <span className="text-xs font-semibold text-[#2D2D2D]/45">
+                  Name of the Suppliers
+                  {prefilledSupplierName && (
+                    <span className="ml-2 text-[10px] text-[#412460]/60">
+                      {isSupplierLocked ? "(Locked)" : "(Pre-filled)"}
+                    </span>
+                  )}
+                </span>
+                <input
+                  name="supplier_name"
+                  type="text"
+                  value={formData.supplier_name}
+                  onChange={handleFieldChange}
+                  placeholder="Name of the Suppliers"
+                  readOnly={isSupplierLocked}
+                  className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm font-semibold outline-none transition ${
+                    isSupplierLocked
+                      ? "border-[#B99353] bg-[#F9F6F0] text-[#2D2D2D] cursor-not-allowed"
+                      : "border-[#E1D9EA] bg-white text-[#2D2D2D] placeholder:text-[#2D2D2D]/30 focus:border-[#2D2D2D]/70"
+                  }`}
+                />
               </label>
 
               <label className="block">
-                <span className="text-xs font-semibold text-[#2D2D2D]/45">Email</span>
-                <input name="supplier_email" type="email" value={formData.supplier_email} onChange={handleFieldChange} placeholder="supplier@email.com" className={FIELD_STYLES} />
+                <span className="text-xs font-semibold text-[#2D2D2D]/45">
+                  Email
+                  {prefilledEmail && <span className="ml-2 text-[10px] text-[#412460]/60">(Pre-filled)</span>}
+                </span>
+                <input
+                  name="supplier_email"
+                  type="email"
+                  value={formData.supplier_email}
+                  onChange={handleFieldChange}
+                  placeholder="supplier@email.com"
+                  readOnly={Boolean(prefilledEmail)}
+                  className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm font-semibold outline-none transition ${
+                    prefilledEmail
+                      ? "border-[#B99353] bg-[#F9F6F0] text-[#2D2D2D] cursor-not-allowed"
+                      : "border-[#E1D9EA] bg-white text-[#2D2D2D] placeholder:text-[#2D2D2D]/30 focus:border-[#2D2D2D]/70"
+                  }`}
+                />
               </label>
 
               <label className="block">
-                <span className="text-xs font-semibold text-[#2D2D2D]/45">Phone Number</span>
-                <input name="supplier_phone" type="tel" value={formData.supplier_phone} onChange={handleFieldChange} placeholder="+86 000 0000 0000" className={FIELD_STYLES} />
+                <span className="text-xs font-semibold text-[#2D2D2D]/45">
+                  Phone Number
+                  {prefilledPhone && <span className="ml-2 text-[10px] text-[#412460]/60">(Pre-filled)</span>}
+                </span>
+                <input
+                  name="supplier_phone"
+                  type="tel"
+                  value={formData.supplier_phone}
+                  onChange={handleFieldChange}
+                  placeholder="+86 000 0000 0000"
+                  readOnly={Boolean(prefilledPhone)}
+                  className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm font-semibold outline-none transition ${
+                    prefilledPhone
+                      ? "border-[#B99353] bg-[#F9F6F0] text-[#2D2D2D] cursor-not-allowed"
+                      : "border-[#E1D9EA] bg-white text-[#2D2D2D] placeholder:text-[#2D2D2D]/30 focus:border-[#2D2D2D]/70"
+                  }`}
+                />
               </label>
 
               <label className="block">
-                <span className="text-xs font-semibold text-[#2D2D2D]/45">Factory Location</span>
-                <input name="factory_location" type="text" value={formData.factory_location} onChange={handleFieldChange} placeholder="City, province, country" className={FIELD_STYLES} />
+                <span className="text-xs font-semibold text-[#2D2D2D]/45">
+                  Factory Location
+                  {prefilledLocation && <span className="ml-2 text-[10px] text-[#412460]/60">(Pre-filled)</span>}
+                </span>
+                <input
+                  name="factory_location"
+                  type="text"
+                  value={formData.factory_location}
+                  onChange={handleFieldChange}
+                  placeholder="City, province, country"
+                  readOnly={Boolean(prefilledLocation)}
+                  className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm font-semibold outline-none transition ${
+                    prefilledLocation
+                      ? "border-[#B99353] bg-[#F9F6F0] text-[#2D2D2D] cursor-not-allowed"
+                      : "border-[#E1D9EA] bg-white text-[#2D2D2D] placeholder:text-[#2D2D2D]/30 focus:border-[#2D2D2D]/70"
+                  }`}
+                />
               </label>
 
               <label className="block md:col-span-2">
-                <span className="text-xs font-semibold text-[#2D2D2D]/45">Categories Name</span>
-                <input name="category" type="text" value={formData.category} onChange={handleFieldChange} placeholder="Categories Name" className={FIELD_STYLES} />
+                <span className="text-xs font-semibold text-[#2D2D2D]/45">
+                  Categories Name
+                  {prefilledCategory && (
+                    <span className="ml-2 text-[10px] text-[#412460]/60">
+                      {isSupplierLocked ? "(Locked)" : "(Pre-filled)"}
+                    </span>
+                  )}
+                </span>
+                <input
+                  name="category"
+                  type="text"
+                  value={formData.category}
+                  onChange={handleFieldChange}
+                  placeholder="Categories Name"
+                  readOnly={isCategoryLocked}
+                  className={`mt-2 w-full rounded-2xl border px-4 py-3 text-sm font-semibold outline-none transition ${
+                    isCategoryLocked
+                      ? "border-[#B99353] bg-[#F9F6F0] text-[#2D2D2D] cursor-not-allowed"
+                      : "border-[#E1D9EA] bg-white text-[#2D2D2D] placeholder:text-[#2D2D2D]/30 focus:border-[#2D2D2D]/70"
+                  }`}
+                />
               </label>
             </div>
 

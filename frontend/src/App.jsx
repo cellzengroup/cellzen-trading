@@ -18,11 +18,25 @@ import AdminDashboard from './pages/auth/admin/adminDashboard';
 import AdminManagements from './pages/auth/admin/adminmanagements';
 import AdminInventory from './pages/auth/admin/admininventory';
 import AdminProducts from './pages/auth/admin/adminProducts/adminproducts';
+import AdminSuppliers from './pages/auth/admin/adminProducts/adminSuppliers';
+import AdminSuppliersProduct from './pages/auth/admin/adminProducts/adminSuppliersProduct';
 import AddProducts from './pages/auth/admin/adminProducts/AddProducts';
 import AdminCustomers from './pages/auth/admin/admincustomers';
 import AdminReports from './pages/auth/admin/adminreports';
 import AdminNotifications from './pages/auth/admin/adminnotifications';
 import AdminSettings from './pages/auth/admin/adminsettings';
+import CustomersDashboard from './pages/auth/admin/customers/CustomersDashboard';
+import CustomersGoodsTracking from './pages/auth/admin/customers/CustomersGoodsTracking';
+import CustomersProducts from './pages/auth/admin/customers/CustomersProducts';
+import CustomersInvoices from './pages/auth/admin/customers/CustomersInvoices';
+import DistributorsDashboard from './pages/auth/admin/distributors/DistributorsDashboard';
+import DistributorsManagement from './pages/auth/admin/distributors/DistributorsManagement';
+import DistributorsGoodsTracking from './pages/auth/admin/distributors/DistributorsGoodsTracking';
+import DistributorsInvoices from './pages/auth/admin/distributors/DistributorsInvoices';
+import PartnersDashboard from './pages/auth/admin/partners/PartnersDashboard';
+import PartnersManagement from './pages/auth/admin/partners/PartnersManagement';
+import PartnersGoodsTracking from './pages/auth/admin/partners/PartnersGoodsTracking';
+import PartnersInvoices from './pages/auth/admin/partners/PartnersInvoices';
 import CostumersDashboard from './pages/tracking/trackingpage/costumers/costumersdashboard';
 import SupplierDashboard from './pages/tracking/trackingpage/suppliers/supplierdashboard';
 import LogisticsDashboard from './pages/tracking/trackingpage/logistics/logisticsdashboard';
@@ -97,6 +111,8 @@ function App() {
         <Route path="/admin-managements" element={<AdminManagements />} />
         <Route path="/admin-inventory" element={<AdminInventory />} />
         <Route path="/admin-products" element={<AdminProducts />} />
+        <Route path="/admin-suppliers" element={<AdminSuppliers />} />
+        <Route path="/admin-suppliers-product" element={<AdminSuppliersProduct />} />
         <Route path="/admin-products/add-products" element={<AddProducts />} />
         <Route path="/admin-products/edit/:productId" element={<AddProducts />} />
         <Route path="/admin-customers" element={<AdminCustomers />} />
@@ -104,6 +120,25 @@ function App() {
         <Route path="/admin-reports" element={<AdminReports />} />
         <Route path="/admin-notifications" element={<AdminNotifications />} />
         <Route path="/admin-settings" element={<AdminSettings />} />
+
+        {/* Customer Admin Panel Routes */}
+        <Route path="/admin/customers/dashboard" element={<CustomersDashboard />} />
+        <Route path="/admin/customers/goods-tracking" element={<CustomersGoodsTracking />} />
+        <Route path="/admin/customers/products" element={<CustomersProducts />} />
+        <Route path="/admin/customers/invoices" element={<CustomersInvoices />} />
+
+        {/* Distributor Admin Panel Routes */}
+        <Route path="/admin/distributors/dashboard" element={<DistributorsDashboard />} />
+        <Route path="/admin/distributors/management" element={<DistributorsManagement />} />
+        <Route path="/admin/distributors/goods-tracking" element={<DistributorsGoodsTracking />} />
+        <Route path="/admin/distributors/invoices" element={<DistributorsInvoices />} />
+
+        {/* Partners Admin Panel Routes */}
+        <Route path="/admin/partners/dashboard" element={<PartnersDashboard />} />
+        <Route path="/admin/partners/management" element={<PartnersManagement />} />
+        <Route path="/admin/partners/goods-tracking" element={<PartnersGoodsTracking />} />
+        <Route path="/admin/partners/invoices" element={<PartnersInvoices />} />
+
         <Route path="/login" element={<TrackingLogin initialMode="signin" />} />
         <Route path="/reset" element={<ResetPassword />} />
         <Route path="/tracking/login" element={<Navigate to="/login" replace />} />

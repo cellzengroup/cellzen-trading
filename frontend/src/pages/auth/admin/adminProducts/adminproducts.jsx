@@ -1,12 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import AdminPageShell from "../AdminPageShell";
 
 const FALLBACK_QUICK_ACCESS = [
   { name: "Mobile Phones", count: "51 items", active: true },
   { name: "Accessories", count: "24 items" },
   { name: "Gadgets", count: "18 items" },
-  { name: "Project Summary for Product Plans", count: "Last modified", preview: true },
 ];
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
@@ -33,31 +32,26 @@ function downloadFile(url, fileName) {
   link.remove();
 }
 
-function FolderIllustration({ active }) {
+function FolderIllustration({ name, count }) {
   return (
-    <div className="absolute inset-x-0 top-0 h-[74px] overflow-hidden">
-      <div className={`absolute left-4 top-3 h-10 w-[68px] rounded-[14px] ${active ? "bg-white/16" : "bg-[#EEE9F3]"}`} />
-      <div className={`absolute left-6 top-5 h-10 w-[92px] rounded-[14px] ${active ? "bg-white/22" : "bg-[#F7F4FA]"}`} />
-      <div className={`absolute left-0 right-0 top-[42px] h-11 rounded-t-[22px] ${active ? "bg-white/13" : "bg-gradient-to-b from-white to-[#EAE4EF]"}`} />
-    </div>
-  );
-}
-
-function AvatarStack({ active }) {
-  const colors = ["bg-[#412460]", "bg-[#B99353]", "bg-[#2D2D2D]", "bg-[#6B4C82]", "bg-[#C7A86B]"];
-
-  return (
-    <div className="mt-4 flex -space-x-1.5">
-      {colors.map((color, index) => (
-        <span
-          key={color}
-          className={`flex h-6 w-6 items-center justify-center rounded-full border-2 text-[10px] font-semibold ${
-            active ? "border-[#412460] text-white" : "border-white text-white"
-          } ${color}`}
-        >
-          {index + 1}
-        </span>
-      ))}
+    <div className="relative h-[150px] w-[174px]">
+      <svg viewBox="0 0 256 220" className="h-full w-full" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <g clipPath="url(#folder-clip)">
+          <path d="M255.743 129.649V53.3823C255.743 44.8686 248.861 37.969 240.368 37.969H15.7604C7.28166 37.969 0.398947 44.8686 0.398947 53.3823V67.8957C0.270697 52.7109 -0.0285511 37.5262 -5.12667e-05 22.3415C0.0141987 6.75677 6.55492 0.271479 22.1301 0.114346C37.0783 -0.0285019 52.0549 0.328618 67.0031 6.76827e-05C75.5388 -0.17135 83.191 1.99994 89.2615 7.79956C99.4217 17.5132 111.463 20.4559 125.114 20.3559C161.209 20.1273 197.304 20.1845 233.4 20.7416C239.085 20.8416 246.467 22.6129 249.929 26.4555C253.862 30.8124 255.914 38.369 255.943 44.54C256.071 72.9096 255.929 101.265 255.743 129.634V129.649Z" fill="#3C2056" />
+          <path d="M255.744 53.3823V204.587C255.744 213.1 248.861 220 240.368 220H15.7608C7.28213 220 0.399414 213.1 0.399414 204.587V127.763C0.442164 111.65 0.470664 95.5367 0.456414 79.4377C0.456414 75.5951 0.427914 71.7382 0.399414 67.8956V53.3823C0.399414 44.8685 7.28213 37.969 15.7608 37.969H240.368C248.861 37.969 255.744 44.8685 255.744 53.3823Z" fill="#522E70" />
+        </g>
+        <defs>
+          <clipPath id="folder-clip">
+            <rect width="256" height="220" fill="white" />
+          </clipPath>
+        </defs>
+      </svg>
+      <div className="absolute inset-x-0 top-[50px] px-4 text-left text-white">
+        <p className="break-words text-sm font-semibold leading-tight line-clamp-2">{name}</p>
+      </div>
+      <div className="absolute inset-x-0 bottom-[18px] px-4 text-left">
+        <p className="text-[11px] font-medium text-white/90">{count}</p>
+      </div>
     </div>
   );
 }
@@ -79,6 +73,8 @@ function FileIcon({ type }) {
 
 export default function AdminProducts() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const filterSupplierFromNav = location.state?.filterSupplier;
   const [products, setProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [productsError, setProductsError] = useState("");
@@ -90,6 +86,16 @@ export default function AdminProducts() {
   const [showDuplicatePopup, setShowDuplicatePopup] = useState(false);
   const [showFileSizePopup, setShowFileSizePopup] = useState(false);
   const [pendingDeleteProduct, setPendingDeleteProduct] = useState(null);
+  const [selectedFolder, setSelectedFolder] = useState(null);
+  const [selectedSupplier, setSelectedSupplier] = useState(filterSupplierFromNav || null);
+
+  // Clear navigation state on mount
+  useEffect(() => {
+    if (filterSupplierFromNav) {
+      // Clear the location state so refresh doesn't re-apply filter
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [filterSupplierFromNav, navigate, location.pathname]);
 
   const loadProducts = async () => {
     try {
@@ -204,25 +210,44 @@ export default function AdminProducts() {
   };
 
   const quickAccess = useMemo(() => {
-    if (!products.length) return FALLBACK_QUICK_ACCESS;
+    if (!products.length) {
+      return FALLBACK_QUICK_ACCESS.map((folder, index) => ({ ...folder, active: index === 0, category: folder.name }));
+    }
 
-    const countsByCategory = products.reduce((counts, product) => {
+    const productsByCategory = products.reduce((acc, product) => {
       const category = product.category || "Uncategorized";
-      counts[category] = (counts[category] || 0) + 1;
-      return counts;
+      if (!acc[category]) {
+        acc[category] = { products: [], suppliers: 0, pdfs: 0 };
+      }
+      acc[category].products.push(product);
+      const pdfFiles = Array.isArray(product.pdf_files) ? product.pdf_files.length : 0;
+      acc[category].suppliers += 1;
+      acc[category].pdfs += pdfFiles;
+      return acc;
     }, {});
 
-    const categories = Object.entries(countsByCategory).slice(0, 3).map(([name, count], index) => ({
+    const categories = Object.entries(productsByCategory).slice(0, 3).map(([name, data], index) => ({
       name,
-      count: `${count} item${count > 1 ? "s" : ""}`,
+      count: `${data.pdfs} PDF${data.pdfs === 1 ? "" : "s"} • ${data.suppliers} Supplier${data.suppliers === 1 ? "" : "s"}`,
       active: index === 0,
+      category: name,
     }));
 
-    return [...categories, FALLBACK_QUICK_ACCESS[3]];
+    return categories;
   }, [products]);
 
   const productFileRows = useMemo(() => {
-    return products.flatMap((product) => {
+    let filteredProducts = products;
+
+    if (selectedFolder) {
+      filteredProducts = filteredProducts.filter((p) => (p.category || "Uncategorized") === selectedFolder.category);
+    }
+
+    if (selectedSupplier) {
+      filteredProducts = filteredProducts.filter((p) => (p.supplier_name || p.name) === selectedSupplier);
+    }
+
+    return filteredProducts.flatMap((product) => {
       const pdfFiles = Array.isArray(product.pdf_files) ? product.pdf_files : [];
 
       if (!pdfFiles.length) {
@@ -236,7 +261,7 @@ export default function AdminProducts() {
         rowKey: `${product.id}-${fileIndex}-${file.name || "pdf"}`,
       }));
     });
-  }, [products]);
+  }, [products, selectedFolder, selectedSupplier]);
 
   return (
     <AdminPageShell activePage="Products" title="Products" eyebrow="Cellzen Product Management">
@@ -269,48 +294,135 @@ export default function AdminProducts() {
 
         <div className="mt-8 grid min-h-0 flex-1 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="min-h-0 min-w-0 overflow-y-auto pr-1">
+
+        {!selectedFolder && (
         <section>
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
             {quickAccess.map((folder) => (
               <button
                 type="button"
                 key={folder.name}
-                className={`relative h-[118px] overflow-hidden rounded-[16px] px-4 pb-4 pt-3 text-left shadow-[0_16px_28px_rgba(65,36,96,0.09)] transition hover:-translate-y-0.5 ${
-                  folder.active ? "bg-[#412460] text-white" : "bg-[#F4F2EF] text-[#2D2D2D]"
+                onClick={() => navigate("/admin-suppliers", { state: { filterCategory: folder.category } })}
+                className="group text-left transition active:opacity-80 cursor-pointer"
+              >
+                <FolderIllustration name={folder.name} count={folder.count} />
+              </button>
+            ))}
+          </div>
+        </section>
+        )}
+
+        {/* Suppliers List - Show when folder selected */}
+        {selectedFolder && (
+        <section className="mt-2">
+          {selectedFolder && (
+            <div className="mb-6 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-lg font-semibold text-[#412460]">
+                  {selectedFolder.name}
+                </span>
+                <span className="text-xs text-[#2D2D2D]/60">{selectedFolder.count}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setSelectedFolder(null); setSelectedSupplier(null); }}
+                className="flex items-center gap-1.5 rounded-2xl border border-[#D9CEE3] px-4 py-2 text-xs font-semibold text-[#412460] transition hover:bg-[#F4F2EF]"
+              >
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6 6 18" />
+                  <path d="m6 6 12 12" />
+                </svg>
+                Back to Folders
+              </button>
+            </div>
+          )}
+
+          {/* Suppliers List */}
+          <div className="space-y-3">
+            {selectedFolder.products?.map((product) => (
+              <button
+                key={product.id}
+                onClick={() => setSelectedSupplier(selectedSupplier?.id === product.id ? null : product)}
+                className={`w-full rounded-2xl border p-4 text-left transition cursor-pointer ${
+                  selectedSupplier?.id === product.id
+                    ? 'border-[#412460] bg-[#F1EAF6]'
+                    : 'border-[#E8E1EE] bg-white hover:border-[#412460]/50'
                 }`}
               >
-                {folder.preview ? (
-                  <div className="flex h-full flex-col justify-between">
-                    <div className="flex items-start gap-2">
-                      <span className="mt-1 h-4 w-4 rounded-[4px] bg-[#B99353]" />
-                      <p className="max-w-[140px] text-sm font-semibold leading-tight text-[#412460]">Project Summary for Product Plans</p>
-                      <span className="ml-auto flex h-6 w-6 items-center justify-center rounded-full bg-[#412460] text-[10px] font-semibold text-white">A</span>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#412460] text-white font-semibold">
+                      {(product.supplier_name || product.name || 'S').charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <p className="text-xs font-semibold text-[#2D2D2D]/40">Last Modified</p>
-                      <p className="mt-1 text-xs font-semibold text-[#2D2D2D]/50">Sept 9, 2026 - 04:23 AM</p>
+                      <p className="font-semibold text-[#412460]">{product.supplier_name || product.name}</p>
+                      <p className="text-xs text-[#2D2D2D]/50">{product.supplier_email || '-'}</p>
                     </div>
                   </div>
-                ) : (
-                  <>
-                    <FolderIllustration active={folder.active} />
-                    <div className="relative z-10">
-                      <p className={`text-xs font-medium ${folder.active ? "text-white/58" : "text-[#2D2D2D]/40"}`}>Shared with</p>
-                      <AvatarStack active={folder.active} />
-                    </div>
-                    <div className="relative z-10 mt-5">
-                      <p className="text-sm font-semibold leading-none">{folder.name}</p>
-                      <p className={`mt-2 text-xs font-medium ${folder.active ? "text-white/68" : "text-[#2D2D2D]/50"}`}>{folder.count}</p>
-                    </div>
-                  </>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-[#2D2D2D]/50">
+                      {Array.isArray(product.pdf_files) ? product.pdf_files.length : 0} PDFs
+                    </span>
+                    <svg
+                      className={`h-5 w-5 text-[#412460] transition-transform ${
+                        selectedSupplier?.id === product.id ? 'rotate-180' : ''
+                      }`}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </div>
+                </div>
+
+                {/* Expanded PDF Files */}
+                {selectedSupplier?.id === product.id && product.pdf_files && product.pdf_files.length > 0 && (
+                  <div className="mt-4 space-y-2 border-t border-[#E8E1EE] pt-4">
+                    {product.pdf_files.map((file, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between rounded-xl bg-white p-3"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#2D2D2D] text-[10px] font-semibold text-white">P</span>
+                          <span className="truncate text-sm text-[#2D2D2D]/70">{file.name || `PDF ${idx + 1}`}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {file.size && (
+                            <span className="text-xs text-[#2D2D2D]/40">{formatFileSize([file])}</span>
+                          )}
+                          {file.url && (
+                            <button
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); downloadFile(file.url, file.name || `PDF ${idx + 1}`); }}
+                              className="flex items-center gap-1 rounded-full bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-[#B99353]"
+                            >
+                              <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M12 3v12" />
+                                <path d="m7 10 5 5 5-5" />
+                                <path d="M5 21h14" />
+                              </svg>
+                              Download
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </button>
             ))}
           </div>
         </section>
+        )}
 
-        <section className="mt-9">
-          <div className="overflow-x-auto">
+        {/* Products Table - Only show when no folder selected */}
+        {!selectedFolder && (
+          <div className="mt-12 overflow-x-auto">
             <table className="w-full min-w-[760px] border-separate border-spacing-y-1 text-left">
               <thead>
                 <tr className="text-xs text-[#2D2D2D]/35">
@@ -427,9 +539,10 @@ export default function AdminProducts() {
               </tbody>
             </table>
           </div>
-        </section>
+        )}
           </div>
 
+        {!selectedFolder && (
           <aside
             onDragEnter={(event) => {
               event.preventDefault();
@@ -529,6 +642,7 @@ export default function AdminProducts() {
               </button>
             </form>
           </aside>
+        )}
         </div>
       </div>
       {showDuplicatePopup && (
