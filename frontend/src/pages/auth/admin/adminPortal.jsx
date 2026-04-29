@@ -12,6 +12,9 @@ const NAV_LINKS = [
   { title: "Settings", path: "/admin-settings", icon: "settings" },
 ];
 
+const API_URL = import.meta.env.VITE_API_URL
+  || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
+
 function NavIcon({ icon }) {
   const iconProps = {
     className: "h-6 w-6",
@@ -99,6 +102,7 @@ export default function AdminPortal({ activePage, children }) {
   const currencyDropdownRef = React.useRef(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("admin_sidebar_collapsed") === "true");
   const [currencyDropdownOpen, setCurrencyDropdownOpen] = useState(false);
+  const [notificationCount, setNotificationCount] = useState(0);
   const { currency, setCurrency, currencySymbols, availableCurrencies } = useCurrency();
   const adminUser = useMemo(() => {
     try {
@@ -118,6 +122,46 @@ export default function AdminPortal({ activePage, children }) {
   useEffect(() => {
     localStorage.setItem("admin_sidebar_collapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    const loadNotificationCount = async () => {
+      const token = localStorage.getItem("inv_token");
+      if (!token) return;
+
+      try {
+        const response = await fetch(`${API_URL}/inventory/auth/approval-requests`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await response.json();
+
+        if (response.ok) {
+          setNotificationCount(data.count || 0);
+        }
+      } catch {
+        setNotificationCount(0);
+      }
+    };
+
+    const handleNotificationCountUpdated = (event) => {
+      if (typeof event.detail?.count === "number") {
+        setNotificationCount(event.detail.count);
+        return;
+      }
+
+      loadNotificationCount();
+    };
+
+    loadNotificationCount();
+    const intervalId = window.setInterval(loadNotificationCount, 60000);
+    window.addEventListener("focus", loadNotificationCount);
+    window.addEventListener("admin-notifications-updated", handleNotificationCountUpdated);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", loadNotificationCount);
+      window.removeEventListener("admin-notifications-updated", handleNotificationCountUpdated);
+    };
+  }, []);
 
   // Close currency dropdown when clicking outside
   useEffect(() => {
@@ -238,11 +282,21 @@ export default function AdminPortal({ activePage, children }) {
                 )}
               </div>
 
-              <button className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F4F2EF] text-[#2D2D2D]/60 transition-colors hover:bg-[#412460] hover:text-white" aria-label="Notifications">
+              <button
+                type="button"
+                onClick={() => navigate("/admin-notifications")}
+                className="relative flex h-10 w-10 items-center justify-center rounded-full bg-[#F4F2EF] text-[#2D2D2D]/60 transition-colors hover:bg-[#412460] hover:text-white"
+                aria-label={`Notifications${notificationCount ? `, ${notificationCount} approval requests` : ""}`}
+              >
                 <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
                   <path d="M10 21h4" />
                 </svg>
+                {notificationCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-[#B99353] px-1 text-[10px] font-bold text-white">
+                    {notificationCount > 9 ? "9+" : notificationCount}
+                  </span>
+                )}
               </button>
               <div className="flex h-10 w-10 items-center justify-center bg-[#412460] text-sm font-bold text-white">
                 {(adminUser?.name || "A").charAt(0)}

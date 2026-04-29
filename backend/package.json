@@ -32,6 +32,7 @@
     "nodemailer": "^8.0.5",
     "pdfkit": "^0.18.0",
     "pg": "^8.20.0",
+    "resend": "^6.12.2",
     "sequelize": "^6.37.8"
   },
   "devDependencies": {

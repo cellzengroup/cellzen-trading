@@ -4,6 +4,7 @@ const Product = require('./Product');
 const Location = require('./Location');
 const Inventory = require('./Inventory');
 const Transaction = require('./Transaction');
+const Invoice = require('./Invoice');
 
 if (sequelize) {
   // Product <-> Inventory
@@ -27,6 +28,10 @@ if (sequelize) {
   // User <-> Transaction
   User.hasMany(Transaction, { foreignKey: 'created_by', as: 'transactions' });
   Transaction.belongsTo(User, { foreignKey: 'created_by', as: 'createdByUser' });
+
+  // User <-> Invoice sharing
+  User.hasMany(Invoice, { foreignKey: 'shared_user_id', as: 'sharedInvoices' });
+  Invoice.belongsTo(User, { foreignKey: 'shared_user_id', as: 'sharedUser' });
 }
 
 module.exports = {
@@ -36,4 +41,5 @@ module.exports = {
   Location,
   Inventory,
   Transaction,
+  Invoice,
 };

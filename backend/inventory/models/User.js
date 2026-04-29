@@ -51,6 +51,24 @@ const User = sequelize
         type: DataTypes.STRING,
         allowNull: true,
       },
+      emailVerified: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: true,
+      },
+      emailVerificationCodeHash: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      emailVerificationExpiresAt: {
+        type: DataTypes.DATE,
+        allowNull: true,
+      },
+      accountApprovalStatus: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        defaultValue: 'approved',
+      },
     }, {
       tableName: 'users',
       timestamps: true,

@@ -69,8 +69,9 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
   }, 0);
   const customsDuty   = parseFloat(raw.customsDuty           || 0);
   const docCharges    = parseFloat(raw.documentationCharges  || 0);
+  const otherCharges   = parseFloat(raw.otherCharges          || 0);
   const transportCost = parseFloat(raw.transportCost         || 0);
-  const grandTotal    = itemsTotal + customsDuty + docCharges + transportCost;
+  const grandTotal    = itemsTotal + customsDuty + docCharges + otherCharges + transportCost;
 
   // ── Create PDF ──────────────────────────────────────────────────────────────
   const doc = new jsPDF({
@@ -253,7 +254,8 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
 
   addSummaryRow('Total Amount', itemsTotal);
   if (docCharges    > 0) addSummaryRow('Documentation Charges', docCharges);
-  if (transportCost > 0) addSummaryRow('Transportation Cost',   transportCost);
+  if (otherCharges  > 0) addSummaryRow('Other Charges', otherCharges);
+  if (transportCost > 0) addSummaryRow('Freight Cost',          transportCost);
   if (customsDuty   > 0) addSummaryRow('Customs Duty',          customsDuty);
   addSummaryRow('Grand Total', grandTotal, true, true);
 
@@ -295,6 +297,7 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
     '4. Customs-related charges are not fixed and may change based on assessment by the relevant authorities; the exact amount will be determined after customs clearance.',
     '5. The total quoted cost is inclusive of door-to-door delivery, covering transportation from origin to the final delivery destination.',
     '6. An additional 10% of the total goods charges shall be applied for warehouse storage, quality inspection, and goods handling services.',
+    '7. Other Charges means can include Delivery cost from factory to warehouse and many more.',
   ];
 
   doc.setFont('helvetica', 'normal');
@@ -314,16 +317,18 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
   y += 5;
 
   // ── Footer ─────────────────────────────────────────────────────────────────
-  if (y > pageHeight - 15) {
+  if (y > pageHeight - 21) {
     doc.addPage();
     y = margin;
   }
   doc.setFillColor(...C.purple);
-  doc.rect(margin, y, pageWidth - 2 * margin, 10, 'F');
+  doc.rect(margin, y, pageWidth - 2 * margin, 16, 'F');
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.setTextColor(...C.white);
-  doc.text('"Connecting Global Markets"', pageWidth / 2, y + 6.5, { align: 'center' });
+  doc.text('"Connecting Global Markets"', pageWidth / 2, y + 6, { align: 'center' });
+  doc.setFontSize(8);
+  doc.text('Contact: +8613073017734, +977 9849956242   Email: cellzengroup@gmail.com.', pageWidth / 2, y + 12, { align: 'center' });
 
   // ── Watermark overlay on every page (3% opacity, visible over backgrounds) ──
   if (logoData) {

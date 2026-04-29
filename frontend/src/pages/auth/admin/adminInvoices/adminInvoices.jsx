@@ -5,15 +5,9 @@ import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { generateInvoiceExcel } from "../../../../utils/generateCellzenInvoice.js";
 import { generateInvoicePDF } from "../../../../utils/generateCellzenInvoicePDF.js";
 
-const CURRENCIES = [
-  { code: "NPR", symbol: "Rs. ", name: "NPR" },
-  { code: "USD", symbol: "$ ", name: "Dollar" },
-  { code: "CNY", symbol: "¥ ", name: "RMB" },
-];
-
 export default function AdminInvoices() {
   const navigate = useNavigate();
-  const { formatCurrency, currency, setCurrency, convertFromUSD, exchangeRates, currencySymbols } = useCurrency();
+  const { currency, currencySymbols } = useCurrency();
 
   // Simple display function for already-converted amounts
   const displayCurrency = (amount) => {
@@ -44,8 +38,9 @@ export default function AdminInvoices() {
       // Only add customs/transport if checkbox was checked (values exist and > 0)
       const customsDuty = parseFloat(draft.customsDuty || 0) > 0 ? parseFloat(draft.customsDuty) : 0;
       const documentationCharges = parseFloat(draft.documentationCharges || 0) > 0 ? parseFloat(draft.documentationCharges) : 0;
+      const otherCharges = parseFloat(draft.otherCharges || 0) > 0 ? parseFloat(draft.otherCharges) : 0;
       const transportCost = parseFloat(draft.transportCost || 0) > 0 ? parseFloat(draft.transportCost) : 0;
-      const grandTotal = itemsTotal + commissionTotal + customsDuty + documentationCharges + transportCost;
+      const grandTotal = itemsTotal + commissionTotal + customsDuty + documentationCharges + otherCharges + transportCost;
 
       // Convert to current currency for display
       const originalCurrency = draft.currency || draft.originalCurrency || "USD";
@@ -197,38 +192,13 @@ export default function AdminInvoices() {
 
       {/* Invoice List */}
       <div className="mt-6 rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
-        {/* Header with Search, Filters and Currency Selector */}
+        {/* Header with Search and Filters */}
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-[#412460]">All Invoices</h2>
             <p className="mt-1 text-sm leading-relaxed text-[#2D2D2D]/55">Manage and track customer invoices</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {/* Currency Selector */}
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-[#2D2D2D]/60">Currency:</span>
-              <div className="flex rounded-lg border border-[#E1E3EE] bg-white overflow-hidden">
-                {CURRENCIES.map((curr) => (
-                  <button
-                    key={curr.code}
-                    type="button"
-                    onClick={() => setCurrency(curr.code)}
-                    className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
-                      currency === curr.code
-                        ? "bg-[#412460] text-white"
-                        : "text-[#412460] hover:bg-[#412460]/10"
-                    } ${curr.code !== "CNY" ? "border-r border-[#E1E3EE]" : ""}`}
-                  >
-                    {curr.code === "NPR" && "NPR"}
-                    {curr.code === "USD" && "Dollar"}
-                    {curr.code === "CNY" && "Yuan"}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="h-6 w-px bg-[#E1E3EE]" />
-
             {/* Search */}
             <div className="flex items-center gap-2 rounded-full border border-[#E1E3EE] bg-white px-4 py-2">
               <svg className="h-4 w-4 text-[#2D2D2D]/40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -273,7 +243,7 @@ export default function AdminInvoices() {
               <tr>
                 <th className="py-3 font-semibold">Invoice ID</th>
                 <th className="py-3 font-semibold">Customer</th>
-                <th className="py-3 font-semibold">Amount ({currency})</th>
+                <th className="py-3 font-semibold">Amount</th>
                 <th className="py-3 font-semibold">Status</th>
                 <th className="py-3 font-semibold">Date</th>
                 <th className="py-3 font-semibold text-right pr-4 min-w-[280px]">Actions</th>
@@ -421,6 +391,7 @@ export default function AdminInvoices() {
                 }, 0) || 0;
                 const customsDuty = selectedInvoice.rawData?.customsDuty || 0;
                 const docCharges = selectedInvoice.rawData?.documentationCharges || 0;
+                const otherCharges = selectedInvoice.rawData?.otherCharges || 0;
                 const transportCost = selectedInvoice.rawData?.transportCost || 0;
 
                 return (
@@ -449,8 +420,14 @@ export default function AdminInvoices() {
                     )}
                     {transportCost > 0 && (
                       <div className="flex justify-between text-sm">
-                        <span className="text-[#2D2D2D]/60">Transportation Cost</span>
+                        <span className="text-[#2D2D2D]/60">Freight Cost</span>
                         <span>{displayCurrency(convertCurrency(transportCost, originalCurrency, currency))}</span>
+                      </div>
+                    )}
+                    {otherCharges > 0 && (
+                      <div className="flex justify-between text-sm">
+                        <span className="text-[#2D2D2D]/60">Other Charges</span>
+                        <span>{displayCurrency(convertCurrency(otherCharges, originalCurrency, currency))}</span>
                       </div>
                     )}
                     <div className="flex justify-between border-t border-[#EAE8E5] pt-2">

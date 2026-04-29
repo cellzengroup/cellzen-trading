@@ -585,7 +585,23 @@ export default function AdminCreateInvoice() {
       const hasTransportCost = parseFloat(parsedData.transportCost || 0) > 0;
       const hasCustomsDuty = parseFloat(parsedData.customsDuty || 0) > 0;
       const hasDocCharges = parseFloat(parsedData.documentationCharges || 0) > 0;
-      const shouldIncludeCustoms = hasTransportCost || hasCustomsDuty || hasDocCharges;
+      const hasOtherCharges = parseFloat(parsedData.otherCharges || 0) > 0;
+      const hasTransportRoute =
+        parsedData.transportFrom &&
+        parsedData.transportTo &&
+        (parsedData.transportFrom.name || parsedData.transportTo.name);
+      const inferredCustoms =
+        hasTransportCost ||
+        hasCustomsDuty ||
+        hasDocCharges ||
+        hasOtherCharges ||
+        !!hasTransportRoute;
+      const shouldIncludeCustoms =
+        parsedData.includeCustomsTransport === true
+          ? true
+          : parsedData.includeCustomsTransport === false
+            ? false
+            : inferredCustoms;
 
       setFormData(prev => ({
         ...prev,
@@ -645,6 +661,7 @@ export default function AdminCreateInvoice() {
     notes: "",
     customsDuty: "",
     documentationCharges: "",
+    otherCharges: "",
     originalCurrency: currency, // Store the currency when invoice was created
     transportCost: "",
     transportFrom: null,
@@ -661,6 +678,13 @@ export default function AdminCreateInvoice() {
     const curr = CURRENCIES.find(c => c.code === currency);
     return curr?.symbol || "Rs. ";
   };
+
+  const getCurrencySymbolFor = (currencyCode) => {
+    const curr = CURRENCIES.find(c => c.code === currencyCode);
+    return curr?.symbol || "Rs. ";
+  };
+
+  const getInvoiceItemCurrencySymbol = () => getCurrencySymbolFor(formData.originalCurrency || currency);
 
   // Convert USD rate to target currency (defaults to current currency)
   const convertRateFromUSD = (usdRate, targetCurrency = currency) => {
@@ -761,6 +785,8 @@ export default function AdminCreateInvoice() {
     ...partners.map(u => ({ ...u, type: "Partner" })),
   ];
 
+  const getSelectedShareUser = (userId = formData.shareTo) => allShareableUsers.find(u => u.id === userId);
+
   const handleShareToChange = (userId) => {
     if (!userId) {
       // Clear selection
@@ -778,6 +804,43 @@ export default function AdminCreateInvoice() {
         customerName: selectedUser.name,
         customerEmail: selectedUser.email || "",
       }));
+    }
+  };
+
+  const handleCurrencyChange = (nextCurrency) => {
+    setCurrency(nextCurrency);
+
+    // Before Customs & Transport, the selected currency is the invoice item currency.
+    // On Step 3, changing currency is display-only for customs/transport totals.
+    if (currentStep < 3) {
+      setFormData(prev => ({
+        ...prev,
+        originalCurrency: nextCurrency,
+      }));
+    }
+  };
+
+  const syncSharedInvoice = async (invoiceData) => {
+    const token = localStorage.getItem("inv_token");
+    if (!token) return;
+
+    const selectedUser = getSelectedShareUser(invoiceData.shareTo);
+    const response = await fetch(`${API_BASE}/inventory/invoices/share`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        invoice: invoiceData,
+        sharedUserId: invoiceData.shareTo || "",
+        sharedUserType: selectedUser?.type || "",
+      }),
+    });
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || "Invoice was saved but could not be shared");
     }
   };
 
@@ -828,6 +891,11 @@ export default function AdminCreateInvoice() {
       const commissionAmount = baseTotal * (commissionPercent / 100);
       return sum + baseTotal + commissionAmount;
     }, 0).toFixed(2);
+  };
+
+  const calculateGrandTotalDisplay = () => {
+    const totalInOriginal = parseFloat(calculateGrandTotal());
+    return convertCurrency(totalInOriginal, formData.originalCurrency || currency, currency);
   };
 
   // Get matching transport rates for display
@@ -940,6 +1008,12 @@ export default function AdminCreateInvoice() {
     return amountInUSD * rates[toCurrency];
   };
 
+  const convertCurrentCurrencyToOriginal = (amount) => {
+    const parsedAmount = parseFloat(amount || 0);
+    if (!parsedAmount || isNaN(parsedAmount)) return 0;
+    return convertCurrency(parsedAmount, currency, formData.originalCurrency || currency);
+  };
+
   // Calculate documentation charges (0.3% of cargo value) in original currency
   const getDocumentationChargeInOriginal = () => {
     const { modeOfDelivery } = formData;
@@ -976,15 +1050,20 @@ export default function AdminCreateInvoice() {
     }
   }, [formData.items]);
 
-  // Clear customs/transport data when checkbox is unchecked
-  // Redirect from Step 3 to Step 2 if unchecked while on Step 3
+  // Clear customs/transport only when the user turns the checkbox off (not on initial mount).
+  // Otherwise the mount-time "false" state runs in the same effect phase as edit hydration and wipes loaded data.
+  const prevIncludeCustomsRef = useRef(null);
   useEffect(() => {
-    if (!formData.includeCustomsTransport) {
-      // Clear all customs and transport data
+    const wasIncluded = prevIncludeCustomsRef.current;
+    const nowIncluded = formData.includeCustomsTransport;
+    prevIncludeCustomsRef.current = nowIncluded;
+
+    if (wasIncluded === true && nowIncluded === false) {
       setFormData(prev => ({
         ...prev,
         customsDuty: "",
         documentationCharges: "",
+        otherCharges: "",
         transportCost: "",
         transportFrom: null,
         transportTo: null,
@@ -993,11 +1072,7 @@ export default function AdminCreateInvoice() {
         trackingNumber: "",
         customsNotes: "",
       }));
-
-      // If on Step 3 and unchecked, go back to Step 2
-      if (currentStep === 3) {
-        setCurrentStep(2);
-      }
+      setCurrentStep(step => (step === 3 ? 2 : step));
     }
   }, [formData.includeCustomsTransport]);
 
@@ -1013,6 +1088,7 @@ export default function AdminCreateInvoice() {
       let finalTransportCost = "";
       let finalDocCharges = "";
       let finalCustomsDuty = "";
+      let finalOtherCharges = "";
 
       if (formData.includeCustomsTransport) {
         const recalcTransport = getTransportationCostInOriginal();
@@ -1021,16 +1097,18 @@ export default function AdminCreateInvoice() {
           : (parseFloat(formData.transportCost || 0) > 0 ? parseFloat(formData.transportCost).toFixed(2) : "");
         const recalcDoc = formData.modeOfDelivery === "road"
           ? getDocumentationChargeInOriginal()
-          : parseFloat(formData.documentationCharges || 0);
+          : convertCurrentCurrencyToOriginal(formData.documentationCharges);
         finalDocCharges = recalcDoc > 0
           ? recalcDoc.toFixed(2)
           : (parseFloat(formData.documentationCharges || 0) > 0 ? parseFloat(formData.documentationCharges).toFixed(2) : "");
-        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? parseFloat(formData.customsDuty).toFixed(2) : "";
+        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? convertCurrentCurrencyToOriginal(formData.customsDuty).toFixed(2) : "";
+        finalOtherCharges = parseFloat(formData.otherCharges || 0) > 0 ? convertCurrentCurrencyToOriginal(formData.otherCharges).toFixed(2) : "";
       }
 
       const draftData = {
         ...formData,
         customsDuty: finalCustomsDuty,
+        otherCharges: finalOtherCharges,
         transportCost: finalTransportCost,
         documentationCharges: finalDocCharges,
         currency,
@@ -1075,6 +1153,7 @@ export default function AdminCreateInvoice() {
       let finalTransportCost = "";
       let finalDocCharges = "";
       let finalCustomsDuty = "";
+      let finalOtherCharges = "";
 
       if (formData.includeCustomsTransport) {
         const recalcTransport = getTransportationCostInOriginal();
@@ -1083,16 +1162,18 @@ export default function AdminCreateInvoice() {
           : (parseFloat(formData.transportCost || 0) > 0 ? parseFloat(formData.transportCost).toFixed(2) : "");
         const recalcDoc = formData.modeOfDelivery === "road"
           ? getDocumentationChargeInOriginal()
-          : parseFloat(formData.documentationCharges || 0);
+          : convertCurrentCurrencyToOriginal(formData.documentationCharges);
         finalDocCharges = recalcDoc > 0
           ? recalcDoc.toFixed(2)
           : (parseFloat(formData.documentationCharges || 0) > 0 ? parseFloat(formData.documentationCharges).toFixed(2) : "");
-        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? parseFloat(formData.customsDuty).toFixed(2) : "";
+        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? convertCurrentCurrencyToOriginal(formData.customsDuty).toFixed(2) : "";
+        finalOtherCharges = parseFloat(formData.otherCharges || 0) > 0 ? convertCurrentCurrencyToOriginal(formData.otherCharges).toFixed(2) : "";
       }
 
       const draftData = {
         ...formData,
         customsDuty: finalCustomsDuty,
+        otherCharges: finalOtherCharges,
         transportCost: finalTransportCost,
         documentationCharges: finalDocCharges,
         currency,
@@ -1136,6 +1217,7 @@ export default function AdminCreateInvoice() {
       let finalTransportCost = "";
       let finalDocCharges = "";
       let finalCustomsDuty = "";
+      let finalOtherCharges = "";
 
       if (formData.includeCustomsTransport) {
         const recalcTransport = getTransportationCostInOriginal();
@@ -1144,18 +1226,21 @@ export default function AdminCreateInvoice() {
           : (parseFloat(formData.transportCost || 0) > 0 ? parseFloat(formData.transportCost).toFixed(2) : "");
         const recalcDoc = formData.modeOfDelivery === "road"
           ? getDocumentationChargeInOriginal()
-          : parseFloat(formData.documentationCharges || 0);
+          : convertCurrentCurrencyToOriginal(formData.documentationCharges);
         finalDocCharges = recalcDoc > 0
           ? recalcDoc.toFixed(2)
           : (parseFloat(formData.documentationCharges || 0) > 0 ? parseFloat(formData.documentationCharges).toFixed(2) : "");
-        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? parseFloat(formData.customsDuty).toFixed(2) : "";
+        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? convertCurrentCurrencyToOriginal(formData.customsDuty).toFixed(2) : "";
+        finalOtherCharges = parseFloat(formData.otherCharges || 0) > 0 ? convertCurrentCurrencyToOriginal(formData.otherCharges).toFixed(2) : "";
       }
 
       const finalFormData = {
         ...formData,
         customsDuty: finalCustomsDuty,
+        otherCharges: finalOtherCharges,
         transportCost: finalTransportCost,
         documentationCharges: finalDocCharges,
+        currency,
       };
 
       // Get existing drafts
@@ -1175,17 +1260,24 @@ export default function AdminCreateInvoice() {
           return draft;
         });
         localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
+        await syncSharedInvoice({
+          ...finalFormData,
+          status: "Updated",
+          updatedAt: new Date().toISOString(),
+        });
         setSuccessModal({ show: true, message: "Invoice Updated", type: "updated" });
       } else {
         // Create new invoice
         console.log("Creating invoice:", finalFormData);
-        drafts.push({
+        const generatedInvoice = {
           id: `draft-${Date.now()}`,
           ...finalFormData,
           status: "Generated",
           generatedAt: new Date().toISOString(),
-        });
+        };
+        drafts.push(generatedInvoice);
         localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
+        await syncSharedInvoice(generatedInvoice);
         setSuccessModal({ show: true, message: "Invoice Generated", type: "generated" });
       }
     } catch (error) {
@@ -1334,7 +1426,7 @@ export default function AdminCreateInvoice() {
                   <button
                     key={curr.code}
                     type="button"
-                    onClick={() => setCurrency(curr.code)}
+                    onClick={() => handleCurrencyChange(curr.code)}
                     className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
                       currency === curr.code
                         ? "bg-[#412460] text-white"
@@ -1511,7 +1603,9 @@ export default function AdminCreateInvoice() {
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">
                         Unit Price / {formData.items[0]?.unit || "Unit"}
                       </th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Total Amount</th>
+                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">
+                        Total Amount ({getInvoiceItemCurrencySymbol().trim()})
+                      </th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Comm. %</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Weight</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">CBM</th>
@@ -1616,7 +1710,7 @@ export default function AdminCreateInvoice() {
                           />
                         </td>
                         <td className="px-4 py-3 font-semibold text-[#412460]">
-                          {getCurrencySymbol()}{calculateItemTotal(item)}
+                          {getInvoiceItemCurrencySymbol()}{calculateItemTotal(item)}
                         </td>
                         <td className="px-4 py-3">
                           <input
@@ -1671,7 +1765,7 @@ export default function AdminCreateInvoice() {
             {/* Grand Total Display */}
             <div className="flex items-center justify-end gap-4 border-t border-[#EAE8E5] pt-4">
               <span className="text-sm text-[#2D2D2D]/60">Grand Total:</span>
-              <span className="text-3xl font-bold text-[#412460]">{getCurrencySymbol()}{calculateGrandTotal()}</span>
+              <span className="text-3xl font-bold text-[#412460]">{getInvoiceItemCurrencySymbol()}{calculateGrandTotal()}</span>
             </div>
 
             {/* Submit Buttons with Checkbox on Left */}
@@ -1757,10 +1851,12 @@ export default function AdminCreateInvoice() {
                 </div>
               </div>
             )}
-            {/* Customs, Documentation, and Transportation Charges */}
-            <div className="grid gap-4 sm:grid-cols-3">
+            {/* Customs, Documentation, Other Charges, and Freight Cost */}
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Customs Duty</label>
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                  Customs Duty ({getCurrencySymbol().trim()})
+                </label>
                 <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
                   <span className="select-none text-sm font-semibold text-[#412460]">{getCurrencySymbol()}</span>
                   <input
@@ -1776,7 +1872,7 @@ export default function AdminCreateInvoice() {
               </div>
               <div>
                 <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
-                  Documentation Charges {formData.modeOfDelivery === "road" && "(Auto)"}
+                  Documentation Charges ({getCurrencySymbol().trim()}) {formData.modeOfDelivery === "road" && "(Auto)"}
                 </label>
                 <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
                   <span className="select-none text-sm font-semibold text-[#412460]">{getCurrencySymbol()}</span>
@@ -1798,7 +1894,26 @@ export default function AdminCreateInvoice() {
                 )}
               </div>
               <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Transportation Cost</label>
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                  Other Charges ({getCurrencySymbol().trim()})
+                </label>
+                <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
+                  <span className="select-none text-sm font-semibold text-[#412460]">{getCurrencySymbol()}</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={formData.otherCharges || ""}
+                    onChange={(e) => setFormData(prev => ({ ...prev, otherCharges: e.target.value }))}
+                    className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
+                    placeholder="0.00"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                  Freight Cost ({getCurrencySymbol().trim()})
+                </label>
                 <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
                   <span className="select-none text-sm font-semibold text-[#412460]">{getCurrencySymbol()}</span>
                   <input
@@ -1932,20 +2047,22 @@ export default function AdminCreateInvoice() {
                 ? getDocumentationChargeDisplay()
                 : parseFloat(formData.documentationCharges || 0);
               const transportCost = calculateTransportationCost();
-              const hasAdditionalCharges = customsDuty > 0 || docCharges > 0 || transportCost > 0;
-              const grandTotal = parseFloat(calculateGrandTotal()) + customsDuty + docCharges + transportCost;
+              const otherCharges = parseFloat(formData.otherCharges || 0);
+              const hasAdditionalCharges = customsDuty > 0 || docCharges > 0 || otherCharges > 0 || transportCost > 0;
+              const invoiceTotal = calculateGrandTotalDisplay();
+              const grandTotal = invoiceTotal + customsDuty + docCharges + otherCharges + transportCost;
 
               return (
                 <div className="flex items-center justify-end gap-4 border-t border-[#EAE8E5] pt-4">
                   <div className="text-right">
                     <p className="text-xs text-[#2D2D2D]/50">Invoice Total</p>
                     <p className="text-lg font-bold text-[#2A1740]">
-                      {getCurrencySymbol()}{calculateGrandTotal()}
+                      {getCurrencySymbol()}{invoiceTotal.toFixed(2)}
                     </p>
                   </div>
                   <div className="h-8 w-px bg-[#EAE8E5]" />
                   <div className="text-right">
-                    <p className="text-xs text-[#2D2D2D]/50">Grand Total (with Customs, Docs & Transport)</p>
+                    <p className="text-xs text-[#2D2D2D]/50">Grand Total (with Customs, Docs, Other & Freight)</p>
                     <p className="text-3xl font-bold text-[#412460]">
                       {hasAdditionalCharges ? getCurrencySymbol() + grandTotal.toFixed(2) : "---"}
                     </p>

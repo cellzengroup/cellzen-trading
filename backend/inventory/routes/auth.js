@@ -44,6 +44,22 @@ const ENROLLMENT_TYPES = [
   { key: 'suppliers', label: 'Suppliers', aliases: ['Suppliers', 'Supplier'] },
 ];
 
+const APPROVAL_REQUEST_TYPES = ['Distributor', 'Distributors', 'Partners', 'Partner', 'Suppliers', 'Supplier'];
+
+const buildApprovalPayload = (user) => ({
+  id: user.id,
+  name: user.name,
+  firstName: user.firstName,
+  lastName: user.lastName,
+  username: user.username,
+  email: user.email,
+  accountType: user.accountType,
+  phone: user.phone,
+  country: user.country,
+  accountApprovalStatus: user.accountApprovalStatus,
+  createdAt: user.createdAt,
+});
+
 const requireAdmin = (req, res, next) => {
   const role = String(req.user?.role || '').toLowerCase();
   if (role !== 'admin' && role !== 'superadmin' && req.user?.accountType !== 'Admin') {
@@ -215,6 +231,79 @@ router.get('/enrollments', authenticate, requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('Enrollment summary error:', error);
     res.status(500).json({ success: false, message: 'Unable to load enrollment summary' });
+  }
+});
+
+// GET /approval-requests - Pending distributor/partner/supplier approvals
+router.get('/approval-requests', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+
+    const requests = await User.findAll({
+      where: {
+        role: 'customer',
+        emailVerified: true,
+        accountApprovalStatus: 'pending',
+        accountType: { [Op.in]: APPROVAL_REQUEST_TYPES },
+      },
+      attributes: [
+        'id',
+        'name',
+        'firstName',
+        'lastName',
+        'username',
+        'email',
+        'accountType',
+        'phone',
+        'country',
+        'accountApprovalStatus',
+        'createdAt',
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+
+    res.json({
+      success: true,
+      count: requests.length,
+      data: requests.map(buildApprovalPayload),
+    });
+  } catch (error) {
+    console.error('Approval requests error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load approval requests' });
+  }
+});
+
+// POST /approval-requests/:id/approve - Approve a pending account
+router.post('/approval-requests/:id/approve', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+
+    const user = await User.findOne({
+      where: {
+        id: req.params.id,
+        role: 'customer',
+        accountApprovalStatus: 'pending',
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Pending approval request not found' });
+    }
+
+    await user.update({ accountApprovalStatus: 'approved' });
+
+    res.json({
+      success: true,
+      message: 'Account approved successfully',
+      user: buildApprovalPayload(user),
+    });
+  } catch (error) {
+    console.error('Approve account error:', error);
+    res.status(500).json({ success: false, message: 'Unable to approve account' });
   }
 });
 

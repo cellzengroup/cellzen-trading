@@ -63,8 +63,9 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
   }, 0);
   const customsDuty   = parseFloat(raw.customsDuty           || 0);
   const docCharges    = parseFloat(raw.documentationCharges  || 0);
+  const otherCharges   = parseFloat(raw.otherCharges          || 0);
   const transportCost = parseFloat(raw.transportCost         || 0);
-  const grandTotal    = itemsTotal + customsDuty + docCharges + transportCost;
+  const grandTotal    = itemsTotal + customsDuty + docCharges + otherCharges + transportCost;
 
   // ── Workbook ─────────────────────────────────────────────────────────────────
   const wb = new ExcelJS.Workbook();
@@ -312,7 +313,8 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
 
   addSummaryRow('Total Amount',          itemsTotal);
   if (docCharges    > 0) addSummaryRow('Documentation Charges', docCharges);
-  if (transportCost > 0) addSummaryRow('Transportation Cost',   transportCost);
+  if (otherCharges  > 0) addSummaryRow('Other Charges', otherCharges);
+  if (transportCost > 0) addSummaryRow('Freight Cost',          transportCost);
   if (customsDuty   > 0) addSummaryRow('Customs Duty',          customsDuty);
   addSummaryRow('Grand Total',           grandTotal, true);   // bold + purple, last
 
@@ -373,6 +375,7 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
     'Customs-related charges are not fixed and may change based on assessment by the relevant authorities; the exact amount will be determined after customs clearance.',
     'The total quoted cost is inclusive of door-to-door delivery, covering transportation from origin to the final delivery destination.',
     'An additional 10% of the total goods charges shall be applied for warehouse storage, quality inspection, and goods handling services.',
+    'Other Charges means can include Delivery cost from factory to warehouse and many more.',
   ];
 
   TERMS.forEach((text, idx) => {
@@ -403,12 +406,12 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
   // ===========================================================================
   // Footer  –  purple bar, Arial Bold
   // ===========================================================================
-  row(curRow).height = 28;
+  row(curRow).height = 42;
   mg(curRow, 1, curRow, 9);
   const footer = cel(curRow, 1);
-  footer.value = '"Connecting Global Markets"';
+  footer.value = '"Connecting Global Markets"\nContact: +8613073017734, +977 9849956242   Email: cellzengroup@gmail.com.';
   fnt(footer, { bold: true, size: 13, color: C.white });
-  aln(footer, 'center', 'middle');
+  aln(footer, 'center', 'middle', true);
   fill(footer, C.purple);
 
   // ===========================================================================

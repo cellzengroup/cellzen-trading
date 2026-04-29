@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import CountrySelector from "../../components/ui/CountrySelector";
@@ -14,6 +14,7 @@ const API_URL = import.meta.env.VITE_API_URL
   || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
 
 const ACCOUNT_TYPES = ["Costumers", "Logistics", "Suppliers", "Distributor", "Partners"];
+const OTP_LENGTH = 6;
 const flagUrl = (code) => `https://flagcdn.com/w40/${code.toLowerCase()}.png`;
 const flagUrl2x = (code) => `https://flagcdn.com/w80/${code.toLowerCase()}.png`;
 
@@ -28,6 +29,7 @@ const getDashboardPath = (accountType) => {
 
 export default function TrackingLogin({ initialMode = "signin" }) {
   const navigate = useNavigate();
+  const verificationInputRefs = useRef([]);
   const [mode, setMode] = useState(initialMode);
   const [form, setForm] = useState({
     firstName: "",
@@ -43,7 +45,11 @@ export default function TrackingLogin({ initialMode = "signin" }) {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [pendingVerificationEmail, setPendingVerificationEmail] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
+  const [registrationResult, setRegistrationResult] = useState(null);
 
   const handleChange = (event) => {
     setForm({ ...form, [event.target.name]: event.target.value });
@@ -58,6 +64,46 @@ export default function TrackingLogin({ initialMode = "signin" }) {
     setPhoneNumber(event.target.value.replace(/[^\d\s\-]/g, ""));
   };
 
+  const focusVerificationInput = (index) => {
+    verificationInputRefs.current[index]?.focus();
+    verificationInputRefs.current[index]?.select();
+  };
+
+  const handleVerificationCodeChange = (index, event) => {
+    const digits = event.target.value.replace(/\D/g, "");
+    if (!digits) return;
+
+    const nextCode = `${verificationCode.slice(0, index)}${digits}${verificationCode.slice(index + digits.length)}`.slice(0, OTP_LENGTH);
+    setVerificationCode(nextCode);
+    focusVerificationInput(Math.min(index + digits.length, OTP_LENGTH - 1));
+  };
+
+  const handleVerificationKeyDown = (index, event) => {
+    if (event.key !== "Backspace") return;
+
+    event.preventDefault();
+    if (verificationCode[index]) {
+      setVerificationCode(`${verificationCode.slice(0, index)}${verificationCode.slice(index + 1)}`);
+      focusVerificationInput(index);
+      return;
+    }
+
+    if (index > 0) {
+      setVerificationCode(`${verificationCode.slice(0, index - 1)}${verificationCode.slice(index)}`);
+      focusVerificationInput(index - 1);
+    }
+  };
+
+  const handleVerificationPaste = (index, event) => {
+    event.preventDefault();
+    const pastedCode = event.clipboardData.getData("text").replace(/\D/g, "").slice(0, OTP_LENGTH - index);
+    if (!pastedCode) return;
+
+    const nextCode = `${verificationCode.slice(0, index)}${pastedCode}${verificationCode.slice(index + pastedCode.length)}`.slice(0, OTP_LENGTH);
+    setVerificationCode(nextCode);
+    focusVerificationInput(Math.min(index + pastedCode.length, OTP_LENGTH - 1));
+  };
+
   const prefixFlag = useMemo(() => {
     if (selectedCountry) return selectedCountry;
     if (!phonePrefix || phonePrefix.length < 2) return null;
@@ -68,6 +114,7 @@ export default function TrackingLogin({ initialMode = "signin" }) {
     event.preventDefault();
     setSubmitted(false);
     setError("");
+    setRegistrationResult(null);
     setLoading(true);
 
     try {
@@ -87,14 +134,81 @@ export default function TrackingLogin({ initialMode = "signin" }) {
         : { identifier: form.email, password: form.password };
 
       const { data } = await axios.post(`${API_URL}${endpoint}`, payload);
+
+      if (isSignUp && data.requiresEmailVerification) {
+        setPendingVerificationEmail(data.email || form.email);
+        setVerificationCode("");
+        setSubmitted(true);
+        return;
+      }
+
       localStorage.setItem("customer_token", data.token);
       sessionStorage.setItem("customer_user", JSON.stringify(data.user));
       setSubmitted(true);
       navigate(getDashboardPath(data.user?.accountType));
     } catch (authError) {
+      if (authError.response?.data?.requiresEmailVerification) {
+        setPendingVerificationEmail(authError.response.data.email || form.email);
+        setVerificationCode("");
+      } else if (authError.response?.data?.requiresAdminApproval) {
+        setRegistrationResult({
+          type: "approval",
+          user: authError.response.data.user,
+        });
+        return;
+      }
       setError(authError.response?.data?.message || "Unable to sign in right now. Please try again.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleVerifyEmail = async (event) => {
+    event.preventDefault();
+    setSubmitted(false);
+    setError("");
+    setLoading(true);
+
+    try {
+      const { data } = await axios.post(`${API_URL}/customer/auth/verify-email`, {
+        email: pendingVerificationEmail,
+        code: verificationCode,
+      });
+
+      if (data.requiresAdminApproval) {
+        setPendingVerificationEmail("");
+        setVerificationCode("");
+        setRegistrationResult({ type: "approval", user: data.user });
+        return;
+      }
+
+      localStorage.setItem("customer_token", data.token);
+      sessionStorage.setItem("customer_user", JSON.stringify(data.user));
+      setPendingVerificationEmail("");
+      setVerificationCode("");
+      setRegistrationResult({ type: "success", user: data.user });
+      setSubmitted(true);
+    } catch (verifyError) {
+      setError(verifyError.response?.data?.message || "Unable to verify your email. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    setSubmitted(false);
+    setError("");
+    setResending(true);
+
+    try {
+      await axios.post(`${API_URL}/customer/auth/resend-verification`, {
+        email: pendingVerificationEmail,
+      });
+      setSubmitted(true);
+    } catch (resendError) {
+      setError(resendError.response?.data?.message || "Unable to resend the verification code.");
+    } finally {
+      setResending(false);
     }
   };
 
@@ -102,9 +216,21 @@ export default function TrackingLogin({ initialMode = "signin" }) {
     setMode(initialMode);
     setSubmitted(false);
     setError("");
+    setPendingVerificationEmail("");
+    setVerificationCode("");
+    setRegistrationResult(null);
   }, [initialMode]);
 
   const isSignUp = mode === "signup";
+  const isVerifyingEmail = Boolean(pendingVerificationEmail);
+  const isShowingRegistrationResult = Boolean(registrationResult);
+  const showAuthForm = !isVerifyingEmail && !isShowingRegistrationResult;
+
+  useEffect(() => {
+    if (isVerifyingEmail) {
+      focusVerificationInput(0);
+    }
+  }, [isVerifyingEmail]);
 
   return (
     <>
@@ -174,10 +300,20 @@ export default function TrackingLogin({ initialMode = "signin" }) {
                 />
               </Link>
 
-              <h2 className="text-center text-xl font-semibold uppercase tracking-wide text-[#2D2D2D] sm:text-2xl xl:text-3xl">
-                {isSignUp ? "Sign up" : "Sign in"}
+              <h2 className={(isVerifyingEmail || (isShowingRegistrationResult && registrationResult.type !== "approval"))
+                ? "mx-auto max-w-[240px] text-center text-sm font-bold leading-snug text-[#2D2D2D] sm:text-base"
+                : "text-center text-xl font-semibold uppercase tracking-wide text-[#2D2D2D] sm:text-2xl xl:text-3xl"}
+              >
+                {isShowingRegistrationResult
+                  ? registrationResult.type === "approval"
+                    ? ""
+                    : "Registered Successfully"
+                  : isVerifyingEmail
+                    ? "We sent you a code to verify your email"
+                    : isSignUp ? "Sign up" : "Sign in"}
               </h2>
 
+              {showAuthForm && (
               <div className="mt-6 grid grid-cols-2 bg-[#412460]/8 p-1">
                 {[
                   { id: "signin", label: "Sign In" },
@@ -213,21 +349,26 @@ export default function TrackingLogin({ initialMode = "signin" }) {
                   );
                 })}
               </div>
+              )}
 
+              {showAuthForm && (
               <div className="mt-6 space-y-3 sm:mt-7">
                 <button type="button" className="flex w-full items-center justify-center gap-2 border border-[#412460]/30 bg-white px-4 py-2.5 text-xs font-semibold text-[#412460] transition-colors hover:border-[#B99353] hover:text-[#B99353] xl:py-3.5 xl:text-sm">
                   <span className="font-black text-[#B99353]">G</span>
                   {isSignUp ? "Sign up" : "Sign in"} with Google
                 </button>
               </div>
+              )}
 
+              {showAuthForm && (
               <div className="my-5 flex items-center gap-3 sm:my-6">
                 <div className="h-px flex-1 bg-[#E6E1EE]" />
                 <span className="text-[10px] text-[#2D2D2D]/35">Or use e-mail</span>
                 <div className="h-px flex-1 bg-[#E6E1EE]" />
               </div>
+              )}
 
-              {submitted && (
+              {submitted && showAuthForm && (
                 <div className="mb-4 border border-[#B99353]/35 bg-[#B99353]/10 p-3 text-xs leading-relaxed text-[#8B6A31]">
                   {isSignUp ? "Customer account created successfully." : "Signed in successfully."}
                 </div>
@@ -239,6 +380,112 @@ export default function TrackingLogin({ initialMode = "signin" }) {
                 </div>
               )}
 
+              {isShowingRegistrationResult ? (
+                <div className="mt-7 text-center">
+                  {registrationResult.type === "approval" ? (
+                    <>
+                      <h3 className="text-lg font-semibold uppercase leading-snug text-[#412460]">Wait for the Admin to accept your Approval</h3>
+                      <p className="mt-3 text-sm leading-relaxed text-[#2D2D2D]/55">
+                        Sorry For keep you waiting.
+                      </p>
+                      <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRegistrationResult(null);
+                            setMode("signin");
+                            setError("");
+                            setSubmitted(false);
+                          }}
+                          className="bg-[#412460] px-5 py-3 text-xs font-semibold text-white transition-colors hover:bg-[#B99353]"
+                        >
+                          OK
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => navigate("/")}
+                          className="border border-[#412460]/25 px-5 py-3 text-xs font-semibold text-[#412460] transition-colors hover:border-[#B99353] hover:text-[#B99353]"
+                        >
+                          Back Home
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <h3 className="mt-5 text-xl font-semibold text-[#412460]">Registered Successfully</h3>
+                      <p className="mt-3 text-sm leading-relaxed text-[#2D2D2D]/55">
+                        Your account is ready. Continue to your tracking dashboard.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => navigate(getDashboardPath(registrationResult.user?.accountType))}
+                        className="mt-6 w-full bg-[#412460] px-5 py-3 text-xs font-semibold text-white transition-colors hover:bg-[#B99353] xl:py-4 xl:text-sm"
+                      >
+                        Continue
+                      </button>
+                    </>
+                  )}
+                </div>
+              ) : isVerifyingEmail ? (
+                <form onSubmit={handleVerifyEmail} className="mt-7 space-y-6">
+                  <p className="text-center text-xs font-medium text-[#2D2D2D]/35">
+                    Sent to <span className="text-[#2D2D2D]/45">{pendingVerificationEmail}</span>
+                  </p>
+                  <div
+                    role="group"
+                    aria-label="Email verification code"
+                    className="grid grid-cols-6 gap-2 sm:gap-3"
+                  >
+                    {Array.from({ length: OTP_LENGTH }).map((_, index) => (
+                      <input
+                        key={index}
+                        ref={(element) => {
+                          verificationInputRefs.current[index] = element;
+                        }}
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete={index === 0 ? "one-time-code" : "off"}
+                        value={verificationCode[index] || ""}
+                        onChange={(event) => handleVerificationCodeChange(index, event)}
+                        onKeyDown={(event) => handleVerificationKeyDown(index, event)}
+                        onPaste={(event) => handleVerificationPaste(index, event)}
+                        aria-label={`Verification code digit ${index + 1}`}
+                        className="flex h-14 w-full border border-[#D9D5DE] bg-white text-center text-xl font-semibold text-[#2D2D2D] outline-none transition-colors focus:border-[#412460] focus:shadow-[0_10px_24px_rgba(65,36,96,0.12)] sm:h-16"
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading || verificationCode.length !== OTP_LENGTH}
+                    className="w-full bg-[#412460] px-5 py-3 text-xs font-semibold text-white transition-colors hover:bg-[#B99353] disabled:opacity-60 xl:py-4 xl:text-sm"
+                  >
+                    {loading ? "Verifying..." : "Verify & Continue"}
+                  </button>
+                  <p className="text-center text-xs font-semibold text-[#2D2D2D]/45">
+                    I didn&apos;t receive a code!{" "}
+                    <button
+                      type="button"
+                      disabled={resending}
+                      onClick={handleResendVerification}
+                      className="text-[#2296F3] transition-colors hover:text-[#B99353] disabled:opacity-60"
+                    >
+                      {resending ? "Sending..." : "Resend"}
+                    </button>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPendingVerificationEmail("");
+                      setVerificationCode("");
+                      setSubmitted(false);
+                      setError("");
+                    }}
+                    className="w-full px-5 py-2 text-[10px] font-semibold text-[#2D2D2D]/45 transition-colors hover:text-[#412460] xl:text-xs"
+                  >
+                    Back to sign up
+                  </button>
+                </form>
+              ) : (
               <form onSubmit={handleSubmit} className="space-y-3">
                 {isSignUp && (
                   <div className="grid grid-cols-2 gap-3">
@@ -401,9 +648,10 @@ export default function TrackingLogin({ initialMode = "signin" }) {
                   disabled={loading}
                   className="w-full bg-[#412460] px-5 py-3 text-xs font-semibold text-white transition-colors hover:bg-[#B99353] xl:py-4 xl:text-sm"
                 >
-                  {loading ? "Please wait..." : isSignUp ? "Create Free Account" : "Continue"}
+                  {loading ? "Please wait..." : isSignUp ? "Create Account" : "Continue"}
                 </button>
               </form>
+              )}
 
               </div>
             </div>
