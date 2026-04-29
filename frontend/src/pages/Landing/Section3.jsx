@@ -151,7 +151,7 @@ function GlobeSection() {
             viewport={{ once: true, amount: 0.3 }}
             transition={prefersReducedMotion ? revealTransition : { ...revealTransition, delay: 0.08 }}
           >
-            <h3 className="premium-font-galdgderbold text-2xl text-cz-main sm:text-3xl lg:text-[2.6rem] leading-[1.15]">
+            <h3 className="premium-font-galdgderbold text-3xl text-cz-main sm:text-4xl md:text-5xl lg:text-6xl leading-[1]">
               We Are Connecting Global Business Success With{" "}
               <span className="text-[#B99353]">Trading</span>
             </h3>

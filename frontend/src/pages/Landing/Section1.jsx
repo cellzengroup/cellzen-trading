@@ -492,7 +492,7 @@ export default function Section1() {
   }}
   >
   <div className="text-center px-4 sm:px-6 pointer-events-auto">
-  <h2 className="premium-font-galdgderbold text-2xl text-white sm:text-4xl md:text-5xl lg:text-6xl leading-tight">
+  <h2 className="premium-font-galdgderbold text-3xl text-white sm:text-4xl md:text-5xl lg:text-6xl leading-[1]">
   Connecting Global Markets
   </h2>
   <p className="mt-3 sm:mt-4 mx-auto max-w-xl text-xs sm:text-base text-white/60 leading-relaxed">

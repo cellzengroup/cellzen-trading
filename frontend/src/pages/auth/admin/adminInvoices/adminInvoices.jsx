@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import AdminPageShell from "../AdminPageShell";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { generateInvoiceExcel } from "../../../../utils/generateCellzenInvoice.js";
+import { generateInvoicePDF } from "../../../../utils/generateCellzenInvoicePDF.js";
 
 const CURRENCIES = [
   { code: "NPR", symbol: "Rs. ", name: "NPR" },
@@ -34,10 +35,17 @@ export default function AdminInvoices() {
     const loadedInvoices = drafts.map((draft) => {
       // Calculate total amount from items in the original currency
       const itemsTotal = draft.items?.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0) || 0;
-      const customsDuty = parseFloat(draft.customsDuty || 0);
-      const documentationCharges = parseFloat(draft.documentationCharges || 0);
-      const transportCost = parseFloat(draft.transportCost || 0);
-      const grandTotal = itemsTotal + customsDuty + documentationCharges + transportCost;
+      // Calculate commission from items
+      const commissionTotal = draft.items?.reduce((sum, item) => {
+        const baseTotal = item.quantity * item.unitPrice;
+        const commissionPercent = item.commission || 0;
+        return sum + (baseTotal * (commissionPercent / 100));
+      }, 0) || 0;
+      // Only add customs/transport if checkbox was checked (values exist and > 0)
+      const customsDuty = parseFloat(draft.customsDuty || 0) > 0 ? parseFloat(draft.customsDuty) : 0;
+      const documentationCharges = parseFloat(draft.documentationCharges || 0) > 0 ? parseFloat(draft.documentationCharges) : 0;
+      const transportCost = parseFloat(draft.transportCost || 0) > 0 ? parseFloat(draft.transportCost) : 0;
+      const grandTotal = itemsTotal + commissionTotal + customsDuty + documentationCharges + transportCost;
 
       // Convert to current currency for display
       const originalCurrency = draft.currency || draft.originalCurrency || "USD";
@@ -120,48 +128,9 @@ export default function AdminInvoices() {
   };
 
   // Download functions
-  const downloadAsPDF = (invoice) => {
-    // Calculate totals with commission
-    const itemsWithCommission = invoice.rawData?.items?.map(item => {
-      const baseTotal = item.quantity * item.unitPrice;
-      const commissionPercent = item.commission || 0;
-      const commissionAmount = baseTotal * (commissionPercent / 100);
-      const totalWithCommission = baseTotal + commissionAmount;
-      return {
-        ...item,
-        baseTotal,
-        commissionAmount,
-        totalWithCommission
-      };
-    }) || [];
-
-    const totalCommission = itemsWithCommission.reduce((sum, item) => sum + item.commissionAmount, 0);
-    const baseItemsTotal = itemsWithCommission.reduce((sum, item) => sum + item.baseTotal, 0);
-    const grandTotal = invoice.amount;
-
-    // Create a simple PDF-like download using HTML
-    const content = `
-INVOICE
-=======
-Invoice ID: ${invoice.id}
-Customer: ${invoice.customer}
-Date: ${invoice.date}
-Status: ${invoice.status}
-
-Items:
-${itemsWithCommission.map(item => `- ${item.productName}: ${item.quantity} x ${item.unitPrice} = ${item.baseTotal.toFixed(2)}${item.commission > 0 ? ` + Commission (${item.commission}%) ${item.commissionAmount.toFixed(2)} = ${item.totalWithCommission.toFixed(2)}` : ''}`).join('\n') || 'No items'}
-
-Items Total: ${baseItemsTotal.toFixed(2)}
-${totalCommission > 0 ? `Commission: ${totalCommission.toFixed(2)}\n` : ''}Grand Total: ${grandTotal}
-    `;
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${invoice.id}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const downloadAsPDF = async (invoice) => {
     setDownloadModal({ show: false, invoice: null });
+    await generateInvoicePDF(invoice, currency);
   };
 
   const downloadAsExcel = async (invoice) => {
@@ -509,6 +478,7 @@ ${totalCommission > 0 ? `Commission: ${totalCommission.toFixed(2)}\n` : ''}Grand
                 Close
               </button>
               <button
+                onClick={() => downloadAsPDF(selectedInvoice)}
                 className="flex-1 bg-[#412460] py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#B99353]"
               >
                 Download PDF

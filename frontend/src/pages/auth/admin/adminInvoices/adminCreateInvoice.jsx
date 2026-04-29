@@ -581,6 +581,12 @@ export default function AdminCreateInvoice() {
       const parsedData = JSON.parse(editData);
       setIsEditMode(true);
       setEditInvoiceId(parsedData.invoiceNumber || parsedData.id);
+      // Check if customs/transport was actually enabled (values > 0)
+      const hasTransportCost = parseFloat(parsedData.transportCost || 0) > 0;
+      const hasCustomsDuty = parseFloat(parsedData.customsDuty || 0) > 0;
+      const hasDocCharges = parseFloat(parsedData.documentationCharges || 0) > 0;
+      const shouldIncludeCustoms = hasTransportCost || hasCustomsDuty || hasDocCharges;
+
       setFormData(prev => ({
         ...prev,
         ...parsedData,
@@ -588,6 +594,8 @@ export default function AdminCreateInvoice() {
         items: parsedData.items || prev.items,
         // Restore currency from the saved invoice
         originalCurrency: parsedData.currency || currency,
+        // Set the checkbox based on whether customs data has actual values
+        includeCustomsTransport: shouldIncludeCustoms,
       }));
       // Set the currency to match the invoice's currency
       if (parsedData.currency) {
@@ -645,6 +653,7 @@ export default function AdminCreateInvoice() {
     shippingCompany: "",
     trackingNumber: "",
     customsNotes: "",
+    includeCustomsTransport: false, // Radio button state for adding customs/transport
   });
 
   // Get current currency symbol with space
@@ -653,18 +662,18 @@ export default function AdminCreateInvoice() {
     return curr?.symbol || "Rs. ";
   };
 
-  // Convert USD rate to current currency
-  const convertRateFromUSD = (usdRate) => {
+  // Convert USD rate to target currency (defaults to current currency)
+  const convertRateFromUSD = (usdRate, targetCurrency = currency) => {
     if (!usdRate || isNaN(usdRate)) return 0;
     // Exchange rates are stored as: 1 USD = X CNY/NPR
-    // To convert USD to NPR: multiply by exchange rate
+    // To convert USD to target: multiply by exchange rate
     const rates = { USD: 1, CNY: 7.24, NPR: 135.50 };
     const savedRates = localStorage.getItem('cellzen_exchange_rates');
     if (savedRates) {
       const parsed = JSON.parse(savedRates);
       Object.assign(rates, parsed);
     }
-    return parseFloat(usdRate) * (rates[currency] || 1);
+    return parseFloat(usdRate) * (rates[targetCurrency] || 1);
   };
 
   // Fetch users on mount
@@ -851,8 +860,39 @@ export default function AdminCreateInvoice() {
     };
   };
 
-  // Calculate transportation cost based on rates from settings
-  const calculateTransportationCost = () => {
+  // Get transport rates in original currency
+  const getTransportRatesInOriginal = () => {
+    const { modeOfDelivery, transportFrom, transportTo, originalCurrency } = formData;
+
+    if (!modeOfDelivery || !transportFrom || !transportTo) return { kgRate: 0, cbmRate: 0 };
+
+    // Find matching rates
+    const matchingRates = transportRates.filter(rate => {
+      const modeMatch = rate.mode === modeOfDelivery;
+      const fromMatch = rate.from === transportFrom.name;
+      const toMatch = rate.to === transportTo.name;
+
+      // For road transport to/from Nepal, also check border crossing
+      if (modeOfDelivery === "road" && (transportFrom.name === "Nepal" || transportTo.name === "Nepal")) {
+        const borderMatch = rate.method === formData.borderCrossing;
+        return modeMatch && fromMatch && toMatch && borderMatch;
+      }
+
+      return modeMatch && fromMatch && toMatch;
+    });
+
+    const kgRateUSD = matchingRates.find(r => r.unit === "kg")?.rate || 0;
+    const cbmRateUSD = matchingRates.find(r => r.unit === "cbm")?.rate || 0;
+
+    // Convert from USD to original currency
+    return {
+      kgRate: convertRateFromUSD(kgRateUSD, originalCurrency || currency),
+      cbmRate: convertRateFromUSD(cbmRateUSD, originalCurrency || currency),
+    };
+  };
+
+  // Calculate transportation cost in original currency (for saving)
+  const getTransportationCostInOriginal = () => {
     const { modeOfDelivery, transportFrom, transportTo } = formData;
 
     if (!modeOfDelivery || !transportFrom || !transportTo) return 0;
@@ -862,7 +902,7 @@ export default function AdminCreateInvoice() {
 
     if (totalWeight === 0 && totalCBM === 0) return 0;
 
-    const { kgRate, cbmRate } = getTransportRates();
+    const { kgRate, cbmRate } = getTransportRatesInOriginal();
 
     const kgCost = kgRate ? totalWeight * kgRate : 0;
     const cbmCost = cbmRate ? totalCBM * cbmRate : 0;
@@ -872,6 +912,15 @@ export default function AdminCreateInvoice() {
       return Math.max(kgCost, cbmCost);
     }
     return kgCost || cbmCost || 0;
+  };
+
+  // Calculate transportation cost for display (in current currency)
+  const calculateTransportationCost = () => {
+    const costInOriginal = getTransportationCostInOriginal();
+    const { originalCurrency } = formData;
+
+    // Convert from original currency to current display currency
+    return convertCurrency(costInOriginal, originalCurrency || currency, currency);
   };
 
   // Convert amount from one currency to another
@@ -891,15 +940,20 @@ export default function AdminCreateInvoice() {
     return amountInUSD * rates[toCurrency];
   };
 
-  // Calculate documentation charges (0.3% of cargo value) - only for road transport
-  const calculateDocumentationCharges = () => {
-    const { modeOfDelivery, originalCurrency } = formData;
+  // Calculate documentation charges (0.3% of cargo value) in original currency
+  const getDocumentationChargeInOriginal = () => {
+    const { modeOfDelivery } = formData;
     if (modeOfDelivery !== "road") return 0;
 
     const itemsTotal = formData.items.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0);
-    const docChargeInOriginal = itemsTotal * 0.003; // 0.3% of cargo value
+    return itemsTotal * 0.003; // 0.3% of cargo value in original currency
+  };
 
-    // Convert from original currency to current currency
+  // Get display value for documentation charges (converted to current currency)
+  const getDocumentationChargeDisplay = () => {
+    const docChargeInOriginal = getDocumentationChargeInOriginal();
+    const { originalCurrency } = formData;
+    // Convert from original currency to current display currency
     return convertCurrency(docChargeInOriginal, originalCurrency || currency, currency);
   };
 
@@ -908,8 +962,44 @@ export default function AdminCreateInvoice() {
   };
 
   const handleBack = () => {
-    setCurrentStep(1);
+    if (currentStep === 3) {
+      setCurrentStep(2);
+    } else {
+      setCurrentStep(1);
+    }
   };
+
+  // Auto-uncheck the customs/transport option if user removes all measurements
+  useEffect(() => {
+    if (!hasAnyMeasurements() && formData.includeCustomsTransport) {
+      setFormData(prev => ({ ...prev, includeCustomsTransport: false }));
+    }
+  }, [formData.items]);
+
+  // Clear customs/transport data when checkbox is unchecked
+  // Redirect from Step 3 to Step 2 if unchecked while on Step 3
+  useEffect(() => {
+    if (!formData.includeCustomsTransport) {
+      // Clear all customs and transport data
+      setFormData(prev => ({
+        ...prev,
+        customsDuty: "",
+        documentationCharges: "",
+        transportCost: "",
+        transportFrom: null,
+        transportTo: null,
+        borderCrossing: "",
+        shippingCompany: "",
+        trackingNumber: "",
+        customsNotes: "",
+      }));
+
+      // If on Step 3 and unchecked, go back to Step 2
+      if (currentStep === 3) {
+        setCurrentStep(2);
+      }
+    }
+  }, [formData.includeCustomsTransport]);
 
   const handleCancelClick = () => {
     setShowCancelModal(true);
@@ -919,20 +1009,30 @@ export default function AdminCreateInvoice() {
     setLoading(true);
     try {
       const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
-      const recalcTransport = calculateTransportationCost();
-      const finalTransportCost = recalcTransport > 0
-        ? recalcTransport
-        : parseFloat(formData.transportCost || 0);
-      const recalcDoc = formData.modeOfDelivery === "road"
-        ? calculateDocumentationCharges()
-        : parseFloat(formData.documentationCharges || 0);
-      const finalDocCharges = recalcDoc > 0
-        ? recalcDoc
-        : parseFloat(formData.documentationCharges || 0);
+      // Only include customs/transport data if checkbox is checked
+      let finalTransportCost = "";
+      let finalDocCharges = "";
+      let finalCustomsDuty = "";
+
+      if (formData.includeCustomsTransport) {
+        const recalcTransport = getTransportationCostInOriginal();
+        finalTransportCost = recalcTransport > 0
+          ? recalcTransport.toFixed(2)
+          : (parseFloat(formData.transportCost || 0) > 0 ? parseFloat(formData.transportCost).toFixed(2) : "");
+        const recalcDoc = formData.modeOfDelivery === "road"
+          ? getDocumentationChargeInOriginal()
+          : parseFloat(formData.documentationCharges || 0);
+        finalDocCharges = recalcDoc > 0
+          ? recalcDoc.toFixed(2)
+          : (parseFloat(formData.documentationCharges || 0) > 0 ? parseFloat(formData.documentationCharges).toFixed(2) : "");
+        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? parseFloat(formData.customsDuty).toFixed(2) : "";
+      }
+
       const draftData = {
         ...formData,
-        transportCost: finalTransportCost.toFixed(2),
-        documentationCharges: finalDocCharges.toFixed(2),
+        customsDuty: finalCustomsDuty,
+        transportCost: finalTransportCost,
+        documentationCharges: finalDocCharges,
         currency,
         status: "Draft",
         draftSavedAt: new Date().toISOString(),
@@ -970,20 +1070,31 @@ export default function AdminCreateInvoice() {
     setLoading(true);
     try {
       const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
-      const recalcTransport = calculateTransportationCost();
-      const finalTransportCost = recalcTransport > 0
-        ? recalcTransport
-        : parseFloat(formData.transportCost || 0);
-      const recalcDoc = formData.modeOfDelivery === "road"
-        ? calculateDocumentationCharges()
-        : parseFloat(formData.documentationCharges || 0);
-      const finalDocCharges = recalcDoc > 0
-        ? recalcDoc
-        : parseFloat(formData.documentationCharges || 0);
+
+      // Only include customs/transport data if checkbox is checked
+      let finalTransportCost = "";
+      let finalDocCharges = "";
+      let finalCustomsDuty = "";
+
+      if (formData.includeCustomsTransport) {
+        const recalcTransport = getTransportationCostInOriginal();
+        finalTransportCost = recalcTransport > 0
+          ? recalcTransport.toFixed(2)
+          : (parseFloat(formData.transportCost || 0) > 0 ? parseFloat(formData.transportCost).toFixed(2) : "");
+        const recalcDoc = formData.modeOfDelivery === "road"
+          ? getDocumentationChargeInOriginal()
+          : parseFloat(formData.documentationCharges || 0);
+        finalDocCharges = recalcDoc > 0
+          ? recalcDoc.toFixed(2)
+          : (parseFloat(formData.documentationCharges || 0) > 0 ? parseFloat(formData.documentationCharges).toFixed(2) : "");
+        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? parseFloat(formData.customsDuty).toFixed(2) : "";
+      }
+
       const draftData = {
         ...formData,
-        transportCost: finalTransportCost.toFixed(2),
-        documentationCharges: finalDocCharges.toFixed(2),
+        customsDuty: finalCustomsDuty,
+        transportCost: finalTransportCost,
+        documentationCharges: finalDocCharges,
         currency,
         status: "Draft",
         draftSavedAt: new Date().toISOString(),
@@ -1021,20 +1132,30 @@ export default function AdminCreateInvoice() {
     e.preventDefault();
     setLoading(true);
     try {
-      const recalcTransport = calculateTransportationCost();
-      const finalTransportCost = recalcTransport > 0
-        ? recalcTransport
-        : parseFloat(formData.transportCost || 0);
-      const recalcDoc = formData.modeOfDelivery === "road"
-        ? calculateDocumentationCharges()
-        : parseFloat(formData.documentationCharges || 0);
-      const finalDocCharges = recalcDoc > 0
-        ? recalcDoc
-        : parseFloat(formData.documentationCharges || 0);
+      // Only include customs/transport data if checkbox is checked
+      let finalTransportCost = "";
+      let finalDocCharges = "";
+      let finalCustomsDuty = "";
+
+      if (formData.includeCustomsTransport) {
+        const recalcTransport = getTransportationCostInOriginal();
+        finalTransportCost = recalcTransport > 0
+          ? recalcTransport.toFixed(2)
+          : (parseFloat(formData.transportCost || 0) > 0 ? parseFloat(formData.transportCost).toFixed(2) : "");
+        const recalcDoc = formData.modeOfDelivery === "road"
+          ? getDocumentationChargeInOriginal()
+          : parseFloat(formData.documentationCharges || 0);
+        finalDocCharges = recalcDoc > 0
+          ? recalcDoc.toFixed(2)
+          : (parseFloat(formData.documentationCharges || 0) > 0 ? parseFloat(formData.documentationCharges).toFixed(2) : "");
+        finalCustomsDuty = parseFloat(formData.customsDuty || 0) > 0 ? parseFloat(formData.customsDuty).toFixed(2) : "";
+      }
+
       const finalFormData = {
         ...formData,
-        transportCost: finalTransportCost.toFixed(2),
-        documentationCharges: finalDocCharges.toFixed(2),
+        customsDuty: finalCustomsDuty,
+        transportCost: finalTransportCost,
+        documentationCharges: finalDocCharges,
       };
 
       // Get existing drafts
@@ -1075,11 +1196,20 @@ export default function AdminCreateInvoice() {
     }
   };
 
-  // Step indicators
+  // Check if any item has weight or CBM (to enable customs/transport option)
+  const hasAnyMeasurements = () => {
+    return formData.items.some(item => {
+      const hasWeight = item.weight && parseFloat(item.weight) > 0;
+      const hasCBM = item.cbm && parseFloat(item.cbm) > 0;
+      return hasWeight || hasCBM;
+    });
+  };
+
+  // Show Step 3 only when checkbox is checked
   const steps = [
     { number: 1, label: "Information" },
     { number: 2, label: "Invoice Items" },
-    { number: 3, label: "Customs & Transport" },
+    ...(formData.includeCustomsTransport ? [{ number: 3, label: "Customs & Transport" }] : []),
   ];
 
   return (
@@ -1132,7 +1262,7 @@ export default function AdminCreateInvoice() {
                 <button
                   type="button"
                   onClick={handleSaveDraft}
-                  disabled={loading}
+                  disabled={loading || !formData.includeCustomsTransport}
                   className="flex items-center gap-2 rounded-full border border-[#B99353] bg-white px-4 py-2 text-sm font-semibold text-[#B99353] transition-colors hover:bg-[#B99353] hover:text-white disabled:opacity-50"
                 >
                   <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1544,23 +1674,34 @@ export default function AdminCreateInvoice() {
               <span className="text-3xl font-bold text-[#412460]">{getCurrencySymbol()}{calculateGrandTotal()}</span>
             </div>
 
-            {/* Submit Buttons */}
+            {/* Submit Buttons with Checkbox on Left */}
             <div className="flex items-center justify-between pt-4">
+              {/* Left Side: Checkbox */}
               <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => setCurrentStep(3)}
-                  disabled={!hasRequiredMeasurements()}
-                  className="rounded-lg border border-[#412460] bg-white px-6 py-3 text-sm font-semibold text-[#412460] transition-colors hover:bg-[#412460] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed disabled:border-[#E1E3EE] disabled:text-[#2D2D2D]/40"
-                >
-                  + Add Custom Clearance and Transportation
-                </button>
-                {!hasRequiredMeasurements() && (
+                <div className={`flex items-center gap-3 rounded-lg border px-4 py-3 ${hasAnyMeasurements() ? 'border-[#412460]/30 bg-[#FDFCFB]' : 'border-[#E1E3EE] bg-[#F7F6F2]'}`}>
+                  <input
+                    type="checkbox"
+                    id="includeCustomsTransport"
+                    checked={formData.includeCustomsTransport}
+                    onChange={(e) => setFormData(prev => ({ ...prev, includeCustomsTransport: e.target.checked }))}
+                    disabled={!hasAnyMeasurements()}
+                    className="h-5 w-5 cursor-pointer accent-[#412460] disabled:cursor-not-allowed disabled:opacity-40"
+                  />
+                  <label
+                    htmlFor="includeCustomsTransport"
+                    className={`text-sm font-medium whitespace-nowrap ${hasAnyMeasurements() ? 'cursor-pointer text-[#412460]' : 'cursor-not-allowed text-[#2D2D2D]/40'}`}
+                  >
+                    Add Transportation and Customs
+                  </label>
+                </div>
+                {!hasAnyMeasurements() && (
                   <span className="text-xs text-[#E05353]">
-                    * Enter Weight or CBM for all items
+                    * Enter Weight or CBM to enable
                   </span>
                 )}
               </div>
+
+              {/* Right Side: Action Buttons */}
               <div className="flex items-center gap-3">
                 <button
                   type="button"
@@ -1569,13 +1710,25 @@ export default function AdminCreateInvoice() {
                 >
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="rounded-lg bg-[#412460] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B99353] disabled:opacity-50"
-                >
-                  {loading ? "Generating..." : "Generate Invoice"}
-                </button>
+                {formData.includeCustomsTransport ? (
+                  // Show Next button if checkbox is checked
+                  <button
+                    type="button"
+                    onClick={() => setCurrentStep(3)}
+                    className="rounded-lg bg-[#412460] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B99353]"
+                  >
+                    Next
+                  </button>
+                ) : (
+                  // Show Generate Invoice button if checkbox is not checked
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="rounded-lg bg-[#412460] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B99353] disabled:opacity-50"
+                  >
+                    {loading ? "Generating..." : "Generate Invoice"}
+                  </button>
+                )}
               </div>
             </div>
           </form>
@@ -1584,6 +1737,26 @@ export default function AdminCreateInvoice() {
         {/* Step 3: Customs Duty and Transportation */}
         {currentStep === 3 && (
           <form onSubmit={handleSubmit} className="mt-6 space-y-6">
+            {/* Warning if customs/transport is disabled */}
+            {!formData.includeCustomsTransport && (
+              <div className="rounded-lg border border-[#E05353]/30 bg-[#FFECEC] p-4">
+                <div className="flex items-center gap-3">
+                  <svg className="h-5 w-5 text-[#E05353]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <span className="text-sm font-medium text-[#E05353]">
+                    Customs & Transport is disabled. Go back to Step 2 and check "Add Transportation and Customs" to enable.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentStep(2)}
+                    className="ml-auto rounded-lg bg-[#E05353] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#C04444]"
+                  >
+                    Go Back
+                  </button>
+                </div>
+              </div>
+            )}
             {/* Customs, Documentation, and Transportation Charges */}
             <div className="grid gap-4 sm:grid-cols-3">
               <div>
@@ -1611,7 +1784,7 @@ export default function AdminCreateInvoice() {
                     type="number"
                     min="0"
                     step="0.01"
-                    value={formData.modeOfDelivery === "road" ? calculateDocumentationCharges().toFixed(2) : (formData.documentationCharges || "")}
+                    value={formData.modeOfDelivery === "road" ? getDocumentationChargeDisplay().toFixed(2) : (formData.documentationCharges || "")}
                     readOnly={formData.modeOfDelivery === "road"}
                     onChange={(e) => formData.modeOfDelivery !== "road" && setFormData(prev => ({ ...prev, documentationCharges: e.target.value }))}
                     className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
@@ -1751,12 +1924,12 @@ export default function AdminCreateInvoice() {
             </div>
 
 
-            {/* Total with Customs */}
-            {(() => {
+            {/* Total with Customs - only shown when enabled */}
+            {formData.includeCustomsTransport && (() => {
               const customsDuty = parseFloat(formData.customsDuty || 0);
-              // For road transport, use calculated documentation charges (0.3% of cargo value)
+              // For road transport, use calculated documentation charges (display value in current currency)
               const docCharges = formData.modeOfDelivery === "road"
-                ? calculateDocumentationCharges()
+                ? getDocumentationChargeDisplay()
                 : parseFloat(formData.documentationCharges || 0);
               const transportCost = calculateTransportationCost();
               const hasAdditionalCharges = customsDuty > 0 || docCharges > 0 || transportCost > 0;
@@ -1792,7 +1965,7 @@ export default function AdminCreateInvoice() {
               </button>
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || !formData.includeCustomsTransport}
                 className="rounded-lg bg-[#412460] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B99353] disabled:opacity-50"
               >
                 {loading ? (isEditMode ? "Updating..." : "Generating...") : (isEditMode ? "Update Invoice" : "Generate Invoice")}

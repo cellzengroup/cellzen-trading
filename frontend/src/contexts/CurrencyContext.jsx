@@ -15,7 +15,7 @@ const CURRENCY_SYMBOLS = {
 };
 
 export function CurrencyProvider({ children }) {
-  const [currency, setCurrency] = useState('USD');
+  const [currency, setCurrency] = useState('CNY');
   const [exchangeRates, setExchangeRates] = useState(() => {
     // Load from localStorage if available
     const saved = localStorage.getItem('cellzen_exchange_rates');
