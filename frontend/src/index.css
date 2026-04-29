@@ -328,6 +328,24 @@ h1, h2, h3, h4, h5, h6 {
   font-weight: 700;
 }
 
+.premium-font-galdgderlight,
+.premium-font-galdgderlight * {
+  font-family: var(--font-galdgder);
+  font-weight: 300;
+}
+
+.premium-font-galdgdersemi,
+.premium-font-galdgdersemi * {
+  font-family: var(--font-galdgder);
+  font-weight: 600;
+}
+
+.premium-font-galdgderbold,
+.premium-font-galdgderbold * {
+  font-family: var(--font-galdgder);
+  font-weight: 700;
+}
+
 /* Landing page animations */
 @keyframes floatUp {
   0% {
