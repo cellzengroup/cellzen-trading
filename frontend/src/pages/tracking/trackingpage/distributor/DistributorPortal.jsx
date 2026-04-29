@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 const NAV_LINKS = [
-  { title: "Dashboard", path: "/admin/partners/dashboard", icon: "home" },
-  { title: "Management", path: "/admin/partners/management", icon: "management" },
-  { title: "Goods Tracking", path: "/admin/partners/goods-tracking", icon: "tracking" },
-  { title: "Invoices", path: "/admin/partners/invoices", icon: "invoices" },
+  { title: "Dashboard", path: "/tracking/trackingpage/distributor/dashboard", icon: "home" },
+  { title: "Management", path: "/tracking/trackingpage/distributor/management", icon: "management" },
+  { title: "Catalogs", path: "/tracking/trackingpage/distributor/catalogs", icon: "catalogs" },
+  { title: "Goods Tracking", path: "/tracking/trackingpage/distributor/goods-tracking", icon: "tracking" },
+  { title: "Invoices", path: "/tracking/trackingpage/distributor/invoices", icon: "invoices" },
 ];
 
 function NavIcon({ icon }) {
@@ -40,6 +41,17 @@ function NavIcon({ icon }) {
     );
   }
 
+  if (icon === "catalogs") {
+    return (
+      <svg {...iconProps}>
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+        <path d="M12 7v10" />
+        <path d="M8 7h8" />
+      </svg>
+    );
+  }
+
   if (icon === "tracking") {
     return (
       <svg {...iconProps}>
@@ -62,14 +74,15 @@ function NavIcon({ icon }) {
 
   return (
     <svg {...iconProps}>
-      <circle cx="12" cy="12" r="8" />
+      <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.8a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V2.8a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.3.27.66.47 1.1.6h.7a2 2 0 1 1 0 4h-.7c-.44.13-.8.33-1.1.6Z" />
     </svg>
   );
 }
 
-export default function PartnersPortal({ activePage, children }) {
+export default function DistributorPortal({ activePage, children }) {
   const navigate = useNavigate();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("partners_sidebar_collapsed") === "true");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("distributor_sidebar_collapsed") === "true");
   const adminUser = useMemo(() => {
     try {
       const storedUser = sessionStorage.getItem("inv_user");
@@ -86,7 +99,7 @@ export default function PartnersPortal({ activePage, children }) {
   }, [navigate]);
 
   useEffect(() => {
-    localStorage.setItem("partners_sidebar_collapsed", String(sidebarCollapsed));
+    localStorage.setItem("distributor_sidebar_collapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
 
   const handleLogout = () => {
@@ -103,9 +116,8 @@ export default function PartnersPortal({ activePage, children }) {
       >
         <aside className="flex h-full flex-col overflow-hidden bg-white p-4">
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between"} gap-3`}>
-            <Link to="/admin/partners/dashboard" aria-label="Partners Dashboard" className="flex min-w-0 items-center gap-2">
+            <Link to="/tracking/trackingpage/distributor/dashboard" aria-label="Distributor dashboard" className="flex min-w-0 items-center gap-2">
               <img src="/Images/DarkLogo.svg" alt="Cellzen Trading" className="h-9 w-auto shrink-0" />
-              {!sidebarCollapsed && <span className="text-sm font-semibold text-[#412460]">Partners</span>}
             </Link>
             {!sidebarCollapsed && (
               <button
@@ -159,8 +171,8 @@ export default function PartnersPortal({ activePage, children }) {
         <main className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
           <header className="flex w-full flex-col gap-4 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-[#2D2D2D]">Partners Portal</h1>
-              <p className="mt-1 text-xs text-[#2D2D2D]/45">Manage partnership operations and collaboration</p>
+              <h1 className="text-2xl font-semibold text-[#2D2D2D]">Welcome to Distributor Dashboard</h1>
+              <p className="mt-1 text-xs text-[#2D2D2D]/45">Manage distribution operations, tracking, and invoices</p>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -177,11 +189,11 @@ export default function PartnersPortal({ activePage, children }) {
                 </svg>
               </button>
               <div className="flex h-10 w-10 items-center justify-center bg-[#412460] text-sm font-bold text-white">
-                {(adminUser?.name || "P").charAt(0)}
+                {(adminUser?.name || "D").charAt(0)}
               </div>
               <div>
-                <p className="text-xs font-semibold">{adminUser?.name || "Partner Admin"}</p>
-                <p className="text-[10px] text-[#2D2D2D]/45">{adminUser?.role || "Partner"}</p>
+                <p className="text-xs font-semibold">{adminUser?.name || "Admin User"}</p>
+                <p className="text-[10px] text-[#2D2D2D]/45">{adminUser?.role || "Distributor"}</p>
               </div>
               <button
                 type="button"

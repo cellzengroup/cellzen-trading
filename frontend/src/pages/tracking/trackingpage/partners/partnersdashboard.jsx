@@ -1,50 +1,41 @@
 import React from "react";
-import { Link } from "react-router-dom";
-
-function getPartnerUser() {
-  try {
-    return JSON.parse(sessionStorage.getItem("customer_user") || "null");
-  } catch {
-    return null;
-  }
-}
+import PartnersPortal from "./PartnersPortal";
 
 export default function PartnersDashboard() {
-  const user = getPartnerUser();
-
   return (
-    <section className="min-h-screen bg-[#2A1740] px-6 py-8 text-white">
-      <div className="mx-auto max-w-6xl">
-        <div className="flex items-center justify-between border-b border-white/10 pb-6">
-          <img src="/Images/DarkLogo.svg" alt="Cellzen Trading" className="h-12 w-auto brightness-0 invert" />
-          <Link to="/login" className="text-xs font-semibold uppercase tracking-[0.18em] text-white/70 hover:text-[#B99353]">
-            Login
-          </Link>
+    <PartnersPortal activePage="Dashboard">
+      <div className="flex h-full flex-col overflow-hidden rounded-[2rem] bg-white px-5 py-5 text-[#2D2D2D] shadow-[0_18px_40px_rgba(45,45,45,0.04)] sm:px-7 sm:py-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-[#412460]">Partner Dashboard</h2>
+            <p className="mt-1 text-xs text-[#2D2D2D]/45">Overview of partnership activities</p>
+          </div>
         </div>
 
-        <div className="mt-12 grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-[#B99353]">Partners Dashboard</p>
-            <h1 className="mt-4 premium-font-galdgderbold text-4xl leading-tight sm:text-5xl">
-              Partner workspace{user?.firstName ? ` for ${user.firstName}` : ""}.
-            </h1>
-            <p className="mt-5 max-w-xl text-sm leading-relaxed text-white/58">
-              Review partnership activity, shared opportunities, performance updates, and collaborative shipments.
-            </p>
+        <div className="mt-8 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-2xl bg-[#FBFAF8] p-5">
+            <p className="text-xs font-semibold text-[#2D2D2D]/45">Active Projects</p>
+            <p className="mt-2 text-2xl font-bold text-[#412460]">0</p>
           </div>
+          <div className="rounded-2xl bg-[#FBFAF8] p-5">
+            <p className="text-xs font-semibold text-[#2D2D2D]/45">Collaborations</p>
+            <p className="mt-2 text-2xl font-bold text-[#412460]">0</p>
+          </div>
+          <div className="rounded-2xl bg-[#FBFAF8] p-5">
+            <p className="text-xs font-semibold text-[#2D2D2D]/45">Shipments</p>
+            <p className="mt-2 text-2xl font-bold text-[#412460]">0</p>
+          </div>
+          <div className="rounded-2xl bg-[#FBFAF8] p-5">
+            <p className="text-xs font-semibold text-[#2D2D2D]/45">Invoices</p>
+            <p className="mt-2 text-2xl font-bold text-[#412460]">0</p>
+          </div>
+        </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            {["Partner Leads", "Shared Orders", "Performance Updates", "Collaboration Notes"].map((item) => (
-              <div key={item} className="border border-white/12 bg-white/[0.07] p-6 backdrop-blur-xl">
-                <h2 className="text-sm font-bold text-[#B99353]">{item}</h2>
-                <p className="mt-2 text-xs leading-relaxed text-white/50">
-                  Partner tracking workspace module.
-                </p>
-              </div>
-            ))}
-          </div>
+        <div className="mt-8 flex-1 rounded-2xl bg-[#FBFAF8] p-8 text-center">
+          <p className="text-sm font-semibold text-[#2D2D2D]/70">Welcome to Partner Portal</p>
+          <p className="mt-2 text-xs text-[#2D2D2D]/50">Manage partnerships, collaborations, and operations</p>
         </div>
       </div>
-    </section>
+    </PartnersPortal>
   );
 }

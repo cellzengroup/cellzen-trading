@@ -1,9 +1,9 @@
 import React from "react";
-import DistributorsPortal from "./DistributorsPortal";
+import DistributorPortal from "./DistributorPortal";
 
-export default function DistributorsInvoices() {
+export default function DistributorInvoices() {
   return (
-    <DistributorsPortal activePage="Invoices">
+    <DistributorPortal activePage="Invoices">
       <div className="flex h-full flex-col overflow-hidden rounded-[2rem] bg-white px-5 py-5 text-[#2D2D2D] shadow-[0_18px_40px_rgba(45,45,45,0.04)] sm:px-7 sm:py-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -17,6 +17,6 @@ export default function DistributorsInvoices() {
           <p className="mt-2 text-xs text-[#2D2D2D]/50">Your invoices will appear here</p>
         </div>
       </div>
-    </DistributorsPortal>
+    </DistributorPortal>
   );
 }

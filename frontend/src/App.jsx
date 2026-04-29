@@ -25,23 +25,25 @@ import AdminCustomers from './pages/auth/admin/admincustomers';
 import AdminReports from './pages/auth/admin/adminreports';
 import AdminNotifications from './pages/auth/admin/adminnotifications';
 import AdminSettings from './pages/auth/admin/adminsettings';
-import AdminCustomersDashboard from './pages/auth/admin/customers/CustomersDashboard';
-import AdminCustomersGoodsTracking from './pages/auth/admin/customers/CustomersGoodsTracking';
-import AdminCustomersProducts from './pages/auth/admin/customers/CustomersProducts';
-import AdminCustomersInvoices from './pages/auth/admin/customers/CustomersInvoices';
-import AdminDistributorsDashboard from './pages/auth/admin/distributors/DistributorsDashboard';
-import AdminDistributorsManagement from './pages/auth/admin/distributors/DistributorsManagement';
-import AdminDistributorsGoodsTracking from './pages/auth/admin/distributors/DistributorsGoodsTracking';
-import AdminDistributorsInvoices from './pages/auth/admin/distributors/DistributorsInvoices';
-import AdminPartnersDashboard from './pages/auth/admin/partners/PartnersDashboard';
-import AdminPartnersManagement from './pages/auth/admin/partners/PartnersManagement';
-import AdminPartnersGoodsTracking from './pages/auth/admin/partners/PartnersGoodsTracking';
-import AdminPartnersInvoices from './pages/auth/admin/partners/PartnersInvoices';
 import CostumersDashboard from './pages/tracking/trackingpage/costumers/costumersdashboard';
+import CostumersGoodsTracking from './pages/tracking/trackingpage/costumers/CostumersGoodsTracking';
+import CostumersInvoices from './pages/tracking/trackingpage/costumers/CostumersInvoices';
+import CostumerCatalog from './pages/tracking/trackingpage/costumers/CustomerCatalog/CostumerCatalog';
+import CostumerCatalogList from './pages/tracking/trackingpage/costumers/CustomerCatalog/CostumerCatalogList';
+import DistributorCatalog from './pages/tracking/trackingpage/distributor/DistributorCatalog/DistributorCatalog';
+import DistributorCatalogList from './pages/tracking/trackingpage/distributor/DistributorCatalog/DistributorCatalogList';
+import PartnerCatalog from './pages/tracking/trackingpage/partners/PartnerCatalog';
+import PartnerCatalogList from './pages/tracking/trackingpage/partners/PartnerCatalogList';
 import SupplierDashboard from './pages/tracking/trackingpage/suppliers/supplierdashboard';
 import LogisticsDashboard from './pages/tracking/trackingpage/logistics/logisticsdashboard';
 import DistributorDashboard from './pages/tracking/trackingpage/distributor/distributordashboard';
+import DistributorManagement from './pages/tracking/trackingpage/distributor/DistributorManagement';
+import DistributorGoodsTracking from './pages/tracking/trackingpage/distributor/DistributorGoodsTracking';
+import DistributorInvoices from './pages/tracking/trackingpage/distributor/DistributorInvoices';
 import PartnersDashboard from './pages/tracking/trackingpage/partners/partnersdashboard';
+import PartnersManagement from './pages/tracking/trackingpage/partners/PartnersManagement';
+import PartnersGoodsTracking from './pages/tracking/trackingpage/partners/PartnersGoodsTracking';
+import PartnersInvoices from './pages/tracking/trackingpage/partners/PartnersInvoices';
 import Portfolio from './pages/portfolio';
 import Notices from './pages/notices';
 import FAQ from './components/FAQ';
@@ -121,40 +123,40 @@ function App() {
         <Route path="/admin-notifications" element={<AdminNotifications />} />
         <Route path="/admin-settings" element={<AdminSettings />} />
 
-        {/* Customer Admin Panel Routes */}
-        <Route path="/admin/customers/dashboard" element={<AdminCustomersDashboard />} />
-        <Route path="/admin/customers/goods-tracking" element={<AdminCustomersGoodsTracking />} />
-        <Route path="/admin/customers/products" element={<AdminCustomersProducts />} />
-        <Route path="/admin/customers/invoices" element={<AdminCustomersInvoices />} />
-
-        {/* Distributor Admin Panel Routes */}
-        <Route path="/admin/distributors/dashboard" element={<AdminDistributorsDashboard />} />
-        <Route path="/admin/distributors/management" element={<AdminDistributorsManagement />} />
-        <Route path="/admin/distributors/goods-tracking" element={<AdminDistributorsGoodsTracking />} />
-        <Route path="/admin/distributors/invoices" element={<AdminDistributorsInvoices />} />
-
-        {/* Partners Admin Panel Routes */}
-        <Route path="/admin/partners/dashboard" element={<AdminPartnersDashboard />} />
-        <Route path="/admin/partners/management" element={<AdminPartnersManagement />} />
-        <Route path="/admin/partners/goods-tracking" element={<AdminPartnersGoodsTracking />} />
-        <Route path="/admin/partners/invoices" element={<AdminPartnersInvoices />} />
-
         <Route path="/login" element={<TrackingLogin initialMode="signin" />} />
         <Route path="/reset" element={<ResetPassword />} />
         <Route path="/tracking/login" element={<Navigate to="/login" replace />} />
         <Route path="/tracking/signup" element={<Navigate to="/login" replace />} />
         <Route path="/tracking/trackingpage/costumersdashboard" element={<CostumersDashboard />} />
         <Route path="/tracking/trackingpage/costumerdashboard" element={<Navigate to="/tracking/trackingpage/costumersdashboard" replace />} />
+        <Route path="/tracking/trackingpage/costumers/dashboard" element={<CostumersDashboard />} />
+        <Route path="/tracking/trackingpage/costumers/goods-tracking" element={<CostumersGoodsTracking />} />
+        <Route path="/tracking/trackingpage/costumers/products" element={<CostumerCatalog />} />
+        <Route path="/tracking/trackingpage/costumers/catalogs" element={<CostumerCatalog />} />
+        <Route path="/tracking/trackingpage/costumers/catalog-list" element={<CostumerCatalogList />} />
+        <Route path="/tracking/trackingpage/costumers/invoices" element={<CostumersInvoices />} />
         <Route path="/tracking/trackingpage/supplierdashboard" element={<SupplierDashboard />} />
         <Route path="/tracking/trackingpage/logisticsdashboard" element={<LogisticsDashboard />} />
         <Route path="/tracking/trackingpage/distributordashboard" element={<DistributorDashboard />} />
+        <Route path="/tracking/trackingpage/distributor/dashboard" element={<DistributorDashboard />} />
+        <Route path="/tracking/trackingpage/distributor/management" element={<DistributorManagement />} />
+        <Route path="/tracking/trackingpage/distributor/goods-tracking" element={<DistributorGoodsTracking />} />
+        <Route path="/tracking/trackingpage/distributor/catalogs" element={<DistributorCatalog />} />
+        <Route path="/tracking/trackingpage/distributor/catalog-list" element={<DistributorCatalogList />} />
+        <Route path="/tracking/trackingpage/distributor/invoices" element={<DistributorInvoices />} />
         <Route path="/tracking/trackingpage/partnersdashboard" element={<PartnersDashboard />} />
-        <Route path="/trackingpage/costumersdashboard" element={<Navigate to="/tracking/trackingpage/costumersdashboard" replace />} />
-        <Route path="/trackingpage/costumerdashboard" element={<Navigate to="/tracking/trackingpage/costumersdashboard" replace />} />
+        <Route path="/tracking/trackingpage/partners/dashboard" element={<PartnersDashboard />} />
+        <Route path="/tracking/trackingpage/partners/management" element={<PartnersManagement />} />
+        <Route path="/tracking/trackingpage/partners/goods-tracking" element={<PartnersGoodsTracking />} />
+        <Route path="/tracking/trackingpage/partners/catalogs" element={<PartnerCatalog />} />
+        <Route path="/tracking/trackingpage/partners/catalog-list" element={<PartnerCatalogList />} />
+        <Route path="/tracking/trackingpage/partners/invoices" element={<PartnersInvoices />} />
+        <Route path="/trackingpage/costumersdashboard" element={<Navigate to="/tracking/trackingpage/costumers/dashboard" replace />} />
+        <Route path="/trackingpage/costumerdashboard" element={<Navigate to="/tracking/trackingpage/costumers/dashboard" replace />} />
         <Route path="/trackingpage/supplierdashboard" element={<Navigate to="/tracking/trackingpage/supplierdashboard" replace />} />
         <Route path="/trackingpage/logisticsdashboard" element={<Navigate to="/tracking/trackingpage/logisticsdashboard" replace />} />
-        <Route path="/trackingpage/distributordashboard" element={<Navigate to="/tracking/trackingpage/distributordashboard" replace />} />
-        <Route path="/trackingpage/partnersdashboard" element={<Navigate to="/tracking/trackingpage/partnersdashboard" replace />} />
+        <Route path="/trackingpage/distributordashboard" element={<Navigate to="/tracking/trackingpage/distributor/dashboard" replace />} />
+        <Route path="/trackingpage/partnersdashboard" element={<Navigate to="/tracking/trackingpage/partners/dashboard" replace />} />
 
         {/* Main Website */}
         <Route

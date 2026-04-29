@@ -36,6 +36,7 @@ export default function AddProducts() {
   const prefilledEmail = location.state?.supplierEmail || location.state?.product?.supplier_email || "";
   const prefilledPhone = location.state?.supplierPhone || location.state?.product?.supplier_phone || "";
   const prefilledLocation = location.state?.factoryLocation || location.state?.product?.factory_location || "";
+  const prefilledShareTo = location.state?.product?.share_to || {};
   const isCategoryLocked = Boolean(prefilledCategory);
   const isSupplierLocked = Boolean(prefilledSupplierName);
 
@@ -49,6 +50,11 @@ export default function AddProducts() {
     supplier_phone: prefilledPhone,
     factory_location: prefilledLocation,
     category: prefilledCategory,
+    share_to: {
+      customers: prefilledShareTo.customers || false,
+      distributors: prefilledShareTo.distributors || false,
+      partners: prefilledShareTo.partners || false,
+    },
   });
   const [submitError, setSubmitError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -74,12 +80,26 @@ export default function AddProducts() {
         }
 
         const product = result.data;
+        // Parse share_to if it's a string (JSON), otherwise use as object
+        let shareTo = product.share_to || {};
+        if (typeof shareTo === "string") {
+          try {
+            shareTo = JSON.parse(shareTo);
+          } catch {
+            shareTo = {};
+          }
+        }
         setFormData({
           supplier_name: product.supplier_name || "",
           supplier_email: product.supplier_email || "",
           supplier_phone: product.supplier_phone || "",
           factory_location: product.factory_location || "",
           category: product.category || "",
+          share_to: {
+            customers: shareTo.customers || false,
+            distributors: shareTo.distributors || false,
+            partners: shareTo.partners || false,
+          },
         });
         setExistingPdfFiles(clickedEditFile ? [clickedEditFile] : normalizePdfFiles(product.pdf_files).slice(0, 1));
       } catch (error) {
@@ -89,6 +109,30 @@ export default function AddProducts() {
 
     loadProduct();
   }, [productId, clickedEditFile]);
+
+  // Handle location.state changes (when navigating from suppliers page with product data)
+  useEffect(() => {
+    const stateProduct = location.state?.product;
+    if (stateProduct && isEditMode) {
+      // Parse share_to if it's a string
+      let shareTo = stateProduct.share_to || {};
+      if (typeof shareTo === "string") {
+        try {
+          shareTo = JSON.parse(shareTo);
+        } catch {
+          shareTo = {};
+        }
+      }
+      setFormData((current) => ({
+        ...current,
+        share_to: {
+          customers: shareTo.customers || false,
+          distributors: shareTo.distributors || false,
+          partners: shareTo.partners || false,
+        },
+      }));
+    }
+  }, [location.state?.product, isEditMode]);
 
   const handlePdfFiles = (files) => {
     const nextFiles = Array.from(files || []);
@@ -119,6 +163,28 @@ export default function AddProducts() {
     setFormData((current) => ({ ...current, [name]: value }));
   };
 
+  const handleShareToChange = (userType) => {
+    setFormData((current) => ({
+      ...current,
+      share_to: {
+        ...current.share_to,
+        [userType]: !current.share_to[userType],
+      },
+    }));
+  };
+
+  const handleSelectAllShare = () => {
+    const allSelected = formData.share_to.customers && formData.share_to.distributors && formData.share_to.partners;
+    setFormData((current) => ({
+      ...current,
+      share_to: {
+        customers: !allSelected,
+        distributors: !allSelected,
+        partners: !allSelected,
+      },
+    }));
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     setSubmitError("");
@@ -133,7 +199,13 @@ export default function AddProducts() {
     if (isEditMode && Number.isInteger(clickedEditFileIndex)) {
       payload.append("pdf_file_index", String(clickedEditFileIndex));
     }
-    Object.entries(formData).forEach(([key, value]) => payload.append(key, value.trim()));
+    Object.entries(formData).forEach(([key, value]) => {
+      if (key === "share_to") {
+        payload.append(key, JSON.stringify(value));
+      } else if (typeof value === "string") {
+        payload.append(key, value.trim());
+      }
+    });
     selectedFiles.forEach((file) => payload.append("pdf_files", file));
 
     try {
@@ -266,7 +338,8 @@ export default function AddProducts() {
                 />
               </label>
 
-              <label className="block md:col-span-2">
+              {/* Categories Name and Share To - Side by Side */}
+              <label className="block">
                 <span className="text-xs font-semibold text-[#2D2D2D]/45">
                   Categories Name
                   {prefilledCategory && (
@@ -289,6 +362,51 @@ export default function AddProducts() {
                   }`}
                 />
               </label>
+
+              {/* Share To - Side by Side with Categories */}
+              <div className="block">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-[#2D2D2D]/45">Share to</span>
+                  <button
+                    type="button"
+                    onClick={handleSelectAllShare}
+                    className="text-[10px] font-semibold text-[#412460] transition hover:text-[#B99353]"
+                  >
+                    {formData.share_to.customers && formData.share_to.distributors && formData.share_to.partners
+                      ? "Deselect All"
+                      : "Select All"}
+                  </button>
+                </div>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#E1D9EA] bg-white px-4 py-3 transition hover:border-[#412460]/50">
+                    <input
+                      type="checkbox"
+                      checked={formData.share_to.customers}
+                      onChange={() => handleShareToChange("customers")}
+                      className="h-4 w-4 cursor-pointer accent-[#412460]"
+                    />
+                    <span className="text-sm font-semibold text-[#2D2D2D]">Customers</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#E1D9EA] bg-white px-4 py-3 transition hover:border-[#412460]/50">
+                    <input
+                      type="checkbox"
+                      checked={formData.share_to.distributors}
+                      onChange={() => handleShareToChange("distributors")}
+                      className="h-4 w-4 cursor-pointer accent-[#412460]"
+                    />
+                    <span className="text-sm font-semibold text-[#2D2D2D]">Distributors</span>
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#E1D9EA] bg-white px-4 py-3 transition hover:border-[#412460]/50">
+                    <input
+                      type="checkbox"
+                      checked={formData.share_to.partners}
+                      onChange={() => handleShareToChange("partners")}
+                      className="h-4 w-4 cursor-pointer accent-[#412460]"
+                    />
+                    <span className="text-sm font-semibold text-[#2D2D2D]">Partners</span>
+                  </label>
+                </div>
+              </div>
             </div>
 
             <div className="mt-6">

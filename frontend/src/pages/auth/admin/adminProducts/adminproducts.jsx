@@ -2,12 +2,6 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import AdminPageShell from "../AdminPageShell";
 
-const FALLBACK_QUICK_ACCESS = [
-  { name: "Mobile Phones", count: "51 items", active: true },
-  { name: "Accessories", count: "24 items" },
-  { name: "Gadgets", count: "18 items" },
-];
-
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
 const MAX_PDF_SIZE = 50 * 1024 * 1024;
 
@@ -211,7 +205,7 @@ export default function AdminProducts() {
 
   const quickAccess = useMemo(() => {
     if (!products.length) {
-      return FALLBACK_QUICK_ACCESS.map((folder, index) => ({ ...folder, active: index === 0, category: folder.name }));
+      return []; // No placeholder folders when loading or empty
     }
 
     const productsByCategory = products.reduce((acc, product) => {
@@ -297,18 +291,29 @@ export default function AdminProducts() {
 
         {!selectedFolder && (
         <section>
-          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
-            {quickAccess.map((folder) => (
-              <button
-                type="button"
-                key={folder.name}
-                onClick={() => navigate("/admin-suppliers", { state: { filterCategory: folder.category } })}
-                className="group text-left transition active:opacity-80 cursor-pointer"
-              >
-                <FolderIllustration name={folder.name} count={folder.count} />
-              </button>
-            ))}
-          </div>
+          {loadingProducts ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="h-8 w-8 animate-spin rounded-full border-3 border-[#E1D9EA] border-t-[#412460]" />
+            </div>
+          ) : quickAccess.length === 0 ? (
+            <div className="rounded-2xl bg-[#FBFAF8] p-8 text-center">
+              <p className="text-sm font-semibold text-[#2D2D2D]/70">No folders available</p>
+              <p className="mt-2 text-xs text-[#2D2D2D]/50">Add products to create folders</p>
+            </div>
+          ) : (
+            <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
+              {quickAccess.map((folder) => (
+                <button
+                  type="button"
+                  key={folder.name}
+                  onClick={() => navigate("/admin-suppliers", { state: { filterCategory: folder.category } })}
+                  className="group text-left transition active:opacity-80 cursor-pointer"
+                >
+                  <FolderIllustration name={folder.name} count={folder.count} />
+                </button>
+              ))}
+            </div>
+          )}
         </section>
         )}
 

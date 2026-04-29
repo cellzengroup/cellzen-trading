@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 const NAV_LINKS = [
-  { title: "Dashboard", path: "/admin/distributors/dashboard", icon: "home" },
-  { title: "Management", path: "/admin/distributors/management", icon: "management" },
-  { title: "Goods Tracking", path: "/admin/distributors/goods-tracking", icon: "tracking" },
-  { title: "Invoices", path: "/admin/distributors/invoices", icon: "invoices" },
+  { title: "Dashboard", path: "/tracking/trackingpage/costumers/dashboard", icon: "home" },
+  { title: "Goods Tracking", path: "/tracking/trackingpage/costumers/goods-tracking", icon: "tracking" },
+  { title: "Catalogs", path: "/tracking/trackingpage/costumers/catalogs", icon: "catalogs" },
+  { title: "Products", path: "/tracking/trackingpage/costumers/products", icon: "products" },
+  { title: "Invoices", path: "/tracking/trackingpage/costumers/invoices", icon: "invoices" },
 ];
 
 function NavIcon({ icon }) {
@@ -29,22 +30,32 @@ function NavIcon({ icon }) {
     );
   }
 
-  if (icon === "management") {
-    return (
-      <svg {...iconProps}>
-        <path d="M16 11a4 4 0 1 0-8 0" />
-        <path d="M4 20a8 8 0 0 1 16 0" />
-        <path d="M18 7h3" />
-        <path d="M19.5 5.5v3" />
-      </svg>
-    );
-  }
-
   if (icon === "tracking") {
     return (
       <svg {...iconProps}>
         <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z" />
         <path d="M12 6v6l4 2" />
+      </svg>
+    );
+  }
+
+  if (icon === "catalogs") {
+    return (
+      <svg {...iconProps}>
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+        <path d="M12 7v10" />
+        <path d="M8 7h8" />
+      </svg>
+    );
+  }
+
+  if (icon === "products") {
+    return (
+      <svg {...iconProps}>
+        <path d="M21 8 12 3 3 8l9 5 9-5Z" />
+        <path d="M3 8v8l9 5 9-5V8" />
+        <path d="M12 13v8" />
       </svg>
     );
   }
@@ -62,14 +73,15 @@ function NavIcon({ icon }) {
 
   return (
     <svg {...iconProps}>
-      <circle cx="12" cy="12" r="8" />
+      <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.8a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V2.8a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.3.27.66.47 1.1.6h.7a2 2 0 1 1 0 4h-.7c-.44.13-.8.33-1.1.6Z" />
     </svg>
   );
 }
 
-export default function DistributorsPortal({ activePage, children }) {
+export default function CostumersPortal({ activePage, children }) {
   const navigate = useNavigate();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("distributors_sidebar_collapsed") === "true");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("costumers_sidebar_collapsed") === "true");
   const adminUser = useMemo(() => {
     try {
       const storedUser = sessionStorage.getItem("inv_user");
@@ -86,7 +98,7 @@ export default function DistributorsPortal({ activePage, children }) {
   }, [navigate]);
 
   useEffect(() => {
-    localStorage.setItem("distributors_sidebar_collapsed", String(sidebarCollapsed));
+    localStorage.setItem("costumers_sidebar_collapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
 
   const handleLogout = () => {
@@ -103,9 +115,8 @@ export default function DistributorsPortal({ activePage, children }) {
       >
         <aside className="flex h-full flex-col overflow-hidden bg-white p-4">
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between"} gap-3`}>
-            <Link to="/admin/distributors/dashboard" aria-label="Distributors Dashboard" className="flex min-w-0 items-center gap-2">
+            <Link to="/tracking/trackingpage/costumers/dashboard" aria-label="Costumers dashboard" className="flex min-w-0 items-center gap-2">
               <img src="/Images/DarkLogo.svg" alt="Cellzen Trading" className="h-9 w-auto shrink-0" />
-              {!sidebarCollapsed && <span className="text-sm font-semibold text-[#412460]">Distributors</span>}
             </Link>
             {!sidebarCollapsed && (
               <button
@@ -159,8 +170,8 @@ export default function DistributorsPortal({ activePage, children }) {
         <main className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
           <header className="flex w-full flex-col gap-4 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-[#2D2D2D]">Distributors Portal</h1>
-              <p className="mt-1 text-xs text-[#2D2D2D]/45">Manage distribution operations and tracking</p>
+              <h1 className="text-2xl font-semibold text-[#2D2D2D]">Welcome to Costumers Dashboard</h1>
+              <p className="mt-1 text-xs text-[#2D2D2D]/45">Manage your products, track shipments, and view invoices</p>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -177,11 +188,11 @@ export default function DistributorsPortal({ activePage, children }) {
                 </svg>
               </button>
               <div className="flex h-10 w-10 items-center justify-center bg-[#412460] text-sm font-bold text-white">
-                {(adminUser?.name || "D").charAt(0)}
+                {(adminUser?.name || "C").charAt(0)}
               </div>
               <div>
-                <p className="text-xs font-semibold">{adminUser?.name || "Distributor Admin"}</p>
-                <p className="text-[10px] text-[#2D2D2D]/45">{adminUser?.role || "Distributor"}</p>
+                <p className="text-xs font-semibold">{adminUser?.name || "Admin User"}</p>
+                <p className="text-[10px] text-[#2D2D2D]/45">{adminUser?.role || "Costumer"}</p>
               </div>
               <button
                 type="button"

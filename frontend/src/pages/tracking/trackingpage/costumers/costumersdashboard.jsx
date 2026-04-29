@@ -1,50 +1,41 @@
 import React from "react";
-import { Link } from "react-router-dom";
-
-function getCustomerUser() {
-  try {
-    return JSON.parse(sessionStorage.getItem("customer_user") || "null");
-  } catch {
-    return null;
-  }
-}
+import CostumersPortal from "./CostumersPortal";
 
 export default function CostumersDashboard() {
-  const user = getCustomerUser();
-
   return (
-    <section className="min-h-screen bg-[#F6F2EA] px-6 py-8">
-      <div className="mx-auto max-w-6xl">
-        <div className="flex items-center justify-between border-b border-[#412460]/10 pb-6">
-          <img src="/Images/DarkLogo.svg" alt="Cellzen Trading" className="h-12 w-auto" />
-          <Link to="/login" className="text-xs font-semibold uppercase tracking-[0.18em] text-[#412460] hover:text-[#B99353]">
-            Login
-          </Link>
+    <CostumersPortal activePage="Dashboard">
+      <div className="flex h-full flex-col overflow-hidden rounded-[2rem] bg-white px-5 py-5 text-[#2D2D2D] shadow-[0_18px_40px_rgba(45,45,45,0.04)] sm:px-7 sm:py-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-[#412460]">Customer Dashboard</h2>
+            <p className="mt-1 text-xs text-[#2D2D2D]/45">Overview of your products and orders</p>
+          </div>
         </div>
 
-        <div className="mt-12 grid gap-8 lg:grid-cols-[0.9fr_1.1fr]">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-[#B99353]">Customer Dashboard</p>
-            <h1 className="mt-4 premium-font-galdgderbold text-4xl leading-tight text-[#412460] sm:text-5xl">
-              Customer workspace{user?.firstName ? ` for ${user.firstName}` : ""}.
-            </h1>
-            <p className="mt-5 max-w-xl text-sm leading-relaxed text-[#2D2D2D]/60">
-              Track orders, shipment progress, product documents, and customer support updates.
-            </p>
+        <div className="mt-8 grid gap-5 md:grid-cols-2 lg:grid-cols-4">
+          <div className="rounded-2xl bg-[#FBFAF8] p-5">
+            <p className="text-xs font-semibold text-[#2D2D2D]/45">Total Products</p>
+            <p className="mt-2 text-2xl font-bold text-[#412460]">0</p>
           </div>
+          <div className="rounded-2xl bg-[#FBFAF8] p-5">
+            <p className="text-xs font-semibold text-[#2D2D2D]/45">Active Orders</p>
+            <p className="mt-2 text-2xl font-bold text-[#412460]">0</p>
+          </div>
+          <div className="rounded-2xl bg-[#FBFAF8] p-5">
+            <p className="text-xs font-semibold text-[#2D2D2D]/45">Shipments</p>
+            <p className="mt-2 text-2xl font-bold text-[#412460]">0</p>
+          </div>
+          <div className="rounded-2xl bg-[#FBFAF8] p-5">
+            <p className="text-xs font-semibold text-[#2D2D2D]/45">Invoices</p>
+            <p className="mt-2 text-2xl font-bold text-[#412460]">0</p>
+          </div>
+        </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            {["Active Orders", "Shipment Tracking", "Product Documents", "Support Tickets"].map((item) => (
-              <div key={item} className="border border-[#412460]/10 bg-white p-6">
-                <h2 className="text-sm font-bold text-[#412460]">{item}</h2>
-                <p className="mt-2 text-xs leading-relaxed text-[#2D2D2D]/50">
-                  Customer tracking workspace module.
-                </p>
-              </div>
-            ))}
-          </div>
+        <div className="mt-8 flex-1 rounded-2xl bg-[#FBFAF8] p-8 text-center">
+          <p className="text-sm font-semibold text-[#2D2D2D]/70">Welcome to Customer Portal</p>
+          <p className="mt-2 text-xs text-[#2D2D2D]/50">View your products, track shipments, and manage invoices</p>
         </div>
       </div>
-    </section>
+    </CostumersPortal>
   );
 }

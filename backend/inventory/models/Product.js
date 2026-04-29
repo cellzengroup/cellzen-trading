@@ -69,6 +69,11 @@ const Product = sequelize
         allowNull: true,
         defaultValue: [],
       },
+      share_to: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+        defaultValue: { customers: false, distributors: false, partners: false },
+      },
       weight: {
         type: DataTypes.STRING,
         allowNull: true,

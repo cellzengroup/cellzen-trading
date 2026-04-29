@@ -36,8 +36,8 @@ const optionalUpload = (fields) => (req, res, next) => {
 // GET / - list all products
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { search } = req.query;
-    const cacheKey = `products:${search || ''}`;
+    const { search, sharedWith } = req.query;
+    const cacheKey = `products:${search || ''}:${sharedWith || ''}`;
     const cached = cache.get(cacheKey);
     if (cached) return res.json({ success: true, data: cached });
 
@@ -51,11 +51,30 @@ router.get('/', authenticate, async (req, res) => {
     }
 
     const products = await Product.findAll({ where, order: [['name', 'ASC']] });
-    cache.set(cacheKey, products, 3000);
-    res.json({ success: true, data: products });
+
+    // Filter by sharedWith if specified
+    let filteredProducts = products;
+    if (sharedWith) {
+      filteredProducts = products.filter(p => {
+        // Handle both object and string (JSON) formats of share_to
+        let shareTo = p.share_to || {};
+        if (typeof shareTo === 'string') {
+          try {
+            shareTo = JSON.parse(shareTo);
+          } catch (e) {
+            shareTo = {};
+          }
+        }
+        return shareTo[sharedWith] === true;
+      });
+    }
+
+    cache.set(cacheKey, filteredProducts, 3000);
+    res.json({ success: true, data: filteredProducts });
   } catch (error) {
     console.error('Get products error:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch products' });
+    console.error('Error details:', error.message, error.stack);
+    res.status(500).json({ success: false, message: 'Failed to fetch products', error: error.message });
   }
 });
 
@@ -91,7 +110,18 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
       factory_location,
       weight,
       size,
+      share_to,
     } = req.body;
+
+    // Parse share_to if it's a string
+    let parsedShareTo = { customers: false, distributors: false, partners: false };
+    if (share_to) {
+      try {
+        parsedShareTo = typeof share_to === 'string' ? JSON.parse(share_to) : share_to;
+      } catch (e) {
+        console.error('Error parsing share_to:', e);
+      }
+    }
 
     const rawQty = req.body.quantity;
     const qty = Math.max(1, Number(rawQty) || 1);
@@ -151,6 +181,7 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
         supplier_phone: supplier_phone || null,
         factory_location: factory_location || null,
         pdf_files: pdfGroup,
+        share_to: parsedShareTo,
         weight: weight || null,
         size: size || null,
       });
@@ -224,7 +255,18 @@ router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 },
       factory_location,
       weight,
       size,
+      share_to,
     } = req.body;
+
+    // Parse share_to if provided
+    let parsedShareTo = product.share_to || { customers: false, distributors: false, partners: false };
+    if (share_to !== undefined) {
+      try {
+        parsedShareTo = typeof share_to === 'string' ? JSON.parse(share_to) : share_to;
+      } catch (e) {
+        console.error('Error parsing share_to:', e);
+      }
+    }
 
     // Use uploaded file (→ Supabase), or provided URL, or keep existing (ignore ephemeral blob: URLs)
     let finalImageUrl = image_url !== undefined ? ((image_url && image_url.startsWith('blob:')) ? product.image_url : image_url) : product.image_url;
@@ -273,6 +315,7 @@ router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 },
         supplier_phone: supplier_phone !== undefined ? supplier_phone : product.supplier_phone,
         factory_location: factory_location !== undefined ? factory_location : product.factory_location,
         pdf_files: finalPdfFiles,
+        share_to: parsedShareTo,
         weight: weight !== undefined ? weight : product.weight,
         size: size !== undefined ? size : product.size,
       });
@@ -299,6 +342,7 @@ router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 },
       supplier_phone: supplier_phone !== undefined ? supplier_phone : product.supplier_phone,
       factory_location: factory_location !== undefined ? factory_location : product.factory_location,
       pdf_files: finalPdfFiles,
+      share_to: parsedShareTo,
       weight: weight !== undefined ? weight : product.weight,
       size: size !== undefined ? size : product.size,
     });

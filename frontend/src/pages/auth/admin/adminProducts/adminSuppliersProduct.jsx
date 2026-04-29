@@ -53,7 +53,12 @@ export default function AdminSuppliersProduct() {
   // Add Products panel state - prefill with category from navigation
   const [quickForm, setQuickForm] = useState({
     supplier_name: supplierNameFromNav || "",
-    category: categoryFromNav || ""
+    category: categoryFromNav || "",
+    share_to: {
+      customers: false,
+      distributors: false,
+      partners: false,
+    },
   });
   const [quickFiles, setQuickFiles] = useState([]);
   const [quickDragging, setQuickDragging] = useState(false);
@@ -121,6 +126,18 @@ export default function AdminSuppliersProduct() {
     setQuickError("");
   };
 
+  const handleSelectAllShare = () => {
+    const allSelected = quickForm.share_to.customers && quickForm.share_to.distributors && quickForm.share_to.partners;
+    setQuickForm((current) => ({
+      ...current,
+      share_to: {
+        customers: !allSelected,
+        distributors: !allSelected,
+        partners: !allSelected,
+      },
+    }));
+  };
+
   const handleQuickUpload = async (event) => {
     event.preventDefault();
     setQuickError("");
@@ -132,6 +149,7 @@ export default function AdminSuppliersProduct() {
     payload.append("name", quickForm.supplier_name.trim() || quickForm.category.trim());
     payload.append("supplier_name", quickForm.supplier_name.trim());
     payload.append("category", quickForm.category.trim());
+    payload.append("share_to", JSON.stringify(quickForm.share_to));
     quickFiles.forEach((file) => payload.append("pdf_files", file));
     try {
       setQuickSubmitting(true);
@@ -142,7 +160,11 @@ export default function AdminSuppliersProduct() {
       });
       const result = await response.json();
       if (!response.ok || !result.success) throw new Error(result.message || "Failed to upload product");
-      setQuickForm({ supplier_name: supplierNameFromNav || "", category: "" });
+      setQuickForm({
+        supplier_name: supplierNameFromNav || "",
+        category: "",
+        share_to: { customers: false, distributors: false, partners: false },
+      });
       setQuickFiles([]);
       setLoadingProducts(true);
       await loadProducts();
@@ -358,11 +380,12 @@ export default function AdminSuppliersProduct() {
                   />
                 </label>
 
+                {/* Categories Name */}
                 <label className="block">
                   <span className="text-xs font-semibold text-[#2D2D2D]/45">
                     Categories Name
                     {categoryFromNav && (
-                      <span className="ml-2 text-[10px] text-[#412460]/60">(Auto-filled from folder)</span>
+                      <span className="ml-2 text-[10px] text-[#412460]/60">(Auto-filled)</span>
                     )}
                   </span>
                   <input
@@ -378,6 +401,51 @@ export default function AdminSuppliersProduct() {
                     }`}
                   />
                 </label>
+
+                {/* Share To - Below Categories */}
+                <div className="block">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[#2D2D2D]/45">Share to</span>
+                    <button
+                      type="button"
+                      onClick={handleSelectAllShare}
+                      className="text-[10px] font-semibold text-[#412460] transition hover:text-[#B99353]"
+                    >
+                      {quickForm.share_to.customers && quickForm.share_to.distributors && quickForm.share_to.partners
+                        ? "Deselect All"
+                        : "Select All"}
+                    </button>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#E1D9EA] bg-white px-4 py-3 transition hover:border-[#412460]/50">
+                      <input
+                        type="checkbox"
+                        checked={quickForm.share_to.customers}
+                        onChange={() => setQuickForm((c) => ({ ...c, share_to: { ...c.share_to, customers: !c.share_to.customers } }))}
+                        className="h-4 w-4 cursor-pointer accent-[#412460]"
+                      />
+                      <span className="text-sm font-semibold text-[#2D2D2D]">Customers</span>
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#E1D9EA] bg-white px-4 py-3 transition hover:border-[#412460]/50">
+                      <input
+                        type="checkbox"
+                        checked={quickForm.share_to.distributors}
+                        onChange={() => setQuickForm((c) => ({ ...c, share_to: { ...c.share_to, distributors: !c.share_to.distributors } }))}
+                        className="h-4 w-4 cursor-pointer accent-[#412460]"
+                      />
+                      <span className="text-sm font-semibold text-[#2D2D2D]">Distributors</span>
+                    </label>
+                    <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#E1D9EA] bg-white px-4 py-3 transition hover:border-[#412460]/50">
+                      <input
+                        type="checkbox"
+                        checked={quickForm.share_to.partners}
+                        onChange={() => setQuickForm((c) => ({ ...c, share_to: { ...c.share_to, partners: !c.share_to.partners } }))}
+                        className="h-4 w-4 cursor-pointer accent-[#412460]"
+                      />
+                      <span className="text-sm font-semibold text-[#2D2D2D]">Partners</span>
+                    </label>
+                  </div>
+                </div>
 
                 <div>
                   <span className="text-xs font-semibold text-[#2D2D2D]/45">Upload Files</span>
