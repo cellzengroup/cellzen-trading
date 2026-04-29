@@ -26,7 +26,10 @@ html, body, #root {
   --color-cz-secondary-light: #B99353;
   --color-cz-secondary-dark: #B99353;
 
-  --font-sans: "Inter", sans-serif;
+  --font-sans: "Inter", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+
+  /* Chinese font support */
+  --font-chinese: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
 
   --animate-fade-in: fadeIn 0.5s ease-in-out;
   --animate-slide-up: slideUp 0.3s ease-out;
@@ -224,8 +227,9 @@ html, body, #root {
   --cz-secondary-light: #b99353;
   --cz-secondary-dark: #ededed;
 
-  --font-roboto: "Roboto", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
-  --font-galdgder: "Galderglynn Titling", ui-serif, Georgia, "Times New Roman", serif;
+  --font-roboto: "Roboto", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  --font-galdgder: "Galderglynn Titling", "Noto Serif SC", ui-serif, Georgia, "Times New Roman", serif;
+  --font-chinese: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
 }
 
 html {
@@ -239,6 +243,16 @@ body {
   background: var(--cz-paper);
   color: var(--cz-ink);
   overflow-x: hidden;
+}
+
+/* Chinese text support - ensure proper rendering of Chinese characters */
+.chinese-text, .chinese-font {
+  font-family: var(--font-chinese);
+}
+
+/* Global CJK support fallback */
+* {
+  font-family: var(--font-roboto);
 }
 
 /* Near-invisible horizontal scrollbar only */

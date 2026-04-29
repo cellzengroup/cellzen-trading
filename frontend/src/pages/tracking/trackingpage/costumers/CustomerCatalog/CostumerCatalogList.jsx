@@ -15,15 +15,221 @@ function downloadFile(url, filename) {
   document.body.removeChild(link);
 }
 
+// Check if category should use catalog preview mode (Hardware and Sanitaries)
+const isCatalogPreviewCategory = (category) => {
+  if (!category) return false;
+  const previewCategories = ["hardware", "sanitaries"];
+  return previewCategories.includes(category.toLowerCase());
+};
+
+// Catalog Card Component with PDF Preview - Uses object/embed for better compatibility
+function CatalogCard({ file, onDownload, onOpen }) {
+  // Helper to decode and clean filename
+  const getDisplayName = (name) => {
+    if (!name) return "Catalog";
+    try {
+      // Try to decode if URI encoded
+      let decoded = name;
+      if (/%[0-9A-Fa-f]{2}/.test(name)) {
+        try {
+          decoded = decodeURIComponent(name);
+        } catch (e) {
+          // Use original if decoding fails
+        }
+      }
+      // Remove .pdf extension
+      return decoded.replace(/\.pdf$/i, "");
+    } catch (e) {
+      return name.replace(/\.pdf$/i, "");
+    }
+  };
+  const displayName = getDisplayName(file?.name);
+
+  return (
+    <div className="group flex flex-col rounded-2xl border border-[#E1D9EA] bg-white overflow-hidden transition hover:border-[#412460]/30 hover:shadow-[0_4px_20px_rgba(65,36,96,0.08)]">
+      {/* PDF Preview Area - Click to open in new window */}
+      <div
+        onClick={() => onOpen(file?.url)}
+        className="relative w-full cursor-pointer bg-[#F4F2EF] overflow-hidden"
+        style={{ aspectRatio: '4/3' }}
+        title="Click to view catalog"
+      >
+        {/* PDF Preview - First page only, no scrollbars */}
+        {file?.url ? (
+          <div className="h-full w-full overflow-hidden bg-white relative">
+            <iframe
+              src={`${file.url}#page=1&zoom=page-width&toolbar=0&navpanes=0&scrollbar=0`}
+              className="absolute inset-0 h-full w-full border-0"
+              style={{
+                overflow: 'hidden',
+                pointerEvents: 'none',
+              }}
+              scrolling="no"
+              title={displayName}
+            />
+          </div>
+        ) : (
+          <div className="flex h-full w-full flex-col items-center justify-center p-4">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
+              <svg className="h-8 w-8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M14 3v5a2 2 0 0 0 2 2h5" />
+                <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l7 7v9a2 2 0 0 1-2 2Z" />
+              </svg>
+            </div>
+            <p className="mt-3 text-xs text-[#2D2D2D]/50 text-center">Click to view PDF</p>
+          </div>
+        )}
+
+        {/* Hover overlay with view hint */}
+        <div className="absolute inset-0 flex items-center justify-center bg-[#412460]/0 transition group-hover:bg-[#412460]/10 pointer-events-none">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/90 text-[#412460] opacity-0 shadow-lg transition group-hover:opacity-100 scale-90 group-hover:scale-100">
+            <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      {/* Catalog Info - Name and Download Only */}
+      <div className="flex items-center justify-between p-4">
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-sm font-semibold text-[#2D2D2D] chinese-font">
+            {displayName}
+          </h3>
+        </div>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDownload(file?.url, file?.name);
+          }}
+          disabled={!file?.url}
+          className="ml-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#412460] text-white transition hover:bg-[#B99353] disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Download"
+        >
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="m7 10 5 5 5-5" />
+            <path d="M12 15V3" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Simple Catalog Card for all categories - Shows first page only, no scroll
+function SimpleCatalogCard({ file, onDownload, onOpen }) {
+  // Helper to decode and clean filename
+  const getDisplayName = (name) => {
+    if (!name) return "Catalog";
+    try {
+      // Try to decode if URI encoded
+      let decoded = name;
+      if (/%[0-9A-Fa-f]{2}/.test(name)) {
+        try {
+          decoded = decodeURIComponent(name);
+        } catch (e) {
+          // Use original if decoding fails
+        }
+      }
+      // Remove .pdf extension
+      return decoded.replace(/\.pdf$/i, "");
+    } catch (e) {
+      return name.replace(/\.pdf$/i, "");
+    }
+  };
+  const displayName = getDisplayName(file?.name);
+
+  return (
+    <div className="group flex flex-col rounded-2xl border border-[#E1D9EA] bg-white overflow-hidden transition hover:border-[#412460]/30 hover:shadow-[0_4px_20px_rgba(65,36,96,0.08)]">
+      {/* PDF Preview Area - Click to open in new window */}
+      <div
+        onClick={() => onOpen(file?.url)}
+        className="relative w-full cursor-pointer bg-[#F4F2EF] overflow-hidden"
+        style={{ aspectRatio: '4/3' }}
+        title="Click to view catalog"
+      >
+        {/* PDF Preview - First page only, no scrollbars */}
+        {file?.url ? (
+          <div className="h-full w-full overflow-hidden bg-white relative">
+            <iframe
+              src={`${file.url}#page=1&zoom=page-width&toolbar=0&navpanes=0&scrollbar=0`}
+              className="absolute inset-0 h-full w-full border-0"
+              style={{
+                overflow: 'hidden',
+                pointerEvents: 'none',
+              }}
+              scrolling="no"
+              title={displayName}
+            />
+          </div>
+        ) : (
+          <div className="flex h-full w-full flex-col items-center justify-center p-4">
+            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
+              <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M14 3v5a2 2 0 0 0 2 2h5" />
+                <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l7 7v9a2 2 0 0 1-2 2Z" />
+              </svg>
+            </div>
+            <p className="mt-2 text-xs text-[#2D2D2D]/50 text-center">Click to view PDF</p>
+          </div>
+        )}
+
+        {/* Hover overlay */}
+        <div className="absolute inset-0 flex items-center justify-center bg-[#412460]/0 transition group-hover:bg-[#412460]/10 pointer-events-none">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-[#412460] opacity-0 shadow-lg transition group-hover:opacity-100 scale-90 group-hover:scale-100">
+            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M15 3h6v6" />
+              <path d="M10 14 21 3" />
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      {/* Catalog Info - Name and Download Only */}
+      <div className="flex items-center justify-between p-4">
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-sm font-semibold text-[#2D2D2D] chinese-font">
+            {displayName}
+          </h3>
+        </div>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDownload(file?.url, file?.name);
+          }}
+          disabled={!file?.url}
+          className="ml-3 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#412460] text-white transition hover:bg-[#B99353] disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Download"
+        >
+          <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <path d="m7 10 5 5 5-5" />
+            <path d="M12 15V3" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function CostumerCatalogList() {
   const navigate = useNavigate();
   const location = useLocation();
   const category = location.state?.category;
-  
+
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Check if this is a catalog preview category
+  const isPreviewMode = isCatalogPreviewCategory(category);
 
   useEffect(() => {
     const loadSharedProducts = async () => {
@@ -38,7 +244,7 @@ export default function CostumerCatalogList() {
           throw new Error(result.message || "Failed to load catalogs");
         }
         // Filter products that are actually shared with customers
-        const sharedProducts = (result.data || []).filter(p => 
+        const sharedProducts = (result.data || []).filter(p =>
           p.share_to && p.share_to.customers === true
         );
         setProducts(sharedProducts);
@@ -55,12 +261,12 @@ export default function CostumerCatalogList() {
   // Filter products by category and search
   const filteredProducts = useMemo(() => {
     let filtered = products;
-    
+
     // Filter by category if provided
     if (category) {
       filtered = filtered.filter(p => (p.category || "Uncategorized") === category);
     }
-    
+
     // Filter by search query
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
@@ -71,9 +277,35 @@ export default function CostumerCatalogList() {
           (p.factory_location || "").toLowerCase().includes(query)
       );
     }
-    
+
     return filtered;
   }, [products, category, searchQuery]);
+
+  // Extract all PDF files from products for preview mode
+  const catalogFiles = useMemo(() => {
+    if (!isPreviewMode) return [];
+
+    const files = [];
+    filteredProducts.forEach((product) => {
+      const pdfFiles = Array.isArray(product.pdf_files) ? product.pdf_files : [];
+      pdfFiles.forEach((file) => {
+        if (file?.url) {
+          files.push({
+            ...file,
+            productId: product.id,
+            productName: product.name,
+          });
+        }
+      });
+    });
+    return files;
+  }, [filteredProducts, isPreviewMode]);
+
+  // Open PDF in new window
+  const openPdfInNewWindow = (url) => {
+    if (!url) return;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
 
   return (
     <CostumersPortal activePage="Catalogs">
@@ -96,7 +328,10 @@ export default function CostumerCatalogList() {
                 {category || "All Products"}
               </h2>
               <p className="mt-1 text-xs text-[#2D2D2D]/45">
-                {filteredProducts.length} product{filteredProducts.length !== 1 ? "s" : ""} available
+                {isPreviewMode
+                  ? `${catalogFiles.length} catalog${catalogFiles.length !== 1 ? "s" : ""} available`
+                  : `${filteredProducts.length} product${filteredProducts.length !== 1 ? "s" : ""} available`
+                }
               </p>
             </div>
           </div>
@@ -161,81 +396,36 @@ export default function CostumerCatalogList() {
           </div>
         )}
 
-        {!loading && !error && filteredProducts.length > 0 && (
+        {/* Catalog Preview Mode for Hardware and Sanitaries */}
+        {isPreviewMode && !loading && !error && catalogFiles.length > 0 && (
           <div className="mt-6 flex-1 overflow-auto">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {catalogFiles.map((file, idx) => (
+                <CatalogCard
+                  key={`${file.productId}-${idx}`}
+                  file={file}
+                  onDownload={downloadFile}
+                  onOpen={openPdfInNewWindow}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Standard Product List Mode for other categories - Shows PDF preview */}
+        {!isPreviewMode && !loading && !error && filteredProducts.length > 0 && (
+          <div className="mt-6 flex-1 overflow-auto">
+            <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {filteredProducts.map((product) => {
                 const pdfFiles = Array.isArray(product.pdf_files) ? product.pdf_files : [];
-                return (
-                  <div
-                    key={product.id}
-                    className="flex flex-col rounded-2xl border border-[#E1D9EA] bg-white p-5 transition hover:border-[#412460]/30 hover:shadow-[0_4px_20px_rgba(65,36,96,0.08)]"
-                  >
-                    {/* Header */}
-                    <div className="flex items-start justify-between">
-                      <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#412460] text-white">
-                        <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                          <path d="M14 3v5a2 2 0 0 0 2 2h5" />
-                          <path d="M17 21H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7l7 7v9a2 2 0 0 1-2 2Z" />
-                        </svg>
-                      </div>
-                      <span className="rounded-full bg-[#F4F2EF] px-3 py-1 text-xs font-semibold text-[#412460]">
-                        {pdfFiles.length} PDF{pdfFiles.length !== 1 ? "s" : ""}
-                      </span>
-                    </div>
-
-                    {/* Content */}
-                    <div className="mt-4 flex-1">
-                      <h3 className="text-sm font-semibold text-[#2D2D2D] line-clamp-2">
-                        {product.supplier_name || "Unnamed Supplier"}
-                      </h3>
-                      <p className="mt-1 text-xs text-[#2D2D2D]/50">
-                        {product.category || "No category"}
-                      </p>
-                      {product.factory_location && (
-                        <p className="mt-1 text-xs text-[#2D2D2D]/40">
-                          <svg className="mr-1 inline h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
-                            <circle cx="12" cy="10" r="3" />
-                          </svg>
-                          {product.factory_location}
-                        </p>
-                      )}
-                    </div>
-
-                    {/* PDF Files List */}
-                    {pdfFiles.length > 0 && (
-                      <div className="mt-4 space-y-2 border-t border-[#E1D9EA] pt-4">
-                        {pdfFiles.map((file, idx) => (
-                          <div
-                            key={idx}
-                            className="flex items-center justify-between rounded-xl bg-[#FBFAF8] px-3 py-2"
-                          >
-                            <div className="flex items-center gap-2 min-w-0 flex-1">
-                              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#B99353] text-[10px] font-semibold text-white">
-                                PDF
-                              </span>
-                              <span className="truncate text-xs text-[#2D2D2D]/70">{file.name || `File ${idx + 1}`}</span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => downloadFile(file.url, file.name)}
-                              disabled={!file.url}
-                              className="ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#412460] text-white transition hover:bg-[#B99353] disabled:opacity-40 disabled:cursor-not-allowed"
-                              title="Download"
-                            >
-                              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                <path d="m7 10 5 5 5-5" />
-                                <path d="M12 15V3" />
-                              </svg>
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
+                return pdfFiles.map((file, idx) => (
+                  <SimpleCatalogCard
+                    key={`${product.id}-${idx}`}
+                    file={file}
+                    onDownload={downloadFile}
+                    onOpen={openPdfInNewWindow}
+                  />
+                ));
               })}
             </div>
           </div>

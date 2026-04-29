@@ -1,10 +1,11 @@
 import React from "react";
+import { useCurrency } from "../../../contexts/CurrencyContext.jsx";
 
-const STATS = [
-  { label: "Total Sales", value: "$612,917", detail: "Products sold this month", accent: "bg-[#412460]", tone: "text-white", badge: "+24.6%" },
-  { label: "Total Orders", value: "34,760", detail: "Orders in last month", accent: "bg-[#EAE8E5]", tone: "text-[#2D2D2D]", badge: "+18.4%" },
-  { label: "Visitors", value: "14,987", detail: "Users in last month", accent: "border border-[#E1E3EE] bg-white", tone: "text-[#2D2D2D]", badge: "-3.8%" },
-  { label: "Products", value: "12,987", detail: "Products this year", accent: "bg-[#EAE8E5]", tone: "text-[#2D2D2D]", badge: "+12.8%" },
+const STATS_DATA = [
+  { label: "Total Sales", value: 612917, detail: "Products sold this month", accent: "bg-[#412460]", tone: "text-white", badge: "+24.6%" },
+  { label: "Total Orders", value: 34760, detail: "Orders in last month", accent: "bg-[#EAE8E5]", tone: "text-[#2D2D2D]", badge: "+18.4%", isNumber: true },
+  { label: "Visitors", value: 14987, detail: "Users in last month", accent: "border border-[#E1E3EE] bg-white", tone: "text-[#2D2D2D]", badge: "-3.8%", isNumber: true },
+  { label: "Products", value: 12987, detail: "Products this year", accent: "bg-[#EAE8E5]", tone: "text-[#2D2D2D]", badge: "+12.8%", isNumber: true },
 ];
 
 const PRODUCT_STATS = [
@@ -31,18 +32,20 @@ const COUNTRIES = [
 ];
 
 const ACTIVITIES = [
-  { order: "INV-00076", activity: "Mobile App Purchase", price: "$6,596", status: "Completed", date: "17 Apr, 2026" },
-  { order: "INV-00075", activity: "Hotel Booking", price: "$322", status: "Pending", date: "15 Apr, 2026" },
-  { order: "INV-00074", activity: "Freight Ticket Booking", price: "$40,200", status: "Completed", date: "14 Apr, 2026" },
-  { order: "INV-00073", activity: "Grocery Purchase", price: "$650", status: "In Progress", date: "14 Apr, 2026" },
+  { order: "INV-00076", activity: "Mobile App Purchase", price: 6596, status: "Completed", date: "17 Apr, 2026" },
+  { order: "INV-00075", activity: "Hotel Booking", price: 322, status: "Pending", date: "15 Apr, 2026" },
+  { order: "INV-00074", activity: "Freight Ticket Booking", price: 40200, status: "Completed", date: "14 Apr, 2026" },
+  { order: "INV-00073", activity: "Grocery Purchase", price: 650, status: "In Progress", date: "14 Apr, 2026" },
 ];
 
 export default function AdminDashboard() {
+  const { formatCurrency, currency } = useCurrency();
+
   return (
     <div className="grid gap-4 xl:grid-cols-[1fr_380px]">
       <div className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
-          {STATS.map((stat) => (
+          {STATS_DATA.map((stat) => (
             <div key={stat.label} className={`${stat.accent} ${stat.tone} rounded-[2rem] p-6 shadow-[0_14px_35px_rgba(45,45,45,0.04)]`}>
               <div className="flex items-start justify-between gap-4">
                 <div className={`flex h-11 w-11 items-center justify-center rounded-2xl ${stat.tone === "text-white" ? "bg-white/14" : "bg-[#2A1740] text-white"}`}>
@@ -55,7 +58,12 @@ export default function AdminDashboard() {
                 </span>
               </div>
               <p className={`mt-4 text-xs font-medium ${stat.tone === "text-white" ? "text-white/70" : "text-[#2D2D2D]/45"}`}>{stat.label}</p>
-              <p className="mt-2 text-3xl font-bold">{stat.value}</p>
+              <p className="mt-2 text-3xl font-bold">
+                {stat.isNumber 
+                  ? stat.value.toLocaleString() 
+                  : formatCurrency(stat.value)
+                }
+              </p>
               <p className={`mt-1 text-[11px] ${stat.tone === "text-white" ? "text-white/55" : "text-[#2D2D2D]/40"}`}>{stat.detail}</p>
             </div>
           ))}
@@ -105,7 +113,7 @@ export default function AdminDashboard() {
                 <tr>
                   <th className="py-3 font-semibold">Order ID</th>
                   <th className="py-3 font-semibold">Activity</th>
-                  <th className="py-3 font-semibold">Price</th>
+                  <th className="py-3 font-semibold">Price ({currency})</th>
                   <th className="py-3 font-semibold">Status</th>
                   <th className="py-3 font-semibold">Date</th>
                 </tr>
@@ -115,7 +123,7 @@ export default function AdminDashboard() {
                   <tr key={activity.order} className="border-t border-[#EAE8E5]">
                     <td className="py-3 font-semibold text-[#2D2D2D]/60">{activity.order}</td>
                     <td className="py-3 font-semibold text-[#2D2D2D]">{activity.activity}</td>
-                    <td className="py-3 text-[#2D2D2D]/60">{activity.price}</td>
+                    <td className="py-3 text-[#2D2D2D]/60">{formatCurrency(activity.price)}</td>
                     <td className="py-3">
                       <span className={`rounded-full px-2.5 py-1 font-semibold ${
                         activity.status === "Completed"

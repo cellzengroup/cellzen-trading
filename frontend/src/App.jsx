@@ -1,5 +1,6 @@
 import React, { useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { CurrencyProvider } from './contexts/CurrencyContext.jsx';
 
 const InventoryApp = lazy(() => import('./inventory/InventoryApp'));
 import { useTranslation } from 'react-i18next';
@@ -24,7 +25,9 @@ import AddProducts from './pages/auth/admin/adminProducts/AddProducts';
 import AdminCustomers from './pages/auth/admin/admincustomers';
 import AdminReports from './pages/auth/admin/adminreports';
 import AdminNotifications from './pages/auth/admin/adminnotifications';
-import AdminSettings from './pages/auth/admin/adminsettings';
+import AdminSettings from './pages/auth/admin/adminSettings/adminSettings';
+import AdminInvoices from './pages/auth/admin/adminInvoices/adminInvoices';
+import AdminCreateInvoice from './pages/auth/admin/adminInvoices/adminCreateInvoice';
 import CostumersDashboard from './pages/tracking/trackingpage/costumers/costumersdashboard';
 import CostumersGoodsTracking from './pages/tracking/trackingpage/costumers/CostumersGoodsTracking';
 import CostumersInvoices from './pages/tracking/trackingpage/costumers/CostumersInvoices';
@@ -87,6 +90,7 @@ function App() {
       : '';
 
   return (
+    <CurrencyProvider>
     <Router basename={basename}>
       <ScrollToTop />
       <Routes>
@@ -110,6 +114,9 @@ function App() {
             </AdminPortal>
           }
         />
+        <Route path="/admin-invoices" element={<AdminInvoices />} />
+        <Route path="/admin-invoices/create" element={<AdminCreateInvoice />} />
+        <Route path="/admin-invoices/edit" element={<AdminCreateInvoice />} />
         <Route path="/admin-managements" element={<AdminManagements />} />
         <Route path="/admin-inventory" element={<AdminInventory />} />
         <Route path="/admin-products" element={<AdminProducts />} />
@@ -183,6 +190,7 @@ function App() {
         />
       </Routes>
     </Router>
+    </CurrencyProvider>
   );
 }
 

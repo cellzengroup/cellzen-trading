@@ -12,7 +12,7 @@ export default defineConfig({
     port: 3300,
     host: '127.0.0.1',
     strictPort: true,
-    hmr: false,
+    hmr: true,
     allowedHosts: [
       'cellzen-trading.onrender.com',
       '.onrender.com',

@@ -218,4 +218,55 @@ router.get('/enrollments', authenticate, requireAdmin, async (req, res) => {
   }
 });
 
+// GET /users - Fetch users by account type (for invoices/share dropdown)
+router.get('/users', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+
+    const { type } = req.query;
+
+    // Fetch all customers and filter by type in JavaScript
+    // This is more reliable than complex SQL patterns
+    const users = await User.findAll({
+      where: { role: 'customer' },
+      attributes: ['id', 'name', 'email', 'accountType', 'phone', 'country'],
+      order: [['name', 'ASC']],
+    });
+
+    // Filter by type if specified
+    let filteredUsers = users;
+    if (type) {
+      const typeLower = type.toLowerCase();
+      filteredUsers = users.filter(user => {
+        const accountType = (user.accountType || '').toLowerCase();
+        if (typeLower === 'customers') {
+          return accountType.includes('customer') || accountType.includes('costumer');
+        }
+        if (typeLower === 'distributors') {
+          return accountType.includes('distributor');
+        }
+        if (typeLower === 'suppliers') {
+          return accountType.includes('supplier');
+        }
+        if (typeLower === 'partners') {
+          return accountType.includes('partner');
+        }
+        return true;
+      });
+    }
+
+    res.json({
+      success: true,
+      count: filteredUsers.length,
+      total: users.length,
+      data: filteredUsers,
+    });
+  } catch (error) {
+    console.error('Fetch users error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load users' });
+  }
+});
+
 module.exports = router;

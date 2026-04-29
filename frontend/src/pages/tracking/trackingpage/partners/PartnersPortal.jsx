@@ -1,5 +1,75 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
+
+// User Profile Dropdown Component
+function UserProfileDropdown({ adminUser, onLogout }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const dropdownRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div ref={dropdownRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-2 p-1 rounded-full hover:bg-[#F4F2EF] transition-colors"
+      >
+        <div className="flex h-10 w-10 items-center justify-center bg-[#412460] text-sm font-bold text-white rounded-full">
+          {(adminUser?.name || "P").charAt(0)}
+        </div>
+        <div className="hidden sm:block text-left">
+          <p className="text-xs font-semibold text-[#2D2D2D]">{adminUser?.name || "Partner"}</p>
+          <p className="text-[10px] text-[#2D2D2D]/45">Partner</p>
+        </div>
+        <svg
+          className={`h-4 w-4 text-[#2D2D2D]/60 transition-transform ${isOpen ? "rotate-180" : ""}`}
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+
+      {isOpen && (
+        <div className="absolute right-0 mt-2 w-48 rounded-xl bg-white shadow-lg border border-[#F4F2EF] py-2 z-50">
+          <Link
+            to="#"
+            className="flex items-center gap-2 px-4 py-2 text-sm text-[#2D2D2D] hover:bg-[#F4F2EF] transition-colors"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.8a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V2.8a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.3.27.66.47 1.1.6h.7a2 2 0 1 1 0 4h-.7c-.44.13-.8.33-1.1.6Z" />
+            </svg>
+            Profile Settings
+          </Link>
+          <button
+            type="button"
+            onClick={onLogout}
+            className="flex w-[calc(100%-16px)] items-center gap-2 px-3 py-2 text-sm bg-[#412460] text-white hover:bg-[#412460]/90 transition-colors rounded-lg mx-2 mt-1 justify-center"
+          >
+            <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Log Out
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const NAV_LINKS = [
   { title: "Dashboard", path: "/tracking/trackingpage/partners/dashboard", icon: "home" },
@@ -85,7 +155,7 @@ export default function PartnersPortal({ activePage, children }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("partners_sidebar_collapsed") === "true");
   const adminUser = useMemo(() => {
     try {
-      const storedUser = sessionStorage.getItem("inv_user");
+      const storedUser = sessionStorage.getItem("customer_user");
       return storedUser ? JSON.parse(storedUser) : null;
     } catch {
       return null;
@@ -93,8 +163,8 @@ export default function PartnersPortal({ activePage, children }) {
   }, []);
 
   useEffect(() => {
-    if (!localStorage.getItem("inv_token")) {
-      navigate("/admin-login", { replace: true });
+    if (!localStorage.getItem("customer_token")) {
+      navigate("/login", { replace: true });
     }
   }, [navigate]);
 
@@ -103,9 +173,9 @@ export default function PartnersPortal({ activePage, children }) {
   }, [sidebarCollapsed]);
 
   const handleLogout = () => {
-    localStorage.removeItem("inv_token");
-    sessionStorage.removeItem("inv_user");
-    navigate("/admin-login", { replace: true });
+    localStorage.removeItem("customer_token");
+    sessionStorage.removeItem("customer_user");
+    navigate("/login", { replace: true });
   };
 
   return (
@@ -171,8 +241,10 @@ export default function PartnersPortal({ activePage, children }) {
         <main className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
           <header className="flex w-full flex-col gap-4 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-[#2D2D2D]">Welcome to Partners Dashboard</h1>
-              <p className="mt-1 text-xs text-[#2D2D2D]/45">Manage partnership operations, tracking, and invoices</p>
+              <h1 className="text-2xl font-semibold text-[#2D2D2D]">
+                Hey there! {adminUser?.firstName || adminUser?.name?.split(' ')[0] || "User"}, Have a wonderful Day
+              </h1>
+              <p className="mt-1 text-xs text-[#2D2D2D]/45">Collaborate on projects, track shared shipments, and manage partnership deals</p>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -188,19 +260,18 @@ export default function PartnersPortal({ activePage, children }) {
                   <path d="M10 21h4" />
                 </svg>
               </button>
-              <div className="flex h-10 w-10 items-center justify-center bg-[#412460] text-sm font-bold text-white">
-                {(adminUser?.name || "P").charAt(0)}
-              </div>
-              <div>
-                <p className="text-xs font-semibold">{adminUser?.name || "Admin User"}</p>
-                <p className="text-[10px] text-[#2D2D2D]/45">{adminUser?.role || "Partner"}</p>
-              </div>
+              <UserProfileDropdown adminUser={adminUser} onLogout={handleLogout} />
               <button
                 type="button"
                 onClick={handleLogout}
-                className="rounded-full bg-[#2D2D2D] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#412460]"
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-[#412460] text-white transition-colors hover:bg-[#412460]/90"
+                aria-label="Log Out"
               >
-                Logout
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
               </button>
             </div>
           </header>

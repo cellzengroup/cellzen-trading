@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useCurrency } from "../../../contexts/CurrencyContext.jsx";
 
 const NAV_LINKS = [
   { title: "Home", path: "/admin-dashboard", icon: "home" },
+  { title: "Invoices", path: "/admin-invoices", icon: "invoices" },
   { title: "Management", path: "/admin-managements", icon: "management" },
   { title: "Products", path: "/admin-products", icon: "products" },
   { title: "Reports", path: "/admin-reports", icon: "reports" },
@@ -27,6 +29,18 @@ function NavIcon({ icon }) {
         <path d="M3 10.5 12 3l9 7.5" />
         <path d="M5 10v10h14V10" />
         <path d="M9 20v-6h6v6" />
+      </svg>
+    );
+  }
+
+  if (icon === "invoices") {
+    return (
+      <svg {...iconProps}>
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <path d="M14 2v6h6" />
+        <path d="M16 13H8" />
+        <path d="M16 17H8" />
+        <path d="M10 9H8" />
       </svg>
     );
   }
@@ -82,7 +96,10 @@ function NavIcon({ icon }) {
 
 export default function AdminPortal({ activePage, children }) {
   const navigate = useNavigate();
+  const currencyDropdownRef = React.useRef(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("admin_sidebar_collapsed") === "true");
+  const [currencyDropdownOpen, setCurrencyDropdownOpen] = useState(false);
+  const { currency, setCurrency, currencySymbols, availableCurrencies } = useCurrency();
   const adminUser = useMemo(() => {
     try {
       const storedUser = sessionStorage.getItem("inv_user");
@@ -101,6 +118,17 @@ export default function AdminPortal({ activePage, children }) {
   useEffect(() => {
     localStorage.setItem("admin_sidebar_collapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
+
+  // Close currency dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (currencyDropdownRef.current && !currencyDropdownRef.current.contains(event.target)) {
+        setCurrencyDropdownOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const handleLogout = () => {
     localStorage.removeItem("inv_token");
@@ -176,12 +204,40 @@ export default function AdminPortal({ activePage, children }) {
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <button className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F4F2EF] text-[#2D2D2D]/60 transition-colors hover:bg-[#412460] hover:text-white" aria-label="Search">
-                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <circle cx="11" cy="11" r="7" />
-                  <path d="M20 20l-3-3" />
-                </svg>
-              </button>
+              {/* Currency Dropdown */}
+              <div className="relative" ref={currencyDropdownRef}>
+                <button
+                  onClick={() => setCurrencyDropdownOpen(!currencyDropdownOpen)}
+                  className="flex h-10 items-center gap-2 px-3 rounded-full bg-[#F4F2EF] text-[#2D2D2D]/80 transition-colors hover:bg-[#412460] hover:text-white"
+                  aria-label="Select Currency"
+                >
+                  <span className="text-sm font-semibold">{currencySymbols[currency]} {currency}</span>
+                  <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
+
+                {/* Dropdown Menu */}
+                {currencyDropdownOpen && (
+                  <div className="absolute right-0 top-full mt-2 w-40 rounded-xl bg-white shadow-lg border border-[#E1E3EE] py-2 z-50">
+                    {availableCurrencies.map((curr) => (
+                      <button
+                        key={curr}
+                        onClick={() => {
+                          setCurrency(curr);
+                          setCurrencyDropdownOpen(false);
+                        }}
+                        className={`w-full flex items-center px-4 py-2 text-left text-sm transition-colors hover:bg-[#F4F2EF] ${
+                          currency === curr ? 'bg-[#412460]/10 text-[#412460] font-semibold' : 'text-[#2D2D2D]'
+                        }`}
+                      >
+                        <span>{currencySymbols[curr]} {curr}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <button className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F4F2EF] text-[#2D2D2D]/60 transition-colors hover:bg-[#412460] hover:text-white" aria-label="Notifications">
                 <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />

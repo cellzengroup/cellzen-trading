@@ -144,12 +144,35 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
 
     const pdfFiles = req.files?.pdf_files || [];
     const pdfFileIndex = Number(req.body.pdf_file_index);
+
+    // Helper function to decode and sanitize filename
+    const sanitizeFilename = (originalName) => {
+      try {
+        // Try to decode if it's URI encoded
+        let decoded = originalName;
+        if (/%[0-9A-Fa-f]{2}/.test(originalName)) {
+          try {
+            decoded = decodeURIComponent(originalName);
+          } catch (e) {
+            // If decoding fails, use original
+          }
+        }
+        // Remove .pdf extension for storage (we add it back if needed)
+        return decoded.replace(/\.pdf$/i, '');
+      } catch (e) {
+        return originalName.replace(/\.pdf$/i, '');
+      }
+    };
+
     const uploadedPdfs = await Promise.all(
-      pdfFiles.map(async (file) => ({
-        name: file.originalname,
-        size: file.size,
-        url: await uploadPdf(file.buffer, file.originalname),
-      }))
+      pdfFiles.map(async (file) => {
+        const cleanName = sanitizeFilename(file.originalname);
+        return {
+          name: cleanName,
+          size: file.size,
+          url: await uploadPdf(file.buffer, file.originalname),
+        };
+      })
     );
 
     // Ensure default location exists
@@ -287,12 +310,35 @@ router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 },
 
     const pdfFiles = req.files?.pdf_files || [];
     const pdfFileIndex = Number(req.body.pdf_file_index);
+
+    // Helper function to decode and sanitize filename
+    const sanitizeFilename = (originalName) => {
+      try {
+        // Try to decode if it's URI encoded
+        let decoded = originalName;
+        if (/%[0-9A-Fa-f]{2}/.test(originalName)) {
+          try {
+            decoded = decodeURIComponent(originalName);
+          } catch (e) {
+            // If decoding fails, use original
+          }
+        }
+        // Remove .pdf extension for storage (we add it back if needed)
+        return decoded.replace(/\.pdf$/i, '');
+      } catch (e) {
+        return originalName.replace(/\.pdf$/i, '');
+      }
+    };
+
     const uploadedPdfs = await Promise.all(
-      pdfFiles.map(async (file) => ({
-        name: file.originalname,
-        size: file.size,
-        url: await uploadPdf(file.buffer, file.originalname),
-      }))
+      pdfFiles.map(async (file) => {
+        const cleanName = sanitizeFilename(file.originalname);
+        return {
+          name: cleanName,
+          size: file.size,
+          url: await uploadPdf(file.buffer, file.originalname),
+        };
+      })
     );
     const existingPdfs = Array.isArray(product.pdf_files) ? product.pdf_files : [];
     const selectedPdf = Number.isInteger(pdfFileIndex) && pdfFileIndex >= 0 ? existingPdfs[pdfFileIndex] : existingPdfs[0];
