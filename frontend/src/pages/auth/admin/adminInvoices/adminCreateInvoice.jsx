@@ -580,7 +580,7 @@ export default function AdminCreateInvoice() {
     if (editData) {
       const parsedData = JSON.parse(editData);
       setIsEditMode(true);
-      setEditInvoiceId(parsedData.id || parsedData.invoiceNumber);
+      setEditInvoiceId(parsedData.invoiceNumber || parsedData.id);
       setFormData(prev => ({
         ...prev,
         ...parsedData,
@@ -918,35 +918,39 @@ export default function AdminCreateInvoice() {
   const handleSaveDraftAndExit = async () => {
     setLoading(true);
     try {
-      // Check if invoice with this number already exists
       const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
-      const existingDraft = drafts.find(d => d.invoiceNumber === formData.invoiceNumber);
-
-      if (existingDraft) {
-        setShowCancelModal(false);
-        setSuccessModal({ show: true, message: "Already saved as a draft", type: "exists" });
-        setLoading(false);
-        return;
-      }
-
-      const calculatedTransportCost = calculateTransportationCost();
-      // For road transport, use calculated documentation charges (0.3% of cargo value)
-      const calculatedDocCharges = formData.modeOfDelivery === "road"
+      const recalcTransport = calculateTransportationCost();
+      const finalTransportCost = recalcTransport > 0
+        ? recalcTransport
+        : parseFloat(formData.transportCost || 0);
+      const recalcDoc = formData.modeOfDelivery === "road"
         ? calculateDocumentationCharges()
+        : parseFloat(formData.documentationCharges || 0);
+      const finalDocCharges = recalcDoc > 0
+        ? recalcDoc
         : parseFloat(formData.documentationCharges || 0);
       const draftData = {
         ...formData,
-        transportCost: calculatedTransportCost.toFixed(2),
-        documentationCharges: calculatedDocCharges.toFixed(2),
+        transportCost: finalTransportCost.toFixed(2),
+        documentationCharges: finalDocCharges.toFixed(2),
         currency,
         status: "Draft",
         draftSavedAt: new Date().toISOString(),
       };
-      drafts.push({
-        id: `draft-${Date.now()}`,
-        ...draftData,
-      });
-      localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
+
+      if (isEditMode && editInvoiceId) {
+        // Update the existing draft
+        const updatedDrafts = drafts.map(d =>
+          (d.invoiceNumber || d.id) === editInvoiceId
+            ? { ...draftData, id: d.id }
+            : d
+        );
+        localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
+      } else {
+        drafts.push({ id: `draft-${Date.now()}`, ...draftData });
+        localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
+      }
+
       setShowCancelModal(false);
       setSuccessModal({ show: true, message: "Invoice Draft saved", type: "draft" });
     } catch (error) {
@@ -965,39 +969,46 @@ export default function AdminCreateInvoice() {
   const handleSaveDraft = async () => {
     setLoading(true);
     try {
-      // Check if invoice with this number already exists
       const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
-      const existingDraft = drafts.find(d => d.invoiceNumber === formData.invoiceNumber);
-
-      if (existingDraft) {
-        setSuccessModal({ show: true, message: "Already saved as a draft", type: "exists" });
-        setLoading(false);
-        return;
-      }
-
-      const calculatedTransportCost = calculateTransportationCost();
-      // For road transport, use calculated documentation charges (0.3% of cargo value)
-      const calculatedDocCharges = formData.modeOfDelivery === "road"
+      const recalcTransport = calculateTransportationCost();
+      const finalTransportCost = recalcTransport > 0
+        ? recalcTransport
+        : parseFloat(formData.transportCost || 0);
+      const recalcDoc = formData.modeOfDelivery === "road"
         ? calculateDocumentationCharges()
+        : parseFloat(formData.documentationCharges || 0);
+      const finalDocCharges = recalcDoc > 0
+        ? recalcDoc
         : parseFloat(formData.documentationCharges || 0);
       const draftData = {
         ...formData,
-        transportCost: calculatedTransportCost.toFixed(2),
-        documentationCharges: calculatedDocCharges.toFixed(2),
+        transportCost: finalTransportCost.toFixed(2),
+        documentationCharges: finalDocCharges.toFixed(2),
         currency,
         status: "Draft",
         draftSavedAt: new Date().toISOString(),
       };
-      console.log("Saving as draft:", draftData);
 
-      // Store in localStorage for now (can be replaced with API call)
-      drafts.push({
-        id: `draft-${Date.now()}`,
-        ...draftData,
-      });
-      localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
-
-      setSuccessModal({ show: true, message: "Invoice Draft saved", type: "draft" });
+      if (isEditMode && editInvoiceId) {
+        // Update the existing draft
+        const updatedDrafts = drafts.map(d =>
+          (d.invoiceNumber || d.id) === editInvoiceId
+            ? { ...draftData, id: d.id }
+            : d
+        );
+        localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
+        setSuccessModal({ show: true, message: "Invoice Draft Updated", type: "draft" });
+      } else {
+        // New draft — guard against accidental duplicates
+        const alreadyExists = drafts.some(d => d.invoiceNumber === formData.invoiceNumber);
+        if (alreadyExists) {
+          setSuccessModal({ show: true, message: "Already saved as a draft", type: "exists" });
+          return;
+        }
+        drafts.push({ id: `draft-${Date.now()}`, ...draftData });
+        localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
+        setSuccessModal({ show: true, message: "Invoice Draft saved", type: "draft" });
+      }
     } catch (error) {
       console.error("Error saving draft:", error);
       setSuccessModal({ show: true, message: "Failed to save draft. Please try again.", type: "error" });
@@ -1010,16 +1021,20 @@ export default function AdminCreateInvoice() {
     e.preventDefault();
     setLoading(true);
     try {
-      // Include calculated transportation cost and documentation charges in submission
-      const calculatedTransportCost = calculateTransportationCost();
-      // For road transport, use calculated documentation charges (0.3% of cargo value)
-      const calculatedDocCharges = formData.modeOfDelivery === "road"
+      const recalcTransport = calculateTransportationCost();
+      const finalTransportCost = recalcTransport > 0
+        ? recalcTransport
+        : parseFloat(formData.transportCost || 0);
+      const recalcDoc = formData.modeOfDelivery === "road"
         ? calculateDocumentationCharges()
+        : parseFloat(formData.documentationCharges || 0);
+      const finalDocCharges = recalcDoc > 0
+        ? recalcDoc
         : parseFloat(formData.documentationCharges || 0);
       const finalFormData = {
         ...formData,
-        transportCost: calculatedTransportCost.toFixed(2),
-        documentationCharges: calculatedDocCharges.toFixed(2),
+        transportCost: finalTransportCost.toFixed(2),
+        documentationCharges: finalDocCharges.toFixed(2),
       };
 
       // Get existing drafts

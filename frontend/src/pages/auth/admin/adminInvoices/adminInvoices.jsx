@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminPageShell from "../AdminPageShell";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
-import { generateInvoiceExcel } from "../../../../utils/invoiceExcelGenerator.js";
+import { generateInvoiceExcel } from "../../../../utils/generateCellzenInvoice.js";
 
 const CURRENCIES = [
   { code: "NPR", symbol: "Rs. ", name: "NPR" },
@@ -164,10 +164,9 @@ ${totalCommission > 0 ? `Commission: ${totalCommission.toFixed(2)}\n` : ''}Grand
     setDownloadModal({ show: false, invoice: null });
   };
 
-  const downloadAsExcel = (invoice) => {
-    // Use the new Excel generator
-    generateInvoiceExcel(invoice, currency);
+  const downloadAsExcel = async (invoice) => {
     setDownloadModal({ show: false, invoice: null });
+    await generateInvoiceExcel(invoice, currency);
   };
 
   return (

@@ -35,9 +35,13 @@ export default defineConfig({
       '@': path.resolve(__dirname, './frontend/src'),
       'src': path.resolve(__dirname, './frontend/src'),
       'components': path.resolve(__dirname, './frontend/src/components'),
-      'utils': path.resolve(__dirname, './frontend/src/utils')
+      'utils': path.resolve(__dirname, './frontend/src/utils'),
+      'exceljs': path.resolve(__dirname, './node_modules/exceljs/dist/exceljs.min.js'),
     },
     extensions: ['.js', '.jsx', '.json', '.ts', '.tsx']
+  },
+  optimizeDeps: {
+    include: ['exceljs'],
   },
   build: {
     sourcemap: true,
