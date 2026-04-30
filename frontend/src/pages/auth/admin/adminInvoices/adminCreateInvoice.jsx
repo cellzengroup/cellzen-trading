@@ -808,16 +808,12 @@ export default function AdminCreateInvoice() {
   };
 
   const handleCurrencyChange = (nextCurrency) => {
-    setCurrency(nextCurrency);
-
-    // Before Customs & Transport, the selected currency is the invoice item currency.
-    // On Step 3, changing currency is display-only for customs/transport totals.
-    if (currentStep < 3) {
-      setFormData(prev => ({
-        ...prev,
-        originalCurrency: nextCurrency,
-      }));
-    }
+    // The invoice right-side currency fixes the denomination — same numbers, different label.
+    // It does NOT touch the global display currency (header).
+    setFormData(prev => ({
+      ...prev,
+      originalCurrency: nextCurrency,
+    }));
   };
 
   const syncSharedInvoice = async (invoiceData) => {
@@ -898,102 +894,92 @@ export default function AdminCreateInvoice() {
     return convertCurrency(totalInOriginal, formData.originalCurrency || currency, currency);
   };
 
-  // Get matching transport rates for display
-  const getTransportRates = () => {
+  // Find ALL matching transport rate entries for the current route
+  const findMatchingRates = () => {
     const { modeOfDelivery, transportFrom, transportTo, borderCrossing } = formData;
+    if (!modeOfDelivery || !transportFrom || !transportTo) return [];
 
-    if (!modeOfDelivery || !transportFrom || !transportTo) return { kgRate: 0, cbmRate: 0 };
-
-    // Find matching rates
-    const matchingRates = transportRates.filter(rate => {
+    return transportRates.filter(rate => {
       const modeMatch = rate.mode === modeOfDelivery;
       const fromMatch = rate.from === transportFrom.name;
-      const toMatch = rate.to === transportTo.name;
-
-      // For road transport to/from Nepal, also check border crossing
+      const toMatch   = rate.to   === transportTo.name;
       if (modeOfDelivery === "road" && (transportFrom.name === "Nepal" || transportTo.name === "Nepal")) {
-        const borderMatch = rate.method === borderCrossing;
-        return modeMatch && fromMatch && toMatch && borderMatch;
+        return modeMatch && fromMatch && toMatch && rate.method === borderCrossing;
       }
-
       return modeMatch && fromMatch && toMatch;
     });
-
-    const kgRate = matchingRates.find(r => r.unit === "kg");
-    const cbmRate = matchingRates.find(r => r.unit === "cbm");
-
-    return {
-      kgRate: kgRate ? convertRateFromUSD(kgRate.rate) : 0,
-      cbmRate: cbmRate ? convertRateFromUSD(cbmRate.rate) : 0,
-    };
   };
+
+  // Merge kg/CBM/border rates across all matching entries.
+  // Scans every entry so separate kg-only or CBM-only saves are combined.
+  const resolveRates = (tgt = currency) => {
+    const entries = findMatchingRates();
+    let kgRate = 0, cbmRate = 0, borderRate = 0;
+
+    for (const r of entries) {
+      // New-format field: rateKg
+      if (r.rateKg != null && kgRate === 0)
+        kgRate = convertRateFromUSD(r.rateKg, tgt);
+      // New-format field: rateCBM
+      if (r.rateCBM != null && cbmRate === 0)
+        cbmRate = convertRateFromUSD(r.rateCBM, tgt);
+      // Border leg rate (new or old format)
+      if (r.rateBorder != null && borderRate === 0)
+        borderRate = convertRateFromUSD(r.rateBorder, tgt);
+      // Old-format fallback: single rate + unit
+      if (r.unit === "kg"  && r.rate != null && kgRate  === 0)
+        kgRate  = convertRateFromUSD(r.rate, tgt);
+      if (r.unit === "cbm" && r.rate != null && cbmRate === 0)
+        cbmRate = convertRateFromUSD(r.rate, tgt);
+    }
+
+    return { kgRate, cbmRate, borderRate };
+  };
+
+  // Get matching transport rates for display (in header currency)
+  const getTransportRates = () => resolveRates(currency);
 
   // Get transport rates in original currency
-  const getTransportRatesInOriginal = () => {
-    const { modeOfDelivery, transportFrom, transportTo, originalCurrency } = formData;
-
-    if (!modeOfDelivery || !transportFrom || !transportTo) return { kgRate: 0, cbmRate: 0 };
-
-    // Find matching rates
-    const matchingRates = transportRates.filter(rate => {
-      const modeMatch = rate.mode === modeOfDelivery;
-      const fromMatch = rate.from === transportFrom.name;
-      const toMatch = rate.to === transportTo.name;
-
-      // For road transport to/from Nepal, also check border crossing
-      if (modeOfDelivery === "road" && (transportFrom.name === "Nepal" || transportTo.name === "Nepal")) {
-        const borderMatch = rate.method === formData.borderCrossing;
-        return modeMatch && fromMatch && toMatch && borderMatch;
-      }
-
-      return modeMatch && fromMatch && toMatch;
-    });
-
-    const kgRateUSD = matchingRates.find(r => r.unit === "kg")?.rate || 0;
-    const cbmRateUSD = matchingRates.find(r => r.unit === "cbm")?.rate || 0;
-
-    // Convert from USD to original currency
-    return {
-      kgRate: convertRateFromUSD(kgRateUSD, originalCurrency || currency),
-      cbmRate: convertRateFromUSD(cbmRateUSD, originalCurrency || currency),
-    };
-  };
+  const getTransportRatesInOriginal = () => resolveRates(formData.originalCurrency || currency);
 
   // Calculate transportation cost in original currency (for saving)
   const getTransportationCostInOriginal = () => {
     const { modeOfDelivery, transportFrom, transportTo } = formData;
-
     if (!modeOfDelivery || !transportFrom || !transportTo) return 0;
 
     const totalWeight = formData.items.reduce((sum, item) => sum + (parseFloat(item.weight) || 0), 0);
-    const totalCBM = formData.items.reduce((sum, item) => sum + (parseFloat(item.cbm) || 0), 0);
-
+    const totalCBM    = formData.items.reduce((sum, item) => sum + (parseFloat(item.cbm)    || 0), 0);
     if (totalWeight === 0 && totalCBM === 0) return 0;
 
-    const { kgRate, cbmRate } = getTransportRatesInOriginal();
+    const { kgRate, cbmRate, borderRate } = getTransportRatesInOriginal();
 
-    const kgCost = kgRate ? totalWeight * kgRate : 0;
-    const cbmCost = cbmRate ? totalCBM * cbmRate : 0;
-
-    // Return the higher of the two costs
-    if (kgCost > 0 && cbmCost > 0) {
-      return Math.max(kgCost, cbmCost);
+    if (borderRate > 0) {
+      // Nepal border crossing — two legs
+      // Leg 1 (China → Border): higher of weight×kgRate or CBM×cbmRate
+      const kgCost  = kgRate  ? totalWeight * kgRate  : 0;
+      const cbmCost = cbmRate ? totalCBM    * cbmRate : 0;
+      const leg1 = (kgCost > 0 && cbmCost > 0) ? Math.max(kgCost, cbmCost) : (kgCost || cbmCost);
+      // Leg 2 (Border → Nepal): always CBM × borderRate
+      const leg2 = totalCBM * borderRate;
+      return leg1 + leg2;
     }
+
+    // Standard single-route: higher of weight×kgRate or CBM×cbmRate
+    const kgCost  = kgRate  ? totalWeight * kgRate  : 0;
+    const cbmCost = cbmRate ? totalCBM    * cbmRate : 0;
+    if (kgCost > 0 && cbmCost > 0) return Math.max(kgCost, cbmCost);
     return kgCost || cbmCost || 0;
   };
 
-  // Calculate transportation cost for display (in current currency)
+  // Transportation cost displayed in header currency (converts from originalCurrency)
   const calculateTransportationCost = () => {
-    const costInOriginal = getTransportationCostInOriginal();
-    const { originalCurrency } = formData;
-
-    // Convert from original currency to current display currency
-    return convertCurrency(costInOriginal, originalCurrency || currency, currency);
+    const origCurr = formData.originalCurrency || currency;
+    return convertCurrency(getTransportationCostInOriginal(), origCurr, currency);
   };
 
-  // Convert amount from one currency to another
+  // Convert amount from one currency to another — returns full precision; callers apply .toFixed(2) for display
   const convertCurrency = (amount, fromCurrency, toCurrency) => {
-    if (fromCurrency === toCurrency) return amount;
+    if (fromCurrency === toCurrency) return parseFloat(amount) || 0;
     if (!amount || isNaN(amount)) return 0;
 
     const rates = { USD: 1, CNY: 7.24, NPR: 135.50 };
@@ -1003,10 +989,14 @@ export default function AdminCreateInvoice() {
       Object.assign(rates, parsed);
     }
 
-    // Convert to USD first, then to target currency
     const amountInUSD = parseFloat(amount) / rates[fromCurrency];
     return amountInUSD * rates[toCurrency];
   };
+
+  // origCurr = invoice denomination (right-side selector); currency = header display currency
+  const origCurr = formData.originalCurrency || currency;
+  const toDisplay = (v) => parseFloat(convertCurrency(parseFloat(v) || 0, origCurr, currency).toFixed(2));
+  const toStored  = (v) => convertCurrency(parseFloat(v) || 0, currency, origCurr);
 
   const convertCurrentCurrencyToOriginal = (amount) => {
     const parsedAmount = parseFloat(amount || 0);
@@ -1023,12 +1013,10 @@ export default function AdminCreateInvoice() {
     return itemsTotal * 0.003; // 0.3% of cargo value in original currency
   };
 
-  // Get display value for documentation charges (converted to current currency)
+  // Documentation charges converted to header currency for display
   const getDocumentationChargeDisplay = () => {
-    const docChargeInOriginal = getDocumentationChargeInOriginal();
-    const { originalCurrency } = formData;
-    // Convert from original currency to current display currency
-    return convertCurrency(docChargeInOriginal, originalCurrency || currency, currency);
+    const origCurr = formData.originalCurrency || currency;
+    return convertCurrency(getDocumentationChargeInOriginal(), origCurr, currency);
   };
 
   const handleNext = () => {
@@ -1418,9 +1406,9 @@ export default function AdminCreateInvoice() {
             ))}
           </div>
 
-          {/* Right: Currency Selector */}
+          {/* Right: Invoice Currency Selector — fixes denomination, no conversion */}
           <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-[#2D2D2D]/60">Currency:</span>
+            <span className="text-xs font-medium text-[#2D2D2D]/60">Invoice Currency:</span>
             <div className="flex rounded-lg border border-[#E1E3EE] bg-white overflow-hidden">
                 {CURRENCIES.map((curr) => (
                   <button
@@ -1428,7 +1416,7 @@ export default function AdminCreateInvoice() {
                     type="button"
                     onClick={() => handleCurrencyChange(curr.code)}
                     className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
-                      currency === curr.code
+                      (formData.originalCurrency || currency) === curr.code
                         ? "bg-[#412460] text-white"
                         : "text-[#412460] hover:bg-[#412460]/10"
                     } ${curr.code !== "CNY" ? "border-r border-[#E1E3EE]" : ""}`}
@@ -1601,10 +1589,10 @@ export default function AdminCreateInvoice() {
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">QTY</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Unit</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">
-                        Unit Price / {formData.items[0]?.unit || "Unit"}
+                        Unit Price ({getCurrencySymbolFor(currency).trim()}) / {formData.items[0]?.unit || "Unit"}
                       </th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">
-                        Total Amount ({getInvoiceItemCurrencySymbol().trim()})
+                        Total Amount ({getCurrencySymbolFor(currency).trim()})
                       </th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Comm. %</th>
                       <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Weight</th>
@@ -1704,13 +1692,13 @@ export default function AdminCreateInvoice() {
                             type="number"
                             min="0"
                             step="0.01"
-                            value={item.unitPrice || ""}
-                            onChange={(e) => updateItem(index, "unitPrice", e.target.value === "" ? 0 : parseFloat(e.target.value))}
+                            value={toDisplay(item.unitPrice) || ""}
+                            onChange={(e) => updateItem(index, "unitPrice", e.target.value === "" ? 0 : toStored(parseFloat(e.target.value)))}
                             className="w-28 rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm focus:border-[#412460] focus:outline-none"
                           />
                         </td>
                         <td className="px-4 py-3 font-semibold text-[#412460]">
-                          {getInvoiceItemCurrencySymbol()}{calculateItemTotal(item)}
+                          {getCurrencySymbolFor(currency)}{convertCurrency(parseFloat(calculateItemTotal(item)), origCurr, currency).toFixed(2)}
                         </td>
                         <td className="px-4 py-3">
                           <input
@@ -1765,7 +1753,7 @@ export default function AdminCreateInvoice() {
             {/* Grand Total Display */}
             <div className="flex items-center justify-end gap-4 border-t border-[#EAE8E5] pt-4">
               <span className="text-sm text-[#2D2D2D]/60">Grand Total:</span>
-              <span className="text-3xl font-bold text-[#412460]">{getInvoiceItemCurrencySymbol()}{calculateGrandTotal()}</span>
+              <span className="text-3xl font-bold text-[#412460]">{getCurrencySymbolFor(currency)}{calculateGrandTotalDisplay().toFixed(2)}</span>
             </div>
 
             {/* Submit Buttons with Checkbox on Left */}
@@ -1852,110 +1840,138 @@ export default function AdminCreateInvoice() {
               </div>
             )}
             {/* Customs, Documentation, Other Charges, and Freight Cost */}
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
-                  Customs Duty ({getCurrencySymbol().trim()})
-                </label>
-                <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
-                  <span className="select-none text-sm font-semibold text-[#412460]">{getCurrencySymbol()}</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={formData.customsDuty || ""}
-                    onChange={(e) => setFormData(prev => ({ ...prev, customsDuty: e.target.value }))}
-                    className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
-                    placeholder="0.00"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
-                  Documentation Charges ({getCurrencySymbol().trim()}) {formData.modeOfDelivery === "road" && "(Auto)"}
-                </label>
-                <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
-                  <span className="select-none text-sm font-semibold text-[#412460]">{getCurrencySymbol()}</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={formData.modeOfDelivery === "road" ? getDocumentationChargeDisplay().toFixed(2) : (formData.documentationCharges || "")}
-                    readOnly={formData.modeOfDelivery === "road"}
-                    onChange={(e) => formData.modeOfDelivery !== "road" && setFormData(prev => ({ ...prev, documentationCharges: e.target.value }))}
-                    className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
-                    placeholder={formData.modeOfDelivery === "road" ? "Auto-calculated" : "0.00"}
-                  />
-                </div>
-                {formData.modeOfDelivery === "road" && (
-                  <p className="mt-1 text-xs text-[#2D2D2D]/50">
-                    Auto-calculated: 0.3% of cargo value
-                  </p>
-                )}
-              </div>
-              <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
-                  Other Charges ({getCurrencySymbol().trim()})
-                </label>
-                <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
-                  <span className="select-none text-sm font-semibold text-[#412460]">{getCurrencySymbol()}</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={formData.otherCharges || ""}
-                    onChange={(e) => setFormData(prev => ({ ...prev, otherCharges: e.target.value }))}
-                    className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
-                    placeholder="0.00"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
-                  Freight Cost ({getCurrencySymbol().trim()})
-                </label>
-                <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
-                  <span className="select-none text-sm font-semibold text-[#412460]">{getCurrencySymbol()}</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={calculateTransportationCost().toFixed(2)}
-                    readOnly
-                    className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
-                    placeholder="Auto-calculated from rates"
-                  />
-                </div>
-                {(() => {
-                  const { kgRate, cbmRate } = getTransportRates();
+            {(() => {
+              const origCurr = formData.originalCurrency || currency;
+              const sym = getCurrencySymbolFor(currency);
+              // Helper: stored value (in origCurr) → display value (in currency)
+              const toDisplay = (v) => parseFloat(convertCurrency(parseFloat(v) || 0, origCurr, currency).toFixed(2));
+              // Helper: entered value (in currency) → stored value (in origCurr)
+              const toStored  = (v) => convertCurrency(parseFloat(v) || 0, currency, origCurr);
 
-                  if (kgRate > 0 && cbmRate > 0) {
-                    return (
-                      <p className="mt-1 text-xs text-[#2D2D2D]/50">
-                        KG rate: {getCurrencySymbol()}{kgRate.toFixed(2)}/kg | CBM rate: {getCurrencySymbol()}{cbmRate.toFixed(2)}/cbm | <span className="font-semibold text-[#412460]">Higher rate applied</span>
-                      </p>
-                    );
-                  } else if (kgRate > 0) {
-                    return (
-                      <p className="mt-1 text-xs text-[#2D2D2D]/50">
-                        KG rate: {getCurrencySymbol()}{kgRate.toFixed(2)}/kg
-                      </p>
-                    );
-                  } else if (cbmRate > 0) {
-                    return (
-                      <p className="mt-1 text-xs text-[#2D2D2D]/50">
-                        CBM rate: {getCurrencySymbol()}{cbmRate.toFixed(2)}/cbm
-                      </p>
-                    );
-                  }
-                  return (
-                    <p className="mt-1 text-xs text-[#E05353]">
-                      No matching transport rates found. Please check settings.
-                    </p>
-                  );
-                })()}
-              </div>
-            </div>
+              return (
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  {/* Customs Duty */}
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                      Customs Duty ({sym.trim()})
+                    </label>
+                    <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
+                      <span className="select-none text-sm font-semibold text-[#412460]">{sym}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={toDisplay(formData.customsDuty) || ""}
+                        onChange={(e) => setFormData(prev => ({ ...prev, customsDuty: e.target.value === "" ? "" : toStored(e.target.value) }))}
+                        className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Documentation Charges */}
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                      Documentation Charges ({sym.trim()}) {formData.modeOfDelivery === "road" && "(Auto)"}
+                    </label>
+                    <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
+                      <span className="select-none text-sm font-semibold text-[#412460]">{sym}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={formData.modeOfDelivery === "road"
+                          ? getDocumentationChargeDisplay().toFixed(2)
+                          : (toDisplay(formData.documentationCharges) || "")}
+                        readOnly={formData.modeOfDelivery === "road"}
+                        onChange={(e) => formData.modeOfDelivery !== "road" && setFormData(prev => ({ ...prev, documentationCharges: e.target.value === "" ? "" : toStored(e.target.value) }))}
+                        className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
+                        placeholder={formData.modeOfDelivery === "road" ? "Auto-calculated" : "0.00"}
+                      />
+                    </div>
+                    {formData.modeOfDelivery === "road" && (
+                      <p className="mt-1 text-xs text-[#2D2D2D]/50">Auto-calculated: 0.3% of cargo value</p>
+                    )}
+                  </div>
+
+                  {/* Other Charges */}
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                      Other Charges ({sym.trim()})
+                    </label>
+                    <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
+                      <span className="select-none text-sm font-semibold text-[#412460]">{sym}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={toDisplay(formData.otherCharges) || ""}
+                        onChange={(e) => setFormData(prev => ({ ...prev, otherCharges: e.target.value === "" ? "" : toStored(e.target.value) }))}
+                        className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Freight Cost (read-only, auto-calculated) */}
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                      Freight Cost ({sym.trim()})
+                    </label>
+                    <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
+                      <span className="select-none text-sm font-semibold text-[#412460]">{sym}</span>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={calculateTransportationCost().toFixed(2)}
+                        readOnly
+                        className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
+                        placeholder="Auto-calculated from rates"
+                      />
+                    </div>
+                    {(() => {
+                      const { kgRate, cbmRate, borderRate } = getTransportRates();
+                      const borderLabels = { kerung: "Kerung", tatopani: "Tatopani", korola: "Korola" };
+                      const borderLabel = borderLabels[formData.borderCrossing] || formData.borderCrossing || "Border";
+                      const totalWeight = formData.items.reduce((s, i) => s + (parseFloat(i.weight) || 0), 0);
+                      const totalCBM    = formData.items.reduce((s, i) => s + (parseFloat(i.cbm)    || 0), 0);
+                      const kgCost  = kgRate  * totalWeight;
+                      const cbmCost = cbmRate * totalCBM;
+                      const kgApplied  = kgRate  > 0 && (cbmRate === 0 || kgCost  >= cbmCost);
+                      const cbmApplied = cbmRate > 0 && (kgRate  === 0 || cbmCost >  kgCost);
+
+                      if (borderRate > 0) {
+                        return (
+                          <div className="mt-1 space-y-0.5">
+                            <p className="text-xs text-[#2D2D2D]/50">
+                              China → {borderLabel}:{" "}
+                              <span className={kgApplied ? "font-bold text-[#412460]" : ""}>
+                                {kgRate > 0 ? `${sym}${kgRate.toFixed(2)}/kg` : "—"}
+                              </span>
+                              {" "}|{" "}
+                              <span className={cbmApplied ? "font-bold text-[#412460]" : ""}>
+                                {cbmRate > 0 ? `${sym}${cbmRate.toFixed(2)}/CBM` : "—"}
+                              </span>
+                            </p>
+                            <p className="text-xs text-[#2D2D2D]/50">
+                              {borderLabel} → Nepal: {sym}{borderRate.toFixed(2)}/CBM
+                            </p>
+                          </div>
+                        );
+                      } else if (kgRate > 0 && cbmRate > 0) {
+                        return <p className="mt-1 text-xs text-[#2D2D2D]/50">KG: {sym}{kgRate.toFixed(2)}/kg | CBM: {sym}{cbmRate.toFixed(2)}/cbm | <span className="font-semibold text-[#412460]">Higher applied</span></p>;
+                      } else if (kgRate > 0) {
+                        return <p className="mt-1 text-xs text-[#2D2D2D]/50">KG rate: {sym}{kgRate.toFixed(2)}/kg</p>;
+                      } else if (cbmRate > 0) {
+                        return <p className="mt-1 text-xs text-[#2D2D2D]/50">CBM rate: {sym}{cbmRate.toFixed(2)}/cbm</p>;
+                      }
+                      return <p className="mt-1 text-xs text-[#E05353]">No matching transport rates found.</p>;
+                    })()}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Transportation Section - All fields in single line */}
             <div className="rounded-xl border border-[#E1E3EE] bg-[#FDFCFB] p-4">
@@ -2029,42 +2045,82 @@ export default function AdminCreateInvoice() {
                       style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%232D2D2D' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', backgroundSize: '16px' }}
                     >
                       <option value="">Select border...</option>
-                      <option value="kerung">From Kerung</option>
-                      <option value="tatopani">From Tatopani</option>
-                      <option value="korola">From Korola</option>
+                      <option value="kerung">Kerung</option>
+                      <option value="tatopani">Tatopani</option>
+                      <option value="korola">Korola</option>
                     </select>
                   </div>
                 )}
               </div>
+
+              {/* Rate breakdown — shown when border crossing is selected */}
+              {(() => {
+                const { kgRate, cbmRate, borderRate } = getTransportRates();
+                const borderLabels = { kerung: "Kerung", tatopani: "Tatopani", korola: "Korola" };
+                const borderLabel = borderLabels[formData.borderCrossing];
+                const sym = getCurrencySymbolFor(currency);
+                if (!borderLabel || borderRate <= 0) return null;
+                const totalWeight = formData.items.reduce((s, i) => s + (parseFloat(i.weight) || 0), 0);
+                const totalCBM    = formData.items.reduce((s, i) => s + (parseFloat(i.cbm)    || 0), 0);
+                const kgCost  = kgRate  * totalWeight;
+                const cbmCost = cbmRate * totalCBM;
+                const kgApplied  = kgRate  > 0 && (cbmRate === 0 || kgCost  >= cbmCost);
+                const cbmApplied = cbmRate > 0 && (kgRate  === 0 || cbmCost >  kgCost);
+                return (
+                  <div className="mt-3 rounded-xl border border-[#E1E3EE] bg-[#F9F8F6] px-4 py-3">
+                    <p className="text-xs font-semibold text-[#412460] mb-2">Applied Rates</p>
+                    <div className="flex flex-col gap-1">
+                      <div className="flex items-center justify-between text-xs text-[#2D2D2D]/70">
+                        <span>China → {borderLabel}</span>
+                        <span className="flex gap-3">
+                          <span className={kgApplied ? "font-bold text-[#412460]" : "text-[#2D2D2D]"}>
+                            {kgRate > 0 ? `${sym}${kgRate.toFixed(2)} / kg` : <span className="text-[#2D2D2D]/30">— / kg</span>}
+                          </span>
+                          <span className="text-[#2D2D2D]/30">|</span>
+                          <span className={cbmApplied ? "font-bold text-[#412460]" : "text-[#2D2D2D]"}>
+                            {cbmRate > 0 ? `${sym}${cbmRate.toFixed(2)} / CBM` : <span className="text-[#2D2D2D]/30">— / CBM</span>}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-[#2D2D2D]/70">
+                        <span>{borderLabel} → Nepal</span>
+                        <span className="font-medium text-[#2D2D2D]">{sym}{borderRate.toFixed(2)} / CBM</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
 
             {/* Total with Customs - only shown when enabled */}
             {formData.includeCustomsTransport && (() => {
-              const customsDuty = parseFloat(formData.customsDuty || 0);
-              // For road transport, use calculated documentation charges (display value in current currency)
-              const docCharges = formData.modeOfDelivery === "road"
+              const origCurr = formData.originalCurrency || currency;
+              const sym = getCurrencySymbolFor(currency);
+              // All values displayed in header currency
+              const invoiceTotal  = convertCurrency(parseFloat(calculateGrandTotal()), origCurr, currency);
+              const customsDuty   = convertCurrency(parseFloat(formData.customsDuty   || 0), origCurr, currency);
+              const otherCharges  = convertCurrency(parseFloat(formData.otherCharges  || 0), origCurr, currency);
+              const docCharges    = formData.modeOfDelivery === "road"
                 ? getDocumentationChargeDisplay()
-                : parseFloat(formData.documentationCharges || 0);
+                : convertCurrency(parseFloat(formData.documentationCharges || 0), origCurr, currency);
               const transportCost = calculateTransportationCost();
-              const otherCharges = parseFloat(formData.otherCharges || 0);
+              const grandTotal    = invoiceTotal + customsDuty + docCharges + otherCharges + transportCost;
               const hasAdditionalCharges = customsDuty > 0 || docCharges > 0 || otherCharges > 0 || transportCost > 0;
-              const invoiceTotal = calculateGrandTotalDisplay();
-              const grandTotal = invoiceTotal + customsDuty + docCharges + otherCharges + transportCost;
 
               return (
                 <div className="flex items-center justify-end gap-4 border-t border-[#EAE8E5] pt-4">
                   <div className="text-right">
                     <p className="text-xs text-[#2D2D2D]/50">Invoice Total</p>
                     <p className="text-lg font-bold text-[#2A1740]">
-                      {getCurrencySymbol()}{invoiceTotal.toFixed(2)}
+                      {sym}{invoiceTotal.toFixed(2)}
                     </p>
                   </div>
                   <div className="h-8 w-px bg-[#EAE8E5]" />
                   <div className="text-right">
-                    <p className="text-xs text-[#2D2D2D]/50">Grand Total (with Customs, Docs, Other & Freight)</p>
+                    <p className="text-xs text-[#2D2D2D]/50">Grand Total (with Customs, Docs, Other &amp; Freight)</p>
                     <p className="text-3xl font-bold text-[#412460]">
-                      {hasAdditionalCharges ? getCurrencySymbol() + grandTotal.toFixed(2) : "---"}
+                      {hasAdditionalCharges ? sym + grandTotal.toFixed(2) : "---"}
                     </p>
                   </div>
                 </div>

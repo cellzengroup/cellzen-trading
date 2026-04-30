@@ -34,8 +34,7 @@ export function CurrencyProvider({ children }) {
   // Convert from any currency to USD (for storage)
   const convertToUSD = useCallback((amount, fromCurrency = 'USD') => {
     if (!amount || isNaN(amount)) return 0;
-    const amountInUSD = parseFloat(amount) / exchangeRates[fromCurrency];
-    return amountInUSD.toFixed(2);
+    return parseFloat(amount) / exchangeRates[fromCurrency];
   }, [exchangeRates]);
 
   // Convert from USD to any currency (for display)

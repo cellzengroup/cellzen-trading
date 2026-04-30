@@ -52,6 +52,9 @@ export default function AdminSettings() {
     to: "",
     rate: "",
     unit: "kg",
+    rateKg: "",     // China → Border per kg (border crossing routes)
+    rateCBM: "",    // China → Border per CBM (border crossing routes)
+    rateBorder: "", // Border → Nepal per CBM (border crossing routes)
   });
 
   // Country dropdown state
@@ -63,8 +66,10 @@ export default function AdminSettings() {
   const toDropdownRef = useRef(null);
 
   // Check if road transport to/from Nepal
-  const isRoadToNepal = transportForm.mode === "road" && 
+  const isRoadToNepal = transportForm.mode === "road" &&
     (transportForm.from === "Nepal" || transportForm.to === "Nepal");
+  const borderCrossingLabels = { kerung: "Kerung", tatopani: "Tatopani", korola: "Korola" };
+  const borderCrossingSelected = isRoadToNepal && !!transportForm.method;
 
   // State for editing saved transport rates
   const [editingRateId, setEditingRateId] = useState(null);
@@ -182,17 +187,37 @@ export default function AdminSettings() {
   };
 
   const saveTransportRate = () => {
-    // Convert rate to USD before saving
-    const rateInUSD = convertToUSD(transportForm.rate, currency);
-    const newRate = {
+    const base = {
       id: Date.now(),
-      ...transportForm,
-      rate: rateInUSD,
+      mode: transportForm.mode,
+      method: transportForm.method,
+      from: transportForm.from,
+      to: transportForm.to,
       date: new Date().toISOString().split("T")[0],
     };
+
+    let newRate;
+    if (borderCrossingSelected) {
+      // Two-leg Nepal border crossing route — store rateKg, rateCBM, rateBorder
+      newRate = {
+        ...base,
+        rateKg: transportForm.rateKg ? convertToUSD(transportForm.rateKg, currency) : null,
+        rateCBM: transportForm.rateCBM ? convertToUSD(transportForm.rateCBM, currency) : null,
+        rateBorder: transportForm.rateBorder ? convertToUSD(transportForm.rateBorder, currency) : null,
+        unitBorder: "cbm",
+      };
+    } else {
+      // Standard single-rate route
+      newRate = {
+        ...base,
+        rate: convertToUSD(transportForm.rate, currency),
+        unit: transportForm.unit,
+      };
+    }
+
     setSavedTransportRates((prev) => [newRate, ...prev]);
     // TODO: Save to database - POST /api/transport-rates
-    setTransportForm({ mode: "", method: "", from: "", to: "", rate: "", unit: "kg" });
+    setTransportForm({ mode: "", method: "", from: "", to: "", rate: "", unit: "kg", rateKg: "", rateCBM: "", rateBorder: "" });
     setActiveTab("list");
   };
 
@@ -363,39 +388,94 @@ export default function AdminSettings() {
                         className="w-full p-3 rounded-xl border border-[#E1E3EE] bg-white text-sm focus:outline-none focus:border-[#412460] focus:ring-1 focus:ring-[#412460]"
                       >
                         <option value="">Select border crossing...</option>
-                        <option value="kerung">From Kerung</option>
-                        <option value="tatopani">From Tatopani</option>
-                        <option value="korola">From Korola</option>
+                        <option value="kerung">Kerung</option>
+                        <option value="tatopani">Tatopani</option>
+                        <option value="korola">Korola</option>
                       </select>
                     </div>
                   )}
 
                   {/* Rate */}
-                  <div>
-                    <label className="block text-sm font-medium text-[#2D2D2D] mb-1">Rate ({currency}):</label>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[#412460] font-semibold">{currencySymbols[currency]}</span>
-                      <input
-                        type="number"
-                        value={transportForm.rate}
-                        onChange={(e) => handleTransportFormChange("rate", e.target.value)}
-                        placeholder="0.00"
-                        className="flex-1 p-3 rounded-xl border border-[#E1E3EE] bg-white text-sm focus:outline-none focus:border-[#412460] focus:ring-1 focus:ring-[#412460]"
-                      />
-                      <select
-                        value={transportForm.unit}
-                        onChange={(e) => handleTransportFormChange("unit", e.target.value)}
-                        className="p-3 rounded-xl border border-[#E1E3EE] bg-white text-sm focus:outline-none focus:border-[#412460]"
-                      >
-                        <option value="kg">/ kg</option>
-                        <option value="cbm">/ CBM</option>
-                        <option value="container">/ container</option>
-                        <option value="km">/ km</option>
-                        <option value="mile">/ mile</option>
-                        <option value="unit">/ unit</option>
-                      </select>
+                  {borderCrossingSelected ? (
+                    /* Two-leg pricing for China → Border → Nepal road transport */
+                    <div className="space-y-3">
+                      {/* Leg 1: China to Border Crossing — both kg AND CBM rates */}
+                      <div>
+                        <label className="block text-sm font-medium text-[#2D2D2D] mb-2">
+                          From China to {borderCrossingLabels[transportForm.method]} ({currency}):
+                        </label>
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[#412460] font-semibold w-5">{currencySymbols[currency]}</span>
+                            <input
+                              type="number"
+                              value={transportForm.rateKg}
+                              onChange={(e) => handleTransportFormChange("rateKg", e.target.value)}
+                              placeholder="0.00"
+                              className="flex-1 p-3 rounded-xl border border-[#E1E3EE] bg-white text-sm focus:outline-none focus:border-[#412460] focus:ring-1 focus:ring-[#412460]"
+                            />
+                            <span className="px-3 py-3 rounded-xl border border-[#E1E3EE] bg-gray-50 text-sm text-gray-600 whitespace-nowrap">/ kg</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[#412460] font-semibold w-5">{currencySymbols[currency]}</span>
+                            <input
+                              type="number"
+                              value={transportForm.rateCBM}
+                              onChange={(e) => handleTransportFormChange("rateCBM", e.target.value)}
+                              placeholder="0.00"
+                              className="flex-1 p-3 rounded-xl border border-[#E1E3EE] bg-white text-sm focus:outline-none focus:border-[#412460] focus:ring-1 focus:ring-[#412460]"
+                            />
+                            <span className="px-3 py-3 rounded-xl border border-[#E1E3EE] bg-gray-50 text-sm text-gray-600 whitespace-nowrap">/ CBM</span>
+                          </div>
+                        </div>
+                        <p className="mt-1 text-xs text-[#2D2D2D]/50">Higher of the two will be applied automatically</p>
+                      </div>
+                      {/* Leg 2: Border Crossing to Nepal — CBM only */}
+                      <div>
+                        <label className="block text-sm font-medium text-[#2D2D2D] mb-1">
+                          From {borderCrossingLabels[transportForm.method]} to Nepal ({currency}):
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[#412460] font-semibold w-5">{currencySymbols[currency]}</span>
+                          <input
+                            type="number"
+                            value={transportForm.rateBorder}
+                            onChange={(e) => handleTransportFormChange("rateBorder", e.target.value)}
+                            placeholder="0.00"
+                            className="flex-1 p-3 rounded-xl border border-[#E1E3EE] bg-white text-sm focus:outline-none focus:border-[#412460] focus:ring-1 focus:ring-[#412460]"
+                          />
+                          <span className="px-3 py-3 rounded-xl border border-[#E1E3EE] bg-gray-50 text-sm text-gray-600 whitespace-nowrap">/ CBM</span>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    /* Standard single-rate field */
+                    <div>
+                      <label className="block text-sm font-medium text-[#2D2D2D] mb-1">Rate ({currency}):</label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[#412460] font-semibold">{currencySymbols[currency]}</span>
+                        <input
+                          type="number"
+                          value={transportForm.rate}
+                          onChange={(e) => handleTransportFormChange("rate", e.target.value)}
+                          placeholder="0.00"
+                          className="flex-1 p-3 rounded-xl border border-[#E1E3EE] bg-white text-sm focus:outline-none focus:border-[#412460] focus:ring-1 focus:ring-[#412460]"
+                        />
+                        <select
+                          value={transportForm.unit}
+                          onChange={(e) => handleTransportFormChange("unit", e.target.value)}
+                          className="p-3 rounded-xl border border-[#E1E3EE] bg-white text-sm focus:outline-none focus:border-[#412460]"
+                        >
+                          <option value="kg">/ kg</option>
+                          <option value="cbm">/ CBM</option>
+                          <option value="container">/ container</option>
+                          <option value="km">/ km</option>
+                          <option value="mile">/ mile</option>
+                          <option value="unit">/ unit</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Action Buttons */}
@@ -500,7 +580,11 @@ export default function AdminSettings() {
                           // View Mode
                           <>
                             <div className="flex items-center justify-between">
-                              <span className="text-sm font-medium capitalize">{rate.mode} - {rate.method}</span>
+                              <span className="text-sm font-medium capitalize">
+                                {rate.rateBorder
+                                  ? `${rate.from} → ${rate.to} via ${borderCrossingLabels[rate.method] || rate.method}`
+                                  : `${rate.mode} - ${rate.method}`}
+                              </span>
                               <div className="flex items-center gap-2">
                                 <span className="text-xs text-gray-500">{rate.date}</span>
                                 <button
@@ -526,12 +610,28 @@ export default function AdminSettings() {
                                 </button>
                               </div>
                             </div>
-                            <div className="text-xs text-gray-600 mt-1">
-                              {rate.from} → {rate.to}
-                            </div>
-                            <div className="text-sm text-[#412460] font-semibold mt-1">
-                              {formatCurrency(rate.rate)} / {rate.unit}
-                            </div>
+                            {!rate.rateBorder && (
+                              <div className="text-xs text-gray-600 mt-1">
+                                {rate.from} → {rate.to}
+                              </div>
+                            )}
+                            {rate.rateBorder !== undefined ? (
+                              <div className="mt-1 space-y-0.5">
+                                <div className="text-xs text-[#412460] font-semibold">
+                                  China → {borderCrossingLabels[rate.method] || rate.method}:{" "}
+                                  {rate.rateKg ? `${formatCurrency(rate.rateKg)}/kg` : "—"}{" "}|{" "}
+                                  {rate.rateCBM ? `${formatCurrency(rate.rateCBM)}/CBM` : "—"}
+                                  <span className="text-[#2D2D2D]/40 font-normal ml-1">(higher applied)</span>
+                                </div>
+                                <div className="text-xs text-[#412460] font-semibold">
+                                  {borderCrossingLabels[rate.method] || rate.method} → Nepal: {formatCurrency(rate.rateBorder)} / CBM
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="text-sm text-[#412460] font-semibold mt-1">
+                                {formatCurrency(rate.rate)} / {rate.unit}
+                              </div>
+                            )}
                           </>
                         )}
                       </div>
