@@ -62,6 +62,42 @@ export async function resilientFetch(path, init = {}) {
   throw lastErr || new Error("All API hosts failed");
 }
 
+// Token kinds — different parts of the app store under different keys
+export const TOKENS = {
+  admin: "inv_token",
+  customer: "customer_token",
+};
+
+function buildAuthHeaders(tokenKind) {
+  const key = TOKENS[tokenKind] || tokenKind;
+  if (!key) return {};
+  const t = localStorage.getItem(key);
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
+// Auth-aware fetch wrapper. Adds bearer header, surfaces 401 by clearing the
+// matching token (so the next mount/redirect knows the session is gone), and
+// dispatches a window event so a global listener can route to the login page.
+export async function authFetch(path, { tokenKind = "admin", headers = {}, ...init } = {}) {
+  const auth = buildAuthHeaders(tokenKind);
+  const finalHeaders = { ...headers, ...auth };
+  const res = await resilientFetch(path, { ...init, headers: finalHeaders });
+  if (res.status === 401) {
+    const key = TOKENS[tokenKind] || tokenKind;
+    if (key) localStorage.removeItem(key);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("auth:expired", { detail: { tokenKind } }));
+    }
+  }
+  return res;
+}
+
+export async function authJson(path, init = {}) {
+  const res = await authFetch(path, init);
+  const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
 // Convenience JSON helpers
 export async function apiGetJson(path, init = {}) {
   const res = await resilientFetch(path, init);

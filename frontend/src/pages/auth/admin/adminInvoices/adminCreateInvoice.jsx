@@ -4,6 +4,7 @@ import AdminPageShell from "../AdminPageShell";
 import CountrySelector from "../../../../components/ui/CountrySelector";
 import { countries } from "../../../../components/countries";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
+import { saveInvoice as syncInvoiceToBackend } from "../../../../utils/invoiceSync.js";
 
 // Invoice Number Input Component
 function InvoiceNumberInput({ value, onChange }) {
@@ -1104,18 +1105,26 @@ export default function AdminCreateInvoice() {
         draftSavedAt: new Date().toISOString(),
       };
 
+      let savedDraft;
       if (isEditMode && editInvoiceId) {
         // Update the existing draft
+        savedDraft = drafts.find(d => (d.invoiceNumber || d.id) === editInvoiceId);
         const updatedDrafts = drafts.map(d =>
           (d.invoiceNumber || d.id) === editInvoiceId
             ? { ...draftData, id: d.id }
             : d
         );
         localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
+        savedDraft = { ...draftData, id: savedDraft?.id };
       } else {
-        drafts.push({ id: `draft-${Date.now()}`, ...draftData });
+        savedDraft = { id: `draft-${Date.now()}`, ...draftData };
+        drafts.push(savedDraft);
         localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
       }
+
+      // Mirror to backend so other devices see this draft
+      try { await syncInvoiceToBackend(savedDraft); }
+      catch (err) { console.warn("Backend draft sync failed:", err?.message); }
 
       setShowCancelModal(false);
       setSuccessModal({ show: true, message: "Invoice Draft saved", type: "draft" });
@@ -1169,11 +1178,14 @@ export default function AdminCreateInvoice() {
         draftSavedAt: new Date().toISOString(),
       };
 
+      let savedDraft;
       if (isEditMode && editInvoiceId) {
         // Update the existing draft
+        const existing = drafts.find(d => (d.invoiceNumber || d.id) === editInvoiceId);
+        savedDraft = { ...draftData, id: existing?.id };
         const updatedDrafts = drafts.map(d =>
           (d.invoiceNumber || d.id) === editInvoiceId
-            ? { ...draftData, id: d.id }
+            ? savedDraft
             : d
         );
         localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
@@ -1185,10 +1197,13 @@ export default function AdminCreateInvoice() {
           setSuccessModal({ show: true, message: "Already saved as a draft", type: "exists" });
           return;
         }
-        drafts.push({ id: `draft-${Date.now()}`, ...draftData });
+        savedDraft = { id: `draft-${Date.now()}`, ...draftData };
+        drafts.push(savedDraft);
         localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
         setSuccessModal({ show: true, message: "Invoice Draft saved", type: "draft" });
       }
+      try { await syncInvoiceToBackend(savedDraft); }
+      catch (err) { console.warn("Backend draft sync failed:", err?.message); }
     } catch (error) {
       console.error("Error saving draft:", error);
       setSuccessModal({ show: true, message: "Failed to save draft. Please try again.", type: "error" });
@@ -1234,40 +1249,40 @@ export default function AdminCreateInvoice() {
       // Get existing drafts
       const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
 
+      let savedInvoice;
       if (isEditMode && editInvoiceId) {
         // Update existing invoice
-        const updatedDrafts = drafts.map(draft => {
-          if ((draft.invoiceNumber || draft.id) === editInvoiceId) {
-            return {
-              ...finalFormData,
-              id: draft.id,
-              status: draft.status || "Updated",
-              updatedAt: new Date().toISOString(),
-            };
-          }
-          return draft;
-        });
-        localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
-        await syncSharedInvoice({
+        const existing = drafts.find(d => (d.invoiceNumber || d.id) === editInvoiceId);
+        savedInvoice = {
           ...finalFormData,
-          status: "Updated",
+          id: existing?.id,
+          status: existing?.status || "Updated",
           updatedAt: new Date().toISOString(),
-        });
+        };
+        const updatedDrafts = drafts.map(draft =>
+          (draft.invoiceNumber || draft.id) === editInvoiceId ? savedInvoice : draft
+        );
+        localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
+        await syncSharedInvoice(savedInvoice);
         setSuccessModal({ show: true, message: "Invoice Updated", type: "updated" });
       } else {
         // Create new invoice
         console.log("Creating invoice:", finalFormData);
-        const generatedInvoice = {
+        savedInvoice = {
           id: `draft-${Date.now()}`,
           ...finalFormData,
           status: "Generated",
           generatedAt: new Date().toISOString(),
         };
-        drafts.push(generatedInvoice);
+        drafts.push(savedInvoice);
         localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
-        await syncSharedInvoice(generatedInvoice);
+        await syncSharedInvoice(savedInvoice);
         setSuccessModal({ show: true, message: "Invoice Generated", type: "generated" });
       }
+
+      // Mirror full invoice payload to backend so other devices see it
+      try { await syncInvoiceToBackend(savedInvoice); }
+      catch (err) { console.warn("Backend invoice sync failed:", err?.message); }
     } catch (error) {
       console.error("Error creating/updating invoice:", error);
       setSuccessModal({ show: true, message: "Failed to save invoice", type: "error" });

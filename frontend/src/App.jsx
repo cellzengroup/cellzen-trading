@@ -1,6 +1,7 @@
 import React, { useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { CurrencyProvider } from './contexts/CurrencyContext.jsx';
+import ErrorBoundary from './components/ErrorBoundary';
 
 const InventoryApp = lazy(() => import('./inventory/InventoryApp'));
 import { useTranslation } from 'react-i18next';
@@ -92,7 +93,26 @@ function App() {
       ? import.meta.env.BASE_URL.replace(/\/$/, '')
       : '';
 
+  // Global auth-expired listener — when any authFetch hits 401, route the user
+  // to the right login page based on which kind of token expired.
+  useEffect(() => {
+    const onAuthExpired = (e) => {
+      const kind = e?.detail?.tokenKind;
+      const target = kind === 'admin' ? '/admin-login' : '/login';
+      // Only redirect if the current path looks like it requires auth
+      const path = window.location.pathname;
+      const needsAdmin = path.startsWith('/admin-');
+      const needsCustomer = path.startsWith('/tracking/trackingpage');
+      if ((kind === 'admin' && needsAdmin) || (kind === 'customer' && needsCustomer)) {
+        window.location.href = target;
+      }
+    };
+    window.addEventListener('auth:expired', onAuthExpired);
+    return () => window.removeEventListener('auth:expired', onAuthExpired);
+  }, []);
+
   return (
+    <ErrorBoundary>
     <CurrencyProvider>
     <Router basename={basename}>
       <ScrollToTop />
@@ -198,6 +218,7 @@ function App() {
       </Routes>
     </Router>
     </CurrencyProvider>
+    </ErrorBoundary>
   );
 }
 

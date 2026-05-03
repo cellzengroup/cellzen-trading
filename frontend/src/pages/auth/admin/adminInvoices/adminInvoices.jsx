@@ -4,6 +4,7 @@ import AdminPageShell from "../AdminPageShell";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { generateInvoiceExcel } from "../../../../utils/generateCellzenInvoice.js";
 import { generateInvoicePDF } from "../../../../utils/generateCellzenInvoicePDF.js";
+import { loadInvoices, deleteInvoice as deleteInvoiceRemote } from "../../../../utils/invoiceSync.js";
 
 export default function AdminInvoices() {
   const navigate = useNavigate();
@@ -22,11 +23,18 @@ export default function AdminInvoices() {
   const [downloadModal, setDownloadModal] = useState({ show: false, invoice: null });
 
 
-  // Load invoices from localStorage on mount and when currency changes
+  const [syncSource, setSyncSource] = useState("local");
+  const [syncing, setSyncing] = useState(true);
+
+  // Load invoices — backend first, then fall back to localStorage cache
   useEffect(() => {
-    const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
-    // Transform draft data to invoice format
-    const loadedInvoices = drafts.map((draft) => {
+    let alive = true;
+    setSyncing(true);
+    loadInvoices().then((result) => {
+      if (!alive) return;
+      setSyncSource(result.source);
+      const drafts = result.invoices || [];
+      const loadedInvoices = drafts.map((draft) => {
       // Calculate total amount from items in the original currency
       const itemsTotal = draft.items?.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0) || 0;
       // Calculate commission from items
@@ -59,8 +67,11 @@ export default function AdminInvoices() {
           originalCurrency,
         }, // Keep full data for viewing
       };
+      });
+      setInvoices(loadedInvoices);
+      setSyncing(false);
     });
-    setInvoices(loadedInvoices);
+    return () => { alive = false; };
   }, [currency]);
 
 
@@ -107,12 +118,15 @@ export default function AdminInvoices() {
     return amountInUSD * rates[toCurrency];
   };
 
-  const handleDelete = (invoiceId) => {
-    const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
-    const updatedDrafts = drafts.filter(d => (d.invoiceNumber || d.id) !== invoiceId);
-    localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
+  const handleDelete = async (invoiceId) => {
     setInvoices(prev => prev.filter(inv => inv.id !== invoiceId));
     setDeleteModal({ show: false, invoiceId: null });
+    try {
+      await deleteInvoiceRemote(invoiceId);
+    } catch (err) {
+      // Local cache already updated; surface a console warning if backend sync failed
+      console.warn("Backend delete failed (local cache updated):", err?.message);
+    }
   };
 
   // Edit invoice - navigate to create page with invoice data
