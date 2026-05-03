@@ -6,6 +6,11 @@ const { authenticate, generateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
+// In-memory cache for admin user records — admin emails are hardcoded and
+// rarely change at runtime, so we can skip the DB roundtrip on repeat logins.
+const adminUserCache = new Map(); // email -> { user, expiry }
+const ADMIN_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
 const ADMIN_CREDENTIALS = [
   {
     identifier: 'CellzenTrading',
@@ -91,6 +96,17 @@ router.post('/admin-login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid admin credentials' });
     }
 
+    // Fast path: serve from in-memory cache when possible (skip DB roundtrip)
+    const cached = adminUserCache.get(matched.email);
+    if (cached && Date.now() < cached.expiry) {
+      const token = generateToken(cached.user);
+      return res.json({
+        success: true,
+        token,
+        user: { id: cached.user.id, name: cached.user.name, email: cached.user.email, role: cached.user.role },
+      });
+    }
+
     let user = await User.findOne({ where: { email: matched.email } });
 
     if (!user) {
@@ -102,13 +118,21 @@ router.post('/admin-login', async (req, res) => {
       || user.role !== matched.role
       || user.accountType !== 'Admin'
     ) {
-      await user.update({
+      // Fire-and-forget: don't make the user wait for the metadata sync
+      user.update({
         name: matched.name,
         username: matched.username,
         role: matched.role,
         accountType: 'Admin',
-      });
+      }).catch((err) => console.error('Admin metadata sync failed:', err));
+      // Update local copy so cache reflects the synced state
+      user.name = matched.name;
+      user.username = matched.username;
+      user.role = matched.role;
+      user.accountType = 'Admin';
     }
+
+    adminUserCache.set(matched.email, { user, expiry: Date.now() + ADMIN_CACHE_TTL });
 
     const token = generateToken(user);
 
@@ -264,6 +288,7 @@ router.get('/approval-requests', authenticate, requireAdmin, async (req, res) =>
       order: [['createdAt', 'DESC']],
     });
 
+    res.set('Cache-Control', 'private, max-age=15');
     res.json({
       success: true,
       count: requests.length,

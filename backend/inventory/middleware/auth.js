@@ -11,6 +11,17 @@ const generateToken = (user) => {
   );
 };
 
+// In-memory user cache keyed by user id. The JWT signature is already verified
+// before we look up the cache, so a hit means the request is authenticated.
+// This eliminates a DB roundtrip on every authenticated API call.
+const userCache = new Map(); // id -> { user, expiry }
+const USER_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+const invalidateUserCache = (id) => {
+  if (id == null) userCache.clear();
+  else userCache.delete(id);
+};
+
 const authenticate = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -21,6 +32,13 @@ const authenticate = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
 
+    // Fast path: serve from cache (skip DB roundtrip)
+    const cached = userCache.get(decoded.id);
+    if (cached && Date.now() < cached.expiry) {
+      req.user = cached.user;
+      return next();
+    }
+
     const user = await User.findByPk(decoded.id, {
       attributes: { exclude: ['password'] },
     });
@@ -29,6 +47,7 @@ const authenticate = async (req, res, next) => {
       return res.status(401).json({ success: false, message: 'User not found' });
     }
 
+    userCache.set(decoded.id, { user, expiry: Date.now() + USER_CACHE_TTL });
     req.user = user;
     next();
   } catch (error) {
@@ -42,4 +61,4 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-module.exports = { authenticate, generateToken, JWT_SECRET };
+module.exports = { authenticate, generateToken, invalidateUserCache, JWT_SECRET };

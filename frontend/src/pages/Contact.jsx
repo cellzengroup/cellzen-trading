@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useEffect, useState, useMemo } from "react";
+import { useLocation } from "react-router-dom";
 import axios from "axios";
 import Footer from "../components/Footer";
 import CountrySelector from "../components/ui/CountrySelector";
@@ -16,7 +17,20 @@ const flagUrl2x = (code) => `https://flagcdn.com/w80/${code.toLowerCase()}.png`;
 const wechatQrSrc = "/wechat.png?v=2";
 
 export default function Contact() {
+  const location = useLocation();
   const [form, setForm]                   = useState({ name: "", email: "", message: "" });
+
+  // Pre-fill the message when arriving from a product Inquire button
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const product = params.get("product");
+    if (product) {
+      setForm((f) => ({
+        ...f,
+        message: `Product Name: ${product}\n\nMessage: `,
+      }));
+    }
+  }, [location.search]);
   const [selectedCountry, setSelectedCountry] = useState(null);
   const [phonePrefix, setPhonePrefix]     = useState("");
   const [phoneNumber, setPhoneNumber]     = useState("");

@@ -9,7 +9,7 @@ import ScrollToTop from './components/ScrollToTop';
 import Landingpage from './pages/Landing/Landingpage';
 import Contact from './pages/Contact';
 import About from './pages/about';
-import Shipments from './pages/Shipments';
+import Products from './pages/Products';
 import Tracking from './pages/tracking/Tracking';
 import TrackingLogin from './pages/tracking/login';
 import ResetPassword from './pages/tracking/reset';
@@ -19,6 +19,9 @@ import AdminDashboard from './pages/auth/admin/adminDashboard';
 import AdminManagements from './pages/auth/admin/adminmanagements';
 import AdminInventory from './pages/auth/admin/admininventory';
 import AdminProducts from './pages/auth/admin/adminProducts/adminproducts';
+import AdminTools from './pages/auth/admin/AdminTools/AdminTools';
+import ProductGallery from './pages/auth/admin/AdminTools/productGallery';
+import AddProductGallery from './pages/auth/admin/AdminTools/addProductGallery';
 import AdminSuppliers from './pages/auth/admin/adminProducts/adminSuppliers';
 import AdminSuppliersProduct from './pages/auth/admin/adminProducts/adminSuppliersProduct';
 import AddProducts from './pages/auth/admin/adminProducts/AddProducts';
@@ -119,6 +122,10 @@ function App() {
         <Route path="/admin-invoices/edit" element={<AdminCreateInvoice />} />
         <Route path="/admin-managements" element={<AdminManagements />} />
         <Route path="/admin-inventory" element={<AdminInventory />} />
+        <Route path="/admin-tools" element={<AdminTools />} />
+        <Route path="/admin-tools/product-gallery" element={<ProductGallery />} />
+        <Route path="/admin-tools/product-gallery/add" element={<AddProductGallery />} />
+        <Route path="/admin-tools/product-gallery/edit/:productId" element={<AddProductGallery />} />
         <Route path="/admin-products" element={<AdminProducts />} />
         <Route path="/admin-suppliers" element={<AdminSuppliers />} />
         <Route path="/admin-suppliers-product" element={<AdminSuppliersProduct />} />
@@ -173,7 +180,7 @@ function App() {
               <Routes>
                 <Route path="/" element={<Landingpage />} />
                 <Route path="/about" element={<About />} />
-                <Route path="/shipments" element={<Shipments />} />
+<Route path="/products" element={<Products />} />
                 <Route path="/tracking" element={<Tracking />} />
                 <Route path="/portfolio" element={<Portfolio />} />
                 <Route path="/notices" element={<Notices />} />

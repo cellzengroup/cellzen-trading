@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import RateToggle from "./RateToggle";
 
@@ -26,7 +27,7 @@ function isSectionDark(elements) {
 const NAV_LINKS = [
   { label: "Home", to: "/" },
   { label: "About", to: "/about" },
-  { label: "Shipments", to: "/shipments" },
+  { label: "Products", to: "/products" },
   { label: "Tracking", to: "/tracking" },
   { label: "Portfolio", to: "/portfolio" },
   { label: "Notices", to: "/notices" },
@@ -40,7 +41,7 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
   const [menuOpen, setMenuOpen] = useState(false);
   const headerRef = useRef(null);
 
-    const DARK_HERO = ["/", "/about", "/shipments", "/tracking", "/portfolio", "/notices", "/faq", "/support", "/help-center"];
+    const DARK_HERO = ["/", "/about", "/tracking", "/portfolio", "/notices", "/faq", "/support", "/help-center"];
 
   const detectBackground = useCallback(() => {
     if (isContact) { setDark(false); return; }
@@ -68,9 +69,18 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
   // Close menu on route change
   useEffect(() => { setMenuOpen(false); }, [location.pathname]);
 
+  // Lock body scroll while the slide-in menu is open
+  useEffect(() => {
+    if (menuOpen) {
+      const prev = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => { document.body.style.overflow = prev; };
+    }
+  }, [menuOpen]);
+
   const textColor   = dark ? "text-white/80"   : "text-[#2D2D2D]/70";
   const hoverColor  = dark ? "hover:text-white" : "hover:text-[#2D2D2D]";
-  const borderColor = dark ? "rgba(255,255,255,0.15)" : "rgba(45,45,45,0.12)";
+  const borderColor = dark ? "transparent"      : "rgba(45,45,45,0.12)";
   const bgColor     = dark ? "rgba(255,255,255,0.08)" : "rgba(45,45,45,0.06)";
 
   return (
@@ -80,6 +90,8 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
       style={{
         backgroundColor: "transparent",
         transform: visible ? "translateY(0)" : "translateY(-120%)",
+        opacity: menuOpen ? 0 : 1,
+        pointerEvents: menuOpen ? "none" : "auto",
       }}
     >
       {/* ── Pill bar ── */}
@@ -91,7 +103,7 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
           WebkitBackdropFilter: "blur(40px) saturate(120%)",
           borderRadius: "9999px",
           border: `1px solid ${borderColor}`,
-          boxShadow: isContact ? "none" : "0 8px 32px rgba(0,0,0,0.08)",
+          boxShadow: isContact || dark ? "none" : "0 8px 32px rgba(0,0,0,0.08)",
         }}
       >
         {/* Logo */}
@@ -193,48 +205,86 @@ export default function Header({ isAdmin, role, rateCurrency, onRateCurrencyChan
         </div>
       </div>
 
-      {/* ── Mobile dropdown menu ── */}
-      {!isAdmin && (
-        <div
-          className={`md:hidden mx-auto max-w-6xl mt-2 overflow-hidden transition-all duration-300 ease-out ${menuOpen ? "max-h-96 opacity-100" : "max-h-0 opacity-0"}`}
-        >
+      {/* ── Mobile slide-in menu — rendered via portal so it escapes the
+            header's transform context and truly covers the full viewport ── */}
+      {!isAdmin && createPortal(
+        <>
+          {/* Backdrop */}
           <div
-            className="rounded-2xl px-4 py-3"
-            style={{
-              background: dark ? "rgba(30,10,55,0.92)" : "rgba(255,255,255,0.95)",
-              backdropFilter: "blur(40px) saturate(120%)",
-              WebkitBackdropFilter: "blur(40px) saturate(120%)",
-              border: `1px solid ${borderColor}`,
-              boxShadow: "0 12px 40px rgba(0,0,0,0.15)",
-            }}
+            onClick={() => setMenuOpen(false)}
+            className={`fixed inset-0 z-[100] bg-black/40 backdrop-blur-sm transition-opacity duration-500 md:hidden
+              ${menuOpen ? "opacity-100" : "pointer-events-none opacity-0"}`}
+            aria-hidden="true"
+          />
+
+          {/* Sliding panel */}
+          <aside
+            className={`fixed inset-0 z-[110] flex h-full w-full flex-col bg-[#412460] text-white transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] md:hidden
+              ${menuOpen ? "translate-x-0" : "-translate-x-full"}`}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Mobile navigation"
           >
-            <nav className="flex flex-col">
-              {NAV_LINKS.map(({ label, to }, i) => (
+            {/* Top bar — logo + close */}
+            <div className="flex items-center justify-between px-6 py-5">
+              <Link to="/" onClick={() => setMenuOpen(false)} aria-label="Home">
+                <svg className="h-9 w-auto" viewBox="0 0 180 181" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <g clipPath="url(#cz-logo-mobile)">
+                    <path
+                      d="M179.938 104.968C174.068 136.468 157.075 159.321 128.033 172.6C85.7055 192.056 36.8899 176.615 12.791 137.086C1.97741 118.865 -1.7301 99.4095 0.741575 78.4097C5.37597 41.66 33.8003 10.7779 70.8755 2.13091C106.097 -5.89844 144.717 9.23379 165.108 39.8071C172.523 50.9246 177.467 62.9686 179.629 76.248C179.629 76.8656 179.938 77.7921 179.938 78.4097C179.32 78.7185 179.011 78.7185 179.011 78.7185C161.71 79.3362 144.408 78.7185 128.033 74.0862C121.545 72.2333 116.91 66.3657 116.91 59.5716V52.1599C116.91 48.1452 112.585 45.6747 109.186 47.8364L98.6819 54.0128L86.9414 60.4981L66.55 72.2333L49.5572 82.1155L42.7601 86.1302C39.3616 87.9831 39.3616 92.9243 42.7601 95.086L49.5572 99.1007L66.859 108.983L86.9414 120.409L98.9908 127.203L109.495 133.38C112.894 135.233 117.219 132.762 117.219 129.056V121.953C117.219 115.468 121.545 109.601 127.724 107.439C139.156 103.733 151.205 102.189 163.563 102.498H177.467C179.629 101.88 180.247 102.807 179.938 104.968Z"
+                      fill="#E5E1DA"
+                    />
+                  </g>
+                  <defs>
+                    <clipPath id="cz-logo-mobile"><rect width="180" height="181" fill="white" /></clipPath>
+                  </defs>
+                </svg>
+              </Link>
+
+              <button
+                type="button"
+                onClick={() => setMenuOpen(false)}
+                aria-label="Close menu"
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/20"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Nav links */}
+            <nav className="flex flex-1 flex-col justify-center px-8 pb-10">
+              {NAV_LINKS.map(({ label, to }) => (
                 <NavLink
                   key={label}
                   to={to}
                   end={to === "/"}
                   onClick={() => setMenuOpen(false)}
-                  className={({ isActive }) => `px-4 py-3 text-sm font-medium rounded-xl transition-colors duration-200
-                    ${isActive ? "text-[#B99353]" : dark ? "text-white/80 hover:text-white hover:bg-white/10" : "text-[#2D2D2D]/70 hover:text-[#2D2D2D] hover:bg-[#2D2D2D]/6"}
-                    ${i < NAV_LINKS.length - 1 ? (dark ? "border-b border-white/5" : "border-b border-[#2D2D2D]/5") : ""}
-                  `}
+                  className={({ isActive }) =>
+                    `premium-font-galdgdersemi border-b border-white/10 py-5 text-3xl transition-colors duration-200
+                      ${isActive ? "text-[#B99353]" : "text-white/85 hover:text-white"}`
+                  }
                 >
                   {label}
                 </NavLink>
               ))}
-              <div className="pt-3 pb-1 px-1">
-                <Link
-                  to="/contact"
-                  onClick={() => setMenuOpen(false)}
-                  className="block w-full text-center rounded-full bg-[#B99353] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#B99353]/85"
-                >
-                  Get a Quote
-                </Link>
-              </div>
+
+              <Link
+                to="/contact"
+                onClick={() => setMenuOpen(false)}
+                className="mt-10 inline-flex items-center justify-center rounded-full bg-[#B99353] px-6 py-3.5 text-sm font-semibold uppercase tracking-widest text-white transition hover:bg-white hover:text-[#412460]"
+              >
+                Get a Quote
+              </Link>
             </nav>
-          </div>
-        </div>
+
+            <p className="px-8 pb-8 text-[10px] font-semibold uppercase tracking-[0.3em] text-white/35">
+              Cellzen Trading
+            </p>
+          </aside>
+        </>,
+        document.body
       )}
     </header>
   );

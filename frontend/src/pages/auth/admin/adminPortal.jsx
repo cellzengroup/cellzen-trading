@@ -7,6 +7,7 @@ const NAV_LINKS = [
   { title: "Invoices", path: "/admin-invoices", icon: "invoices" },
   { title: "Management", path: "/admin-managements", icon: "management" },
   { title: "Products", path: "/admin-products", icon: "products" },
+  { title: "Tools", path: "/admin-tools", icon: "tools" },
   { title: "Reports", path: "/admin-reports", icon: "reports" },
   { title: "Notifications", path: "/admin-notifications", icon: "notifications" },
   { title: "Settings", path: "/admin-settings", icon: "settings" },
@@ -65,6 +66,14 @@ function NavIcon({ icon }) {
         <path d="M21 8 12 3 3 8l9 5 9-5Z" />
         <path d="M3 8v8l9 5 9-5V8" />
         <path d="M12 13v8" />
+      </svg>
+    );
+  }
+
+  if (icon === "tools") {
+    return (
+      <svg {...iconProps}>
+        <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
       </svg>
     );
   }

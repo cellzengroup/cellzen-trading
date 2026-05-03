@@ -22,7 +22,7 @@ const sequelize = databaseUrl
       },
       pool: {
         max: 10,
-        min: 0,
+        min: 2,           // keep warm connections to avoid cold-connect latency to Supabase
         acquire: 30000,
         idle: 10000,
         evict: 30000,

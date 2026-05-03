@@ -11,7 +11,7 @@ function get(key) {
   return entry.data;
 }
 
-function set(key, data, ttlMs = 3000) {
+function set(key, data, ttlMs = 60000) {
   cache.set(key, { data, expiry: Date.now() + ttlMs });
 }
 

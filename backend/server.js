@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const bodyParser = require('body-parser');
 const path = require('path');
 const config = require('./config/environment');
@@ -22,6 +23,9 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: { policy: 'cross-origin' }
 }));
+
+// Gzip JSON responses — typical 70-90% reduction on product lists
+app.use(compression({ threshold: 1024 }));
 
 // CORS configuration
 const isProduction = process.env.NODE_ENV === 'production';
@@ -156,8 +160,12 @@ const startServer = async () => {
     try {
       await sequelize.authenticate();
       console.log('✅ PostgreSQL connected successfully');
-      await sequelize.sync({ alter: true });
-      console.log('📊 Inventory tables synced');
+      // Only run schema sync in development. In production this is slow and risky;
+      // run migrations manually via `node scripts/sync-db.js` when schema changes.
+      if (!isProduction) {
+        await sequelize.sync({ alter: true });
+        console.log('📊 Inventory tables synced');
+      }
     } catch (pgError) {
       console.error('❌ PostgreSQL connection failed:', pgError.message);
       console.log('🔄 Server will continue without PostgreSQL (Inventory features disabled)');

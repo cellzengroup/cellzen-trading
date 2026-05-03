@@ -8,6 +8,7 @@ const PAGE_BG = {
   '/help-center': '#2A1740',
   '/privacy':     '#E5E1DA',
   '/terms':       '#E5E1DA',
+  '/products':    '#F4F2EE',
 };
 
 const Layout = ({ children }) => {

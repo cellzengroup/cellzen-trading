@@ -34,12 +34,22 @@ const optionalUpload = (fields) => (req, res, next) => {
 };
 
 // GET / - list all products
+// Query params:
+//   ?search=...           — full-text search on name/barcode/description
+//   ?sharedWith=role      — filter by share_to.role flag
+//   ?category=...         — filter by exact category match
+//   ?excludeCategory=...  — exclude products with this category
+//   ?light=1              — omit pdf_files JSONB (smaller payload for list views)
 router.get('/', authenticate, async (req, res) => {
   try {
-    const { search, sharedWith } = req.query;
-    const cacheKey = `products:${search || ''}:${sharedWith || ''}`;
+    const { search, sharedWith, category, excludeCategory, light } = req.query;
+    const lightMode = light === '1' || light === 'true';
+    const cacheKey = `products:${search || ''}:${sharedWith || ''}:${category || ''}:${excludeCategory || ''}:${lightMode ? 'L' : 'F'}`;
     const cached = cache.get(cacheKey);
-    if (cached) return res.json({ success: true, data: cached });
+    if (cached) {
+      res.set('Cache-Control', 'private, max-age=30');
+      return res.json({ success: true, data: cached });
+    }
 
     const where = {};
     if (search) {
@@ -49,32 +59,65 @@ router.get('/', authenticate, async (req, res) => {
         { description: { [Op.iLike]: `%${search}%` } },
       ];
     }
+    if (category) where.category = category;
+    if (excludeCategory) where.category = { [Op.or]: [{ [Op.ne]: excludeCategory }, { [Op.is]: null }] };
 
-    const products = await Product.findAll({ where, order: [['name', 'ASC']] });
+    const findOptions = { where, order: [['name', 'ASC']] };
+    // Light mode: skip the heavy pdf_files JSONB column for list views
+    if (lightMode) {
+      findOptions.attributes = { exclude: ['pdf_files'] };
+    }
 
-    // Filter by sharedWith if specified
+    const products = await Product.findAll(findOptions);
+
+    // Filter by sharedWith if specified (kept in JS because share_to is JSONB)
     let filteredProducts = products;
     if (sharedWith) {
       filteredProducts = products.filter(p => {
-        // Handle both object and string (JSON) formats of share_to
         let shareTo = p.share_to || {};
         if (typeof shareTo === 'string') {
-          try {
-            shareTo = JSON.parse(shareTo);
-          } catch (e) {
-            shareTo = {};
-          }
+          try { shareTo = JSON.parse(shareTo); } catch { shareTo = {}; }
         }
         return shareTo[sharedWith] === true;
       });
     }
 
-    cache.set(cacheKey, filteredProducts, 3000);
+    cache.set(cacheKey, filteredProducts, 60000);
+    res.set('Cache-Control', 'private, max-age=30');
     res.json({ success: true, data: filteredProducts });
   } catch (error) {
     console.error('Get products error:', error);
     console.error('Error details:', error.message, error.stack);
     res.status(500).json({ success: false, message: 'Failed to fetch products', error: error.message });
+  }
+});
+
+// GET /public-gallery — PUBLIC (no auth) endpoint for the landing page Products section
+// Returns only "Product Gallery" rows with the minimal fields needed for the card grid.
+router.get('/public-gallery', async (req, res) => {
+  try {
+    const cacheKey = 'products:public-gallery';
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      res.set('Cache-Control', 'public, max-age=20, must-revalidate');
+      return res.json({ success: true, data: cached });
+    }
+
+    const products = await Product.findAll({
+      where: { category: 'Product Gallery' },
+      attributes: ['id', 'name', 'description', 'image_url', 'image_url_2', 'supplier_name'],
+      order: [['createdAt', 'DESC']],
+    });
+
+    // Drop products with no image — useless for the card grid
+    const withImages = products.filter((p) => p.image_url || p.image_url_2);
+
+    cache.set(cacheKey, withImages, 30000); // 30s server cache (was 2 min)
+    res.set('Cache-Control', 'public, max-age=20, must-revalidate');
+    res.json({ success: true, data: withImages });
+  } catch (error) {
+    console.error('Public gallery error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch gallery' });
   }
 });
 
@@ -175,19 +218,24 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
       })
     );
 
-    // Ensure default location exists
-    let locations = await Location.findAll();
-    let guangzhou = locations.find((l) => l.name === 'Guangzhou Warehouse');
-    if (!guangzhou) {
-      guangzhou = await Location.create({ name: 'Guangzhou Warehouse', type: 'warehouse' });
-      locations = await Location.findAll();
-    }
-
     const { Transaction } = require('../models');
     const pdfGroups = uploadedPdfs.length ? uploadedPdfs.map((pdf) => [pdf]) : [[]];
-    const createdProducts = [];
+    const isGalleryItem = category === 'Product Gallery';
 
-    for (const pdfGroup of pdfGroups) {
+    // Gallery items are images, not stockable products — skip the inventory bootstrap entirely.
+    let locations = null;
+    let guangzhou = null;
+    if (!isGalleryItem) {
+      locations = await Location.findAll();
+      guangzhou = locations.find((l) => l.name === 'Guangzhou Warehouse');
+      if (!guangzhou) {
+        guangzhou = await Location.create({ name: 'Guangzhou Warehouse', type: 'warehouse' });
+        locations = await Location.findAll();
+      }
+    }
+
+    // Build all products in parallel (multi-PDF uploads create one row per PDF — no need to serialize them).
+    const createdProducts = await Promise.all(pdfGroups.map(async (pdfGroup) => {
       const pdfName = pdfGroup[0]?.name;
       const product = await Product.create({
         name: pdfName ? `${name || supplier_name || category} - ${pdfName}` : name || supplier_name || category,
@@ -209,19 +257,16 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
         size: size || null,
       });
 
-      createdProducts.push(product);
+      if (isGalleryItem) return product;
 
-      // Auto stock-in at Guangzhou Warehouse
+      // Auto stock-in at Guangzhou Warehouse + bootstrap zero-qty rows at other locations + log transaction.
       const [gzInv, gzCreated] = await Inventory.findOrCreate({
         where: { product_id: product.id, location_id: guangzhou.id },
         defaults: { quantity: qty },
       });
-      if (!gzCreated) {
-        await gzInv.update({ quantity: gzInv.quantity + qty });
-      }
 
-      // Create inventory records (quantity 0) at other locations + log transaction in parallel
       await Promise.all([
+        gzCreated ? null : gzInv.update({ quantity: gzInv.quantity + qty }),
         ...locations
           .filter((loc) => loc.id !== guangzhou.id)
           .map((loc) =>
@@ -238,8 +283,10 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
           notes: `Auto stock-in on product creation (qty: ${qty})`,
           created_by: req.user?.id || null,
         }),
-      ]);
-    }
+      ].filter(Boolean));
+
+      return product;
+    }));
 
     cache.invalidate('products');
     cache.invalidate('summary');

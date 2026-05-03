@@ -4,6 +4,7 @@ import AdminPageShell from "../AdminPageShell";
 
 const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
 const MAX_PDF_SIZE = 50 * 1024 * 1024;
+const GALLERY_CATEGORY = "Product Gallery";
 
 function formatFileSize(files = []) {
   const totalSize = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
@@ -94,7 +95,8 @@ export default function AdminProducts() {
   const loadProducts = async () => {
     try {
       setProductsError("");
-      const response = await fetch(`${API_BASE}/inventory/products`, {
+      const url = `${API_BASE}/inventory/products?excludeCategory=${encodeURIComponent(GALLERY_CATEGORY)}`;
+      const response = await fetch(url, {
         headers: {
           Authorization: `Bearer ${localStorage.getItem("inv_token") || ""}`,
         },

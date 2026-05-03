@@ -85,6 +85,12 @@ const Product = sequelize
     }, {
       tableName: 'products',
       timestamps: true,
+      indexes: [
+        { fields: ['category'] },
+        { fields: ['supplier_name'] },
+        { fields: ['name'] },
+        { fields: ['createdAt'] },
+      ],
     })
   : null;
 

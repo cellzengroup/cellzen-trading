@@ -72,6 +72,12 @@ const User = sequelize
     }, {
       tableName: 'users',
       timestamps: true,
+      indexes: [
+        { fields: ['role'] },
+        { fields: ['accountType'] },
+        { fields: ['accountApprovalStatus'] },
+        { fields: ['role', 'accountApprovalStatus'] },
+      ],
     })
   : null;
 
