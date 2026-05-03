@@ -142,6 +142,17 @@ export default function TrackingLogin({ initialMode = "signin" }) {
         return;
       }
 
+      // Account created but waiting for admin approval (returned as success now)
+      if (data.requiresAdminApproval) {
+        setRegistrationResult({ type: "approval", user: data.user });
+        return;
+      }
+
+      if (!data.token) {
+        setError(data.message || "Account created, but no session token was returned. Please sign in.");
+        return;
+      }
+
       localStorage.setItem("customer_token", data.token);
       sessionStorage.setItem("customer_user", JSON.stringify(data.user));
       setSubmitted(true);

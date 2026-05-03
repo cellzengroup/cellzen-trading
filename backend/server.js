@@ -31,7 +31,10 @@ app.use(compression({ threshold: 1024 }));
 const isProduction = process.env.NODE_ENV === 'production';
 const defaultProdOrigins = [
   'https://cellzen-trading.onrender.com',
-  'https://www.cellzen.com.np'
+  'https://www.cellzen.com.np',
+  'https://cellzen.com.np',
+  'http://www.cellzen.com.np',
+  'http://cellzen.com.np',
 ];
 
 const defaultDevOrigins = [
@@ -45,27 +48,25 @@ const envOrigins = process.env.CORS_ORIGINS
 
 const baseAllowedOrigins = envOrigins || (isProduction ? defaultProdOrigins : defaultDevOrigins);
 
-// CORS origin function to allow Render subdomains
 const corsOrigin = (origin, callback) => {
-  // Allow requests with no origin (like mobile apps or curl requests)
+  // Allow requests with no origin (mobile apps, curl, server-to-server)
   if (!origin) return callback(null, true);
 
-  // In development, allow Vite localhost and LAN preview URLs.
-  if (!isProduction) {
-    return callback(null, true);
+  // In development, allow everything
+  if (!isProduction) return callback(null, true);
+
+  if (baseAllowedOrigins.includes(origin)) return callback(null, true);
+
+  // Allow any cellzen.com.np subdomain (api., admin., etc.) + Render subdomains
+  try {
+    const host = new URL(origin).hostname;
+    if (host === 'cellzen.com.np' || host.endsWith('.cellzen.com.np')) return callback(null, true);
+    if (host.endsWith('.onrender.com')) return callback(null, true);
+  } catch {
+    // fall through to reject
   }
-  
-  // Check if origin is in the allowed list
-  if (baseAllowedOrigins.includes(origin)) {
-    return callback(null, true);
-  }
-  
-  // Allow all Render subdomains
-  if (origin.endsWith('.onrender.com')) {
-    return callback(null, true);
-  }
-  
-  // Reject other origins
+
+  console.warn('[CORS] Rejected origin:', origin);
   callback(new Error('Not allowed by CORS'));
 };
 

@@ -321,21 +321,42 @@ export default function Products() {
     }
   }, [searchOpen]);
 
-  // Fetch the gallery — bypasses any caches when refetching
+  // Fetch the gallery — tries same-origin first, falls back to known production
+  // backends so the public page works even if the frontend is hosted separately.
   const loadGallery = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/inventory/products/public-gallery`, {
-        cache: "no-cache",
-      });
-      const data = await res.json();
-      if (!res.ok || !data.success) throw new Error(data.message || "Failed to load gallery");
-      setProducts(data.data || []);
-      setError("");
-    } catch (e) {
-      setError(e.message || "Failed to load gallery");
-    } finally {
-      setLoading(false);
+    setLoading(true);
+
+    // Build candidate API bases. Same-origin first (works for single-server deploy
+    // and dev), then known production hosts as fallbacks.
+    const candidates = [API_BASE];
+    if (typeof window !== "undefined") {
+      const sameOrigin = `${window.location.origin}/api`;
+      if (!candidates.includes(sameOrigin)) candidates.push(sameOrigin);
     }
+    [
+      "https://cellzen-trading.onrender.com/api",
+      "https://www.cellzen.com.np/api",
+      "https://cellzen.com.np/api",
+    ].forEach((u) => { if (!candidates.includes(u)) candidates.push(u); });
+
+    let lastErr = null;
+    for (const base of candidates) {
+      try {
+        const url = `${base}/inventory/products/public-gallery`;
+        const res = await fetch(url, { cache: "no-cache", mode: "cors" });
+        if (!res.ok) { lastErr = new Error(`HTTP ${res.status} from ${base}`); continue; }
+        const data = await res.json();
+        if (!data.success) { lastErr = new Error(data.message || `Bad response from ${base}`); continue; }
+        setProducts(data.data || []);
+        setError("");
+        setLoading(false);
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    setError((lastErr && lastErr.message) || "Failed to load gallery");
+    setLoading(false);
   }, []);
 
   // Load once on mount — no auto-refetch (avoids reshuffling positions while
@@ -492,8 +513,16 @@ export default function Products() {
           )}
 
           {!loading && error && (
-            <div className="rounded-2xl border border-[#E05353]/30 bg-[#FFF1F1] p-8 text-center text-sm font-semibold text-[#E05353]">
-              {error}
+            <div className="rounded-2xl border border-[#E05353]/30 bg-[#FFF1F1] p-8 text-center">
+              <p className="text-sm font-semibold text-[#E05353]">Couldn't load the gallery.</p>
+              <p className="mt-2 text-xs text-[#2D2D2D]/55">{error}</p>
+              <button
+                type="button"
+                onClick={loadGallery}
+                className="mt-5 inline-flex items-center justify-center rounded-full bg-[#412460] px-5 py-2 text-xs font-semibold uppercase tracking-widest text-white hover:bg-[#B99353]"
+              >
+                Try Again
+              </button>
             </div>
           )}
 

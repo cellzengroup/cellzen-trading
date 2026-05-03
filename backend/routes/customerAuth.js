@@ -67,21 +67,21 @@ const escapeHtml = (value) => String(value || '')
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;');
 
-const ensureEmailServiceConfigured = () => {
+// Returns true if an outbound email service is configured and ready to send.
+// We use this to gracefully skip email verification when the deploy lacks
+// SMTP/Resend creds (rather than failing signup entirely).
+const isEmailServiceAvailable = () => {
   if (EMAIL_PROVIDER === 'smtp') {
-    if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS || !smtpFrom) {
-      const error = new Error('SMTP email service is not configured. Check SMTP_HOST, SMTP_USER, SMTP_PASS, and SMTP_FROM.');
-      error.statusCode = 503;
-      throw error;
-    }
-    return;
+    return Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && smtpFrom);
   }
+  return Boolean(resend);
+};
 
-  if (!resend) {
-    const error = new Error('Email verification service is not configured');
-    error.statusCode = 503;
-    throw error;
-  }
+const ensureEmailServiceConfigured = () => {
+  if (isEmailServiceAvailable()) return;
+  const error = new Error('Email service is not configured');
+  error.statusCode = 503;
+  throw error;
 };
 
 const sendVerificationEmail = async ({ email, code, firstName }) => {
@@ -173,20 +173,43 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
     }
 
-    ensureEmailServiceConfigured();
+    const emailServiceUp = isEmailServiceAvailable();
 
     const existing = await User.findOne({ where: { email: normalizedEmail } });
     if (existing) {
       if (existing.role === 'customer' && existing.emailVerified === false) {
-        await createAndSendVerificationCode(existing);
+        if (emailServiceUp) {
+          try {
+            await createAndSendVerificationCode(existing);
+            return res.json({
+              success: true,
+              requiresEmailVerification: true,
+              email: existing.email,
+              message: 'This account is waiting for email verification. A new code has been sent.',
+            });
+          } catch (emailErr) {
+            console.warn('Email send failed, auto-verifying instead:', emailErr.message);
+          }
+        }
+        // No email service or send failed — auto-verify so the user can proceed.
+        existing.emailVerified = true;
+        existing.emailVerificationCodeHash = null;
+        existing.emailVerificationExpiresAt = null;
+        await existing.save();
+        if (existing.accountApprovalStatus === 'pending') {
+          return res.json({
+            success: true,
+            requiresAdminApproval: true,
+            user: buildCustomerPayload(existing),
+            message: 'Wait for the admin to accept your approval',
+          });
+        }
         return res.json({
           success: true,
-          requiresEmailVerification: true,
-          email: existing.email,
-          message: 'This account is waiting for email verification. A new code has been sent.',
+          token: generateCustomerToken(existing),
+          user: buildCustomerPayload(existing),
         });
       }
-
       return res.status(400).json({ success: false, message: 'Email already registered' });
     }
 
@@ -197,6 +220,9 @@ router.post('/register', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const accountApprovalStatus = requiresAdminApproval(accountType) ? 'pending' : 'approved';
+
+    // If email service isn't available we auto-verify on creation so signup
+    // never gets stuck waiting for an email that can't be sent.
     const user = await User.create({
       name,
       firstName,
@@ -208,17 +234,41 @@ router.post('/register', async (req, res) => {
       accountType,
       country,
       phone,
-      emailVerified: false,
+      emailVerified: !emailServiceUp,
       accountApprovalStatus,
     });
 
-    await createAndSendVerificationCode(user);
+    if (emailServiceUp) {
+      try {
+        await createAndSendVerificationCode(user);
+        return res.status(201).json({
+          success: true,
+          requiresEmailVerification: true,
+          email: user.email,
+          message: 'Account created. Please check your email for the verification code.',
+        });
+      } catch (emailErr) {
+        // Send failed — auto-verify and let the user in rather than blocking
+        console.warn('Verification email failed, auto-verifying:', emailErr.message);
+        user.emailVerified = true;
+        await user.save();
+      }
+    }
 
-    res.status(201).json({
+    if (user.accountApprovalStatus === 'pending') {
+      return res.status(201).json({
+        success: true,
+        requiresAdminApproval: true,
+        user: buildCustomerPayload(user),
+        message: 'Wait for the admin to accept your approval',
+      });
+    }
+
+    return res.status(201).json({
       success: true,
-      requiresEmailVerification: true,
-      email: user.email,
-      message: 'Account created. Please check your email for the verification code.',
+      token: generateCustomerToken(user),
+      user: buildCustomerPayload(user),
+      message: 'Account created successfully',
     });
   } catch (error) {
     console.error('Customer register error:', error);
@@ -367,12 +417,19 @@ router.post('/login', async (req, res) => {
     }
 
     if (user.emailVerified === false) {
-      return res.status(403).json({
-        success: false,
-        requiresEmailVerification: true,
-        email: user.email,
-        message: 'Please verify your email before signing in',
-      });
+      // If we can actually send a verification email, ask the user to verify.
+      // Otherwise auto-verify here so they're not locked out by a missing
+      // email service in this deploy.
+      if (isEmailServiceAvailable()) {
+        return res.status(403).json({
+          success: false,
+          requiresEmailVerification: true,
+          email: user.email,
+          message: 'Please verify your email before signing in',
+        });
+      }
+      user.emailVerified = true;
+      await user.save();
     }
 
     if (user.accountApprovalStatus === 'pending') {
