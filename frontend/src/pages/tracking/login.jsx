@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import CountrySelector from "../../components/ui/CountrySelector";
 import { countries } from "../../components/countries";
+import { apiPostJson, getApiBaseCandidates } from "../../utils/apiBase";
 
 const TRACKING_FEATURES = [
   "Order milestones",
@@ -133,7 +134,20 @@ export default function TrackingLogin({ initialMode = "signin" }) {
           }
         : { identifier: form.email, password: form.password };
 
-      const { data } = await axios.post(`${API_URL}${endpoint}`, payload);
+      const { res, data } = await apiPostJson(endpoint, payload);
+
+      if (!res.ok) {
+        // Server returned an error response — handle the special cases first
+        if (data?.requiresEmailVerification) {
+          setPendingVerificationEmail(data.email || form.email);
+          setVerificationCode("");
+        } else if (data?.requiresAdminApproval) {
+          setRegistrationResult({ type: "approval", user: data.user });
+          return;
+        }
+        setError(data?.message || `Sign-in failed (HTTP ${res.status})`);
+        return;
+      }
 
       if (isSignUp && data.requiresEmailVerification) {
         setPendingVerificationEmail(data.email || form.email);
@@ -158,17 +172,13 @@ export default function TrackingLogin({ initialMode = "signin" }) {
       setSubmitted(true);
       navigate(getDashboardPath(data.user?.accountType));
     } catch (authError) {
-      if (authError.response?.data?.requiresEmailVerification) {
-        setPendingVerificationEmail(authError.response.data.email || form.email);
-        setVerificationCode("");
-      } else if (authError.response?.data?.requiresAdminApproval) {
-        setRegistrationResult({
-          type: "approval",
-          user: authError.response.data.user,
-        });
-        return;
-      }
-      setError(authError.response?.data?.message || "Unable to sign in right now. Please try again.");
+      // Network/CORS failure — every API base host failed
+      const tried = getApiBaseCandidates().join(", ");
+      setError(
+        authError?.message
+          ? `${authError.message}. Tried: ${tried}`
+          : "Unable to reach the server. Check your connection and try again."
+      );
     } finally {
       setLoading(false);
     }
@@ -181,10 +191,15 @@ export default function TrackingLogin({ initialMode = "signin" }) {
     setLoading(true);
 
     try {
-      const { data } = await axios.post(`${API_URL}/customer/auth/verify-email`, {
+      const { res, data } = await apiPostJson("/customer/auth/verify-email", {
         email: pendingVerificationEmail,
         code: verificationCode,
       });
+
+      if (!res.ok) {
+        setError(data?.message || `Verification failed (HTTP ${res.status})`);
+        return;
+      }
 
       if (data.requiresAdminApproval) {
         setPendingVerificationEmail("");
@@ -200,7 +215,7 @@ export default function TrackingLogin({ initialMode = "signin" }) {
       setRegistrationResult({ type: "success", user: data.user });
       setSubmitted(true);
     } catch (verifyError) {
-      setError(verifyError.response?.data?.message || "Unable to verify your email. Please try again.");
+      setError(verifyError?.message || "Unable to verify your email. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -212,12 +227,16 @@ export default function TrackingLogin({ initialMode = "signin" }) {
     setResending(true);
 
     try {
-      await axios.post(`${API_URL}/customer/auth/resend-verification`, {
+      const { res, data } = await apiPostJson("/customer/auth/resend-verification", {
         email: pendingVerificationEmail,
       });
+      if (!res.ok) {
+        setError(data?.message || `Resend failed (HTTP ${res.status})`);
+        return;
+      }
       setSubmitted(true);
     } catch (resendError) {
-      setError(resendError.response?.data?.message || "Unable to resend the verification code.");
+      setError(resendError?.message || "Unable to resend the verification code.");
     } finally {
       setResending(false);
     }

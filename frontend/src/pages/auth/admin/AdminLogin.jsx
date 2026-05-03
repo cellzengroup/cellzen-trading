@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import axios from "axios";
+import { apiPostJson, getApiBaseCandidates } from "../../../utils/apiBase";
 
 const API_URL = import.meta.env.VITE_API_URL
   || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
@@ -22,12 +22,21 @@ export default function AdminLogin() {
     setError("");
 
     try {
-      const { data } = await axios.post(`${API_URL}/inventory/auth/admin-login`, form);
+      const { res, data } = await apiPostJson("/inventory/auth/admin-login", form);
+      if (!res.ok || !data.token) {
+        setError(data?.message || `Admin login failed (HTTP ${res.status})`);
+        return;
+      }
       localStorage.setItem("inv_token", data.token);
       sessionStorage.setItem("inv_user", JSON.stringify(data.user));
       navigate("/admin-dashboard", { replace: true });
     } catch (loginError) {
-      setError(loginError.response?.data?.message || "Admin login failed");
+      const tried = getApiBaseCandidates().join(", ");
+      setError(
+        loginError?.message
+          ? `${loginError.message}. Tried: ${tried}`
+          : "Unable to reach the server. Check your connection and try again."
+      );
     } finally {
       setLoading(false);
     }
