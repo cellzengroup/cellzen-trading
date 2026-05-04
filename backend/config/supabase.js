@@ -49,23 +49,37 @@ async function uploadStorageFile(fileBuffer, originalName, folder = 'products') 
   return data.publicUrl;
 }
 
+// Singleton in-flight promise so concurrent first-uploads don't all run the
+// bucket setup in parallel (which used to trigger 3+ admin API round-trips per
+// caller on cold start).
+let bucketReadyPromise = null;
+
 async function ensureBucketReady() {
   if (bucketReady) return;
+  if (bucketReadyPromise) return bucketReadyPromise;
 
-  const { data: bucket, error: getBucketError } = await supabase.storage.getBucket(BUCKET);
-  if (!getBucketError && bucket) {
-    const { error: updateBucketError } = await supabase.storage.updateBucket(BUCKET, BUCKET_OPTIONS);
-    if (updateBucketError) throw updateBucketError;
+  bucketReadyPromise = (async () => {
+    const { data: bucket, error: getBucketError } = await supabase.storage.getBucket(BUCKET);
+    if (!getBucketError && bucket) {
+      // Bucket already exists — don't re-PUT its config on every cold start.
+      // Those updateBucket / updateBucketViaStorageApi calls used to add ~2
+      // round-trips of latency to the first upload after the server woke up.
+      bucketReady = true;
+      return;
+    }
+
+    // Bucket doesn't exist yet — create it and set the limits once.
+    const { error: createBucketError } = await supabase.storage.createBucket(BUCKET, BUCKET_OPTIONS);
+    if (createBucketError) throw createBucketError;
     await updateBucketViaStorageApi();
     bucketReady = true;
-    return;
+  })();
+
+  try {
+    await bucketReadyPromise;
+  } finally {
+    bucketReadyPromise = null;
   }
-
-  const { error: createBucketError } = await supabase.storage.createBucket(BUCKET, BUCKET_OPTIONS);
-
-  if (createBucketError) throw createBucketError;
-  await updateBucketViaStorageApi();
-  bucketReady = true;
 }
 
 async function updateBucketViaStorageApi() {
@@ -95,6 +109,35 @@ async function uploadImage(fileBuffer, originalName) {
 
 async function uploadPdf(fileBuffer, originalName) {
   return uploadStorageFile(fileBuffer, originalName, 'product-pdfs');
+}
+
+/**
+ * Create a signed upload URL the browser can PUT to directly. Eliminates the
+ * proxy-through-the-backend hop, which on Render free tier was the dominant
+ * latency cost for image uploads.
+ *
+ * Returns: { signedUrl, publicUrl, path } — caller PUTs the file bytes to
+ * `signedUrl`, then stores `publicUrl` on the DB row.
+ */
+async function createSignedImageUpload(originalName, folder = 'products') {
+  if (!supabase) throw new Error('Supabase Storage is not configured');
+
+  await ensureBucketReady();
+
+  const ext = path.extname(originalName || '').toLowerCase() || '.jpg';
+  const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+  const filePath = `${folder}/${uniqueName}`;
+
+  const { data, error } = await supabase.storage.from(BUCKET).createSignedUploadUrl(filePath);
+  if (error) throw error;
+
+  const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(filePath);
+  return {
+    signedUrl: data.signedUrl,
+    token: data.token,
+    path: filePath,
+    publicUrl: pub.publicUrl,
+  };
 }
 
 /**
@@ -158,4 +201,4 @@ function getMimeType(ext) {
   return types[ext] || 'image/jpeg';
 }
 
-module.exports = { uploadImage, uploadPdf, deleteImage, downloadImage, BUCKET };
+module.exports = { uploadImage, uploadPdf, createSignedImageUpload, deleteImage, downloadImage, BUCKET };

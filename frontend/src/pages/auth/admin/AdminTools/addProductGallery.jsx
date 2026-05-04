@@ -64,24 +64,24 @@ async function compressImage(file) {
   }
 }
 
-// XHR-based upload with byte-level progress + a hard timeout
-function uploadWithProgress({ url, formData, token, onProgress, signal, method = "POST" }) {
+// PUT a file directly to a Supabase signed upload URL with byte-level progress.
+// This bypasses our backend entirely so uploads aren't bottlenecked by
+// Render's free-tier bandwidth.
+function putToSignedUrl({ signedUrl, file, onProgress, signal }) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open(method, url);
+    xhr.open("PUT", signedUrl);
     xhr.timeout = REQUEST_TIMEOUT_MS;
-    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    if (file?.type) xhr.setRequestHeader("Content-Type", file.type);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
     xhr.onload = () => {
-      let result;
-      try { result = JSON.parse(xhr.responseText); } catch { result = null; }
-      if (xhr.status >= 200 && xhr.status < 300 && result?.success) {
+      if (xhr.status >= 200 && xhr.status < 300) {
         if (onProgress) onProgress(1);
-        resolve(result);
+        resolve();
       } else {
-        reject(new Error(result?.message || `Upload failed (HTTP ${xhr.status})`));
+        reject(new Error(`Storage upload failed (HTTP ${xhr.status})`));
       }
     };
     xhr.onerror = () => reject(new Error("Network error during upload"));
@@ -91,8 +91,27 @@ function uploadWithProgress({ url, formData, token, onProgress, signal, method =
       if (signal.aborted) { xhr.abort(); return; }
       signal.addEventListener("abort", () => xhr.abort(), { once: true });
     }
-    xhr.send(formData);
+    xhr.send(file);
   });
+}
+
+// Two-step direct upload: ask backend for a signed URL, PUT the file straight
+// to Supabase, return the resulting public URL. The backend round-trip is
+// tiny (just metadata) so the bottleneck becomes the user's network to
+// Supabase rather than the user → Render → Supabase chain.
+async function directUploadImage({ file, token, onProgress, signal }) {
+  const signRes = await fetch(`${API_BASE}/inventory/products/upload-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ fileName: file.name, kind: "image" }),
+    signal,
+  });
+  const signed = await signRes.json().catch(() => ({}));
+  if (!signRes.ok || !signed?.signedUrl) {
+    throw new Error(signed?.message || "Could not get upload URL");
+  }
+  await putToSignedUrl({ signedUrl: signed.signedUrl, file, onProgress, signal });
+  return signed.publicUrl;
 }
 
 const FIELD = "mt-2 w-full rounded-2xl border border-[#E1D9EA] bg-white px-4 py-3 text-sm font-semibold text-[#2D2D2D] outline-none transition placeholder:text-[#2D2D2D]/30 focus:border-[#2D2D2D]/70";
@@ -387,21 +406,29 @@ export default function AddProductGallery() {
       const token = localStorage.getItem("inv_token") || "";
 
       if (isEditMode) {
-        // Update the single product record (compress new image first)
-        const payload = new FormData();
-        Object.entries(baseFields).forEach(([k, v]) => payload.append(k, v));
+        // Update the single product record. New flow:
+        //   1. If a new image was picked, compress + direct-upload to Supabase.
+        //   2. PUT product metadata as JSON (backend already accepts image_url).
+        setProgress({ done: 0, total: 1, percent: 0 });
+        const updatePayload = { ...baseFields };
         if (images.length > 0) {
           const compressed = await compressImage(images[0].file);
-          payload.append("image", compressed);
+          const publicUrl = await directUploadImage({
+            file: compressed,
+            token,
+            onProgress: (p) => setProgress({ done: 0, total: 1, percent: Math.round(p * 100) }),
+          });
+          updatePayload.image_url = publicUrl;
         }
-        setProgress({ done: 0, total: 1, percent: 0 });
-        await uploadWithProgress({
-          url: `${API_BASE}/inventory/products/${productId}`,
-          formData: payload,
-          token,
+        const res = await fetch(`${API_BASE}/inventory/products/${productId}`, {
           method: "PUT",
-          onProgress: (p) => setProgress({ done: 0, total: 1, percent: Math.round(p * 100) }),
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(updatePayload),
         });
+        const result = await res.json().catch(() => ({}));
+        if (!res.ok || !result.success) {
+          throw new Error(result?.message || "Failed to update product");
+        }
       } else {
         // Create one record per image with bounded concurrency + real byte-level progress
         const toUpload = images.length > 0 ? images : [null];
@@ -416,26 +443,36 @@ export default function AddProductGallery() {
 
         setProgress({ done: 0, total, percent: 0 });
 
-        const CONCURRENCY = 4;
+        // Higher concurrency is safe now that uploads bypass our backend —
+        // Supabase storage handles parallelism well, and the per-call backend
+        // hop is tiny (just the sign-URL + final DB write).
+        const CONCURRENCY = 8;
         let cursor = 0;
         let firstError = null;
 
         const uploadOne = async (img, idx) => {
-          const payload = new FormData();
-          Object.entries(baseFields).forEach(([k, v]) => payload.append(k, v));
+          let imageUrl = null;
           if (img?.file) {
             const compressed = await compressImage(img.file);
-            payload.append("image", compressed);
+            imageUrl = await directUploadImage({
+              file: compressed,
+              token,
+              onProgress: (p) => {
+                fileProgress[idx] = p;
+                updateOverall();
+              },
+            });
           }
-          await uploadWithProgress({
-            url: `${API_BASE}/inventory/products`,
-            formData: payload,
-            token,
-            onProgress: (p) => {
-              fileProgress[idx] = p;
-              updateOverall();
-            },
+          // Save the DB row as a small JSON request — no file bytes to stream.
+          const res = await fetch(`${API_BASE}/inventory/products`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ ...baseFields, image_url: imageUrl }),
           });
+          const result = await res.json().catch(() => ({}));
+          if (!res.ok || !result.success) {
+            throw new Error(result?.message || "Failed to save product");
+          }
           fileProgress[idx] = 1;
           done++;
           updateOverall();

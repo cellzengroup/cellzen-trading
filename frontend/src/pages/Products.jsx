@@ -7,11 +7,50 @@ const API_BASE =
 
 const VIEWED_KEY = "cz_viewed_products";
 const VIEWED_LIMIT = 20;
-const PAGE_SIZE = 8;          // smaller initial batch = faster first paint
-const EAGER_COUNT = 6;        // first N images load eagerly with high priority
+const GALLERY_CACHE_KEY = "cz_gallery_cache_v1";
+const EAGER_COUNT = 12;       // first N images load eagerly with high priority
 const GAP = 12;
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 5;
+// Display-side cap for thumbnails. Source uploads are 1600px; cards render at
+// ~200-300px. We ask Supabase to render a smaller version when the project
+// has the image-transformations feature; if it doesn't, the original URL is
+// served instead via onError fallback (see makeThumbUrl + FlipCard).
+const THUMB_WIDTH = 600;
+const THUMB_QUALITY = 70;
+
+// Convert a Supabase /object/public/ URL to a /render/image/public/ URL with
+// width + quality params. On Free-plan projects the render endpoint may not
+// be enabled — the FlipCard's onError handler falls back to the original URL
+// in that case so users still see the image, just at full size.
+function makeThumbUrl(url, { width = THUMB_WIDTH, quality = THUMB_QUALITY } = {}) {
+  if (!url || typeof url !== "string") return url;
+  if (!url.includes("/storage/v1/object/public/")) return url;
+  const transformed = url.replace("/storage/v1/object/public/", "/storage/v1/render/image/public/");
+  const sep = transformed.includes("?") ? "&" : "?";
+  return `${transformed}${sep}width=${width}&quality=${quality}`;
+}
+
+// Preconnect to whatever image origin the gallery is using so the browser
+// can warm DNS + TCP + TLS before the first <img> request fires. Saves
+// ~150-300 ms on first paint of the first image.
+function ensureImageOriginPreconnect(sampleUrl) {
+  if (!sampleUrl || typeof document === "undefined") return;
+  let origin;
+  try { origin = new URL(sampleUrl).origin; } catch { return; }
+  if (document.head.querySelector(`link[rel="preconnect"][href="${origin}"]`)) return;
+
+  const preconnect = document.createElement("link");
+  preconnect.rel = "preconnect";
+  preconnect.href = origin;
+  preconnect.crossOrigin = "anonymous";
+  document.head.appendChild(preconnect);
+
+  const dnsPrefetch = document.createElement("link");
+  dnsPrefetch.rel = "dns-prefetch";
+  dnsPrefetch.href = origin;
+  document.head.appendChild(dnsPrefetch);
+}
 
 function fisherYatesShuffle(arr) {
   const out = [...arr];
@@ -55,6 +94,27 @@ function readViewed() {
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
+  }
+}
+
+// Read the previous gallery list synchronously so first paint can show real
+// products instead of a spinner. Returns [] on miss / parse error.
+function readCachedGallery() {
+  try {
+    const raw = localStorage.getItem(GALLERY_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedGallery(list) {
+  try {
+    localStorage.setItem(GALLERY_CACHE_KEY, JSON.stringify(list));
+  } catch {
+    // localStorage quota — silently drop, the network refresh still works
   }
 }
 
@@ -218,7 +278,13 @@ function ImagePreview({ src, alt, onClose }) {
 }
 
 function FlipCard({ product, eager, dims, onLoadDims, onView, onPreview }) {
-  const img = product.image_url || product.image_url_2;
+  const originalImg = product.image_url || product.image_url_2;
+  // Try the Supabase image-transform URL first (much smaller bytes for the
+  // thumbnail size we actually render). On error we swap to the original.
+  const [src, setSrc] = useState(() => makeThumbUrl(originalImg));
+  const handleImgError = () => {
+    if (src !== originalImg) setSrc(originalImg);
+  };
   const clickTimer = useRef(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -270,7 +336,7 @@ function FlipCard({ product, eager, dims, onLoadDims, onView, onPreview }) {
             />
           )}
           <img
-            src={img}
+            src={src}
             alt=""
             loading={eager ? "eager" : "lazy"}
             decoding="async"
@@ -281,7 +347,8 @@ function FlipCard({ product, eager, dims, onLoadDims, onView, onPreview }) {
                 onLoadDims(e.target.naturalWidth, e.target.naturalHeight);
               }
             }}
-            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ease-out ${loaded ? "opacity-100" : "opacity-0"}`}
+            onError={handleImgError}
+            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-150 ease-out ${loaded ? "opacity-100" : "opacity-0"}`}
           />
         </button>
 
@@ -297,19 +364,30 @@ function FlipCard({ product, eager, dims, onLoadDims, onView, onPreview }) {
 }
 
 export default function Products() {
-  const [products, setProducts] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Seed from localStorage so repeat visitors see the gallery instantly
+  // instead of a spinner. The network refresh below replaces it once it lands.
+  const [products, setProducts] = useState(readCachedGallery);
+  // Only show the big spinner if we have nothing cached to render.
+  const [loading, setLoading] = useState(() => readCachedGallery().length === 0);
   const [error, setError] = useState("");
   const [activeProduct, setActiveProduct] = useState(null);
   const [previewSrc, setPreviewSrc] = useState(null);
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [imageDims, setImageDims] = useState({});
   const [containerWidth, setContainerWidth] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const searchInputRef = useRef(null);
   const containerRef = useRef(null);
-  const sentinelRef = useRef(null);
+
+  // Warm DNS + TCP + TLS to the image origin as soon as we know any product's
+  // image URL — saves ~150-300 ms on first paint of the first image. Runs on
+  // every products change so it covers both cache-seed and fresh-fetch paths
+  // (the helper is idempotent, only inserts the link tag once).
+  useEffect(() => {
+    if (!products?.length) return;
+    const sample = products.find((p) => p.image_url || p.image_url_2);
+    ensureImageOriginPreconnect(sample?.image_url || sample?.image_url_2);
+  }, [products]);
 
   // When the search slides open, focus the input. When it closes, clear it.
   useEffect(() => {
@@ -321,13 +399,15 @@ export default function Products() {
     }
   }, [searchOpen]);
 
-  // Fetch the gallery — tries same-origin first, falls back to known production
-  // backends so the public page works even if the frontend is hosted separately.
+  // Fetch the gallery — tries same-origin and known production hosts in
+  // PARALLEL and uses whichever responds first. A slow same-origin no longer
+  // blocks the fallbacks. cache:"default" lets the browser honor the backend's
+  // max-age=20 header on repeat visits.
   const loadGallery = useCallback(async () => {
-    setLoading(true);
+    if (readCachedGallery().length === 0) setLoading(true);
 
-    // Build candidate API bases. Same-origin first (works for single-server deploy
-    // and dev), then known production hosts as fallbacks.
+    // Build candidate API bases. Same-origin first (works for single-server
+    // deploy and dev), then known production hosts as fallbacks.
     const candidates = [API_BASE];
     if (typeof window !== "undefined") {
       const sameOrigin = `${window.location.origin}/api`;
@@ -339,24 +419,38 @@ export default function Products() {
       "https://cellzen.com.np/api",
     ].forEach((u) => { if (!candidates.includes(u)) candidates.push(u); });
 
-    let lastErr = null;
-    for (const base of candidates) {
-      try {
-        const url = `${base}/inventory/products/public-gallery`;
-        const res = await fetch(url, { cache: "no-cache", mode: "cors" });
-        if (!res.ok) { lastErr = new Error(`HTTP ${res.status} from ${base}`); continue; }
-        const data = await res.json();
-        if (!data.success) { lastErr = new Error(data.message || `Bad response from ${base}`); continue; }
-        setProducts(data.data || []);
-        setError("");
-        setLoading(false);
-        return;
-      } catch (e) {
-        lastErr = e;
+    const fetchOne = (base) => fetch(`${base}/inventory/products/public-gallery`, {
+      cache: "default",
+      mode: "cors",
+    }).then(async (res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${base}`);
+      const data = await res.json();
+      if (!data?.success) throw new Error(data?.message || `Bad response from ${base}`);
+      return data.data || [];
+    });
+
+    try {
+      // Promise.any resolves with the first successful candidate; only rejects
+      // if every single one fails.
+      const list = await Promise.any(candidates.map(fetchOne));
+      writeCachedGallery(list);
+      // Skip the state update (and the re-shuffle that smartOrder would do)
+      // when the fresh data matches what's already on screen. Compares by
+      // id + image fields so genuine image updates DO refresh.
+      const sig = (l) =>
+        l.map((p) => `${p.id}|${p.image_url || ""}|${p.image_url_2 || ""}|${p.name || ""}`).join(",");
+      setProducts((prev) => (sig(prev) === sig(list) ? prev : list));
+      setError("");
+    } catch (aggregateErr) {
+      // Only treat this as a real error when we have no cached data to show.
+      // If the user already sees products from the cache, swallow the failure.
+      if (readCachedGallery().length === 0) {
+        const firstErr = aggregateErr?.errors?.[0];
+        setError(firstErr?.message || "Failed to load gallery");
       }
+    } finally {
+      setLoading(false);
     }
-    setError((lastErr && lastErr.message) || "Failed to load gallery");
-    setLoading(false);
   }, []);
 
   // Load once on mount — no auto-refetch (avoids reshuffling positions while
@@ -387,17 +481,6 @@ export default function Products() {
     );
   }, [ordered, searchQuery]);
 
-  // Reset visibleCount when the user starts a new search
-  useEffect(() => {
-    setVisibleCount(PAGE_SIZE);
-  }, [searchQuery]);
-
-  const hasMore = visibleCount < filtered.length;
-  const visibleProducts = useMemo(
-    () => filtered.slice(0, visibleCount),
-    [filtered, visibleCount]
-  );
-
   // Capture dims from the live <img> onLoad — no separate preload, no double
   // download. Until an image loads, the card uses a default 4:5 aspect ratio
   // placeholder, then settles when real dims arrive.
@@ -414,30 +497,13 @@ export default function Products() {
   }, [containerWidth]);
 
   const columns = useMemo(() => {
-    const items = visibleProducts.map((p) => ({
+    const items = filtered.map((p) => ({
       id: p.id,
       product: p,
       dims: imageDims[p.id] || { w: 1, h: 1 },
     }));
     return distributeIntoColumns(items, columnCount);
-  }, [visibleProducts, imageDims, columnCount]);
-
-  // Infinite scroll
-  useEffect(() => {
-    if (loading || !hasMore) return;
-    const el = sentinelRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          setVisibleCount((n) => Math.min(n + PAGE_SIZE, filtered.length));
-        }
-      },
-      { rootMargin: "800px 0px" }
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [loading, hasMore, filtered.length]);
+  }, [filtered, imageDims, columnCount]);
 
   const handleView = (product) => {
     writeViewed(product.name);
@@ -546,36 +612,30 @@ export default function Products() {
           )}
 
           {!loading && !error && filtered.length > 0 && (
-            <>
-              <div className="flex items-start" style={{ gap: GAP }}>
-                {columns.map((col, ci) => (
-                  <div key={ci} className="flex-1 min-w-0">
-                    {col.items.map((item) => {
-                      // Eager-load the first few above-the-fold cards
-                      const globalIndex = visibleProducts.findIndex((p) => p.id === item.id);
-                      const eager = globalIndex >= 0 && globalIndex < EAGER_COUNT;
-                      return (
-                        <FlipCard
-                          key={item.id}
-                          product={item.product}
-                          eager={eager}
-                          dims={imageDims[item.id]}
-                          onLoadDims={(w, h) => captureDims(item.id, w, h)}
-                          onView={handleView}
-                          onPreview={handlePreview}
-                        />
-                      );
-                    })}
-                  </div>
-                ))}
-              </div>
-
-              {hasMore && (
-                <div ref={sentinelRef} className="mt-8 flex items-center justify-center py-6">
-                  <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#412460]/15 border-t-[#412460]" />
+            <div className="flex items-start" style={{ gap: GAP }}>
+              {columns.map((col, ci) => (
+                <div key={ci} className="flex-1 min-w-0">
+                  {col.items.map((item) => {
+                    // Eager-load the first few above-the-fold cards; the rest
+                    // get loading="lazy" so off-screen cards don't fight for
+                    // bandwidth on first paint.
+                    const globalIndex = filtered.findIndex((p) => p.id === item.id);
+                    const eager = globalIndex >= 0 && globalIndex < EAGER_COUNT;
+                    return (
+                      <FlipCard
+                        key={item.id}
+                        product={item.product}
+                        eager={eager}
+                        dims={imageDims[item.id]}
+                        onLoadDims={(w, h) => captureDims(item.id, w, h)}
+                        onView={handleView}
+                        onPreview={handlePreview}
+                      />
+                    );
+                  })}
                 </div>
-              )}
-            </>
+              ))}
+            </div>
           )}
         </div>
         </div>

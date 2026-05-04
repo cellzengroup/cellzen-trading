@@ -9,7 +9,9 @@ const MAX_SIZE = 20 * 1024 * 1024;
 const COMPRESS_MAX_DIMENSION = 1600;
 const COMPRESS_QUALITY = 0.85;
 const REQUEST_TIMEOUT_MS = 60000;
-const UPLOAD_CONCURRENCY = 4;
+// Direct-to-Supabase uploads can run hotter than the old proxy-through-backend
+// path — Render's free-tier bandwidth is no longer the bottleneck.
+const UPLOAD_CONCURRENCY = 8;
 
 const FIELD = "mt-2 w-full rounded-2xl border border-[#E1D9EA] bg-white px-4 py-3 text-sm font-semibold text-[#2D2D2D] outline-none transition placeholder:text-[#2D2D2D]/30 focus:border-[#412460]";
 const LABEL = "text-xs font-semibold text-[#2D2D2D]/45";
@@ -62,29 +64,43 @@ async function compressImage(file) {
   }
 }
 
-function uploadWithProgress({ url, formData, token, onProgress, method = "POST" }) {
+// Direct browser → Supabase PUT with byte-level progress. The backend just
+// signs the URL; we never stream image bytes through it.
+function putToSignedUrl({ signedUrl, file, onProgress }) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open(method, url);
+    xhr.open("PUT", signedUrl);
     xhr.timeout = REQUEST_TIMEOUT_MS;
-    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    if (file?.type) xhr.setRequestHeader("Content-Type", file.type);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
     xhr.onload = () => {
-      let result;
-      try { result = JSON.parse(xhr.responseText); } catch { result = null; }
-      if (xhr.status >= 200 && xhr.status < 300 && result?.success) {
+      if (xhr.status >= 200 && xhr.status < 300) {
         if (onProgress) onProgress(1);
-        resolve(result);
+        resolve();
       } else {
-        reject(new Error(result?.message || `Upload failed (HTTP ${xhr.status})`));
+        reject(new Error(`Storage upload failed (HTTP ${xhr.status})`));
       }
     };
     xhr.onerror = () => reject(new Error("Network error during upload"));
     xhr.ontimeout = () => reject(new Error("Upload timed out — try a smaller image"));
-    xhr.send(formData);
+    xhr.send(file);
   });
+}
+
+async function directUploadImage({ file, token, onProgress }) {
+  const signRes = await fetch(`${API_BASE}/inventory/products/upload-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ fileName: file.name, kind: "image" }),
+  });
+  const signed = await signRes.json().catch(() => ({}));
+  if (!signRes.ok || !signed?.signedUrl) {
+    throw new Error(signed?.message || "Could not get upload URL");
+  }
+  await putToSignedUrl({ signedUrl: signed.signedUrl, file, onProgress });
+  return signed.publicUrl;
 }
 
 function BulkImageUpload({ images, onAdd, onRemove, onClearAll, onDropFiles }) {
@@ -345,18 +361,25 @@ export default function ProductGallery() {
     let firstError = null;
 
     const uploadOne = async (img, idx) => {
-      const payload = new FormData();
-      Object.entries(baseFields).forEach(([k, v]) => payload.append(k, v));
+      let imageUrl = null;
       if (img?.file) {
         const compressed = await compressImage(img.file);
-        payload.append("image", compressed);
+        imageUrl = await directUploadImage({
+          file: compressed,
+          token,
+          onProgress: (p) => { fileProgress[idx] = p; updateOverall(); },
+        });
       }
-      await uploadWithProgress({
-        url: `${API_BASE}/inventory/products`,
-        formData: payload,
-        token,
-        onProgress: (p) => { fileProgress[idx] = p; updateOverall(); },
+      // Tiny JSON request — no image bytes traverse our backend any more.
+      const res = await fetch(`${API_BASE}/inventory/products`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ...baseFields, image_url: imageUrl }),
       });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || !result.success) {
+        throw new Error(result?.message || "Failed to save product");
+      }
       fileProgress[idx] = 1;
       done++;
       updateOverall();

@@ -5,7 +5,7 @@ const path = require('path');
 const { Product, Location, Inventory } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const cache = require('../cache');
-const { uploadImage, uploadPdf, deleteImage } = require('../../config/supabase');
+const { uploadImage, uploadPdf, createSignedImageUpload, deleteImage } = require('../../config/supabase');
 
 const router = express.Router();
 
@@ -113,6 +113,32 @@ router.get('/', authenticate, async (req, res) => {
     console.error('Get products error:', error);
     console.error('Error details:', error.message, error.stack);
     res.status(500).json({ success: false, message: 'Failed to fetch products', error: error.message });
+  }
+});
+
+// POST /upload-url — Returns a signed Supabase upload URL the browser can PUT
+// to directly. This eliminates the slow browser → backend → Supabase proxy
+// hop that used to dominate gallery upload time on Render's free tier.
+//
+// Body: { fileName: string, kind?: 'image' | 'pdf' }
+// Returns: { signedUrl, publicUrl }
+router.post('/upload-url', authenticate, async (req, res) => {
+  try {
+    const { fileName, kind = 'image' } = req.body || {};
+    if (!fileName) {
+      return res.status(400).json({ success: false, message: 'fileName is required' });
+    }
+    const folder = kind === 'pdf' ? 'product-pdfs' : 'products';
+    const result = await createSignedImageUpload(fileName, folder);
+    res.json({
+      success: true,
+      signedUrl: result.signedUrl,
+      publicUrl: result.publicUrl,
+      path: result.path,
+    });
+  } catch (error) {
+    console.error('Sign upload URL error:', error);
+    res.status(500).json({ success: false, message: 'Could not generate upload URL' });
   }
 });
 
