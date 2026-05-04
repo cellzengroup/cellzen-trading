@@ -161,14 +161,16 @@ const startServer = async () => {
     try {
       await sequelize.authenticate();
       console.log('✅ PostgreSQL connected successfully');
-      // Only run schema sync in development by default. In production this is
-      // slow and risky; either run `node scripts/sync-db.js` manually after a
-      // schema-changing deploy, or set DB_AUTO_SYNC=true to opt-in to one-shot
-      // sync at boot (additive `alter` mode only).
+      // Schema sync strategy:
+      //   - Dev (default):       sync()             — CREATE TABLE IF NOT EXISTS only.
+      //                                                Fast, idempotent, no ALTERs on every nodemon restart.
+      //   - DB_AUTO_SYNC=true:   sync({ alter: true }) — additive ALTERs (use after model changes).
+      //   - Production default:  no sync at all      — run `node scripts/sync-db.js` manually
+      //                                                or set DB_AUTO_SYNC=true on the deploy.
       const autoSync = String(process.env.DB_AUTO_SYNC || '').toLowerCase() === 'true';
       if (!isProduction || autoSync) {
-        await sequelize.sync({ alter: true });
-        console.log('📊 Inventory tables synced');
+        await sequelize.sync(autoSync ? { alter: true } : {});
+        console.log(autoSync ? '📊 Inventory tables synced (alter mode)' : '📊 Inventory tables ensured');
       }
     } catch (pgError) {
       console.error('❌ PostgreSQL connection failed:', pgError.message);

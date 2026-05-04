@@ -33,6 +33,27 @@ const optionalUpload = (fields) => (req, res, next) => {
   next();
 };
 
+// Multer decodes multipart filenames as latin1 by default, so any non-ASCII
+// name (Chinese, Cyrillic, etc.) arrives as mojibake. Re-decoding the raw
+// bytes as UTF-8 recovers the original — and is a no-op for pure ASCII names
+// since ASCII bytes are identical in latin1 and UTF-8.
+const decodeUploadName = (raw) => {
+  if (!raw) return '';
+  try {
+    return Buffer.from(raw, 'latin1').toString('utf8');
+  } catch {
+    return raw;
+  }
+};
+
+const sanitizePdfName = (originalName) => {
+  let decoded = decodeUploadName(originalName);
+  if (/%[0-9A-Fa-f]{2}/.test(decoded)) {
+    try { decoded = decodeURIComponent(decoded); } catch { /* keep decoded */ }
+  }
+  return decoded.replace(/\.pdf$/i, '');
+};
+
 // GET / - list all products
 // Query params:
 //   ?search=...           — full-text search on name/barcode/description
@@ -188,34 +209,12 @@ router.post('/', authenticate, optionalUpload([{ name: 'image', maxCount: 1 }, {
     const pdfFiles = req.files?.pdf_files || [];
     const pdfFileIndex = Number(req.body.pdf_file_index);
 
-    // Helper function to decode and sanitize filename
-    const sanitizeFilename = (originalName) => {
-      try {
-        // Try to decode if it's URI encoded
-        let decoded = originalName;
-        if (/%[0-9A-Fa-f]{2}/.test(originalName)) {
-          try {
-            decoded = decodeURIComponent(originalName);
-          } catch (e) {
-            // If decoding fails, use original
-          }
-        }
-        // Remove .pdf extension for storage (we add it back if needed)
-        return decoded.replace(/\.pdf$/i, '');
-      } catch (e) {
-        return originalName.replace(/\.pdf$/i, '');
-      }
-    };
-
     const uploadedPdfs = await Promise.all(
-      pdfFiles.map(async (file) => {
-        const cleanName = sanitizeFilename(file.originalname);
-        return {
-          name: cleanName,
-          size: file.size,
-          url: await uploadPdf(file.buffer, file.originalname),
-        };
-      })
+      pdfFiles.map(async (file) => ({
+        name: sanitizePdfName(file.originalname),
+        size: file.size,
+        url: await uploadPdf(file.buffer, file.originalname),
+      }))
     );
 
     const { Transaction } = require('../models');
@@ -358,34 +357,12 @@ router.put('/:id', authenticate, optionalUpload([{ name: 'image', maxCount: 1 },
     const pdfFiles = req.files?.pdf_files || [];
     const pdfFileIndex = Number(req.body.pdf_file_index);
 
-    // Helper function to decode and sanitize filename
-    const sanitizeFilename = (originalName) => {
-      try {
-        // Try to decode if it's URI encoded
-        let decoded = originalName;
-        if (/%[0-9A-Fa-f]{2}/.test(originalName)) {
-          try {
-            decoded = decodeURIComponent(originalName);
-          } catch (e) {
-            // If decoding fails, use original
-          }
-        }
-        // Remove .pdf extension for storage (we add it back if needed)
-        return decoded.replace(/\.pdf$/i, '');
-      } catch (e) {
-        return originalName.replace(/\.pdf$/i, '');
-      }
-    };
-
     const uploadedPdfs = await Promise.all(
-      pdfFiles.map(async (file) => {
-        const cleanName = sanitizeFilename(file.originalname);
-        return {
-          name: cleanName,
-          size: file.size,
-          url: await uploadPdf(file.buffer, file.originalname),
-        };
-      })
+      pdfFiles.map(async (file) => ({
+        name: sanitizePdfName(file.originalname),
+        size: file.size,
+        url: await uploadPdf(file.buffer, file.originalname),
+      }))
     );
     const existingPdfs = Array.isArray(product.pdf_files) ? product.pdf_files : [];
     const selectedPdf = Number.isInteger(pdfFileIndex) && pdfFileIndex >= 0 ? existingPdfs[pdfFileIndex] : existingPdfs[0];

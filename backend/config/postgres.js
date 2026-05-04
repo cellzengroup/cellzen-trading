@@ -10,10 +10,17 @@ if (!databaseUrl) {
   console.warn('⚠️ DATABASE_URL not set — PostgreSQL features (Inventory) will be disabled.');
 }
 
+// Sequelize SQL logging is OFF by default — printing every query to the console
+// is synchronous on Windows TTYs and noticeably slows request latency. Set
+// SEQUELIZE_LOG=true to opt back in when debugging a specific query.
+const sqlLogging = String(process.env.SEQUELIZE_LOG || '').toLowerCase() === 'true'
+  ? console.log
+  : false;
+
 const sequelize = databaseUrl
   ? new Sequelize(databaseUrl, {
       dialect: 'postgres',
-      logging: process.env.NODE_ENV === 'development' ? console.log : false,
+      logging: sqlLogging,
       dialectOptions: {
         ssl: {
           require: true,
