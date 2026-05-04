@@ -68,7 +68,10 @@ router.get('/', authenticate, async (req, res) => {
     const cacheKey = `products:${search || ''}:${sharedWith || ''}:${category || ''}:${excludeCategory || ''}:${lightMode ? 'L' : 'F'}`;
     const cached = cache.get(cacheKey);
     if (cached) {
-      res.set('Cache-Control', 'private, max-age=30');
+      // no-store: don't let the browser cache this. Server-side cache (60s)
+      // still absorbs repeat hits, but admin un-share/share toggles need to
+      // be visible to the customer immediately on the next page load.
+      res.set('Cache-Control', 'no-store');
       return res.json({ success: true, data: cached });
     }
 
@@ -104,7 +107,7 @@ router.get('/', authenticate, async (req, res) => {
     }
 
     cache.set(cacheKey, filteredProducts, 60000);
-    res.set('Cache-Control', 'private, max-age=30');
+    res.set('Cache-Control', 'no-store');
     res.json({ success: true, data: filteredProducts });
   } catch (error) {
     console.error('Get products error:', error);

@@ -33,6 +33,7 @@ export default function DistributorCatalogList() {
           headers: {
             Authorization: `Bearer ${localStorage.getItem("customer_token") || ""}`,
           },
+          cache: "no-store",
         });
         const result = await response.json();
         if (!response.ok || !result.success) {
