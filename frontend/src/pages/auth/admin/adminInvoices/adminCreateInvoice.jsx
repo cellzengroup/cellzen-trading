@@ -1122,12 +1122,15 @@ export default function AdminCreateInvoice() {
         localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
       }
 
-      // Mirror to backend so other devices see this draft
-      try { await syncInvoiceToBackend(savedDraft); }
-      catch (err) { console.warn("Backend draft sync failed:", err?.message); }
-
       setShowCancelModal(false);
       setSuccessModal({ show: true, message: "Invoice Draft saved", type: "draft" });
+      setLoading(false);
+
+      // Background backend mirror — local save is durable, don't block UI on it.
+      syncInvoiceToBackend(savedDraft).catch(err => {
+        console.warn("Backend draft sync failed:", err?.message);
+      });
+      return;
     } catch (error) {
       console.error("Error saving draft:", error);
       setSuccessModal({ show: true, message: "Failed to save draft", type: "error" });
@@ -1202,8 +1205,12 @@ export default function AdminCreateInvoice() {
         localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
         setSuccessModal({ show: true, message: "Invoice Draft saved", type: "draft" });
       }
-      try { await syncInvoiceToBackend(savedDraft); }
-      catch (err) { console.warn("Backend draft sync failed:", err?.message); }
+      setLoading(false);
+      // Background backend mirror — UI doesn't wait on the remote DB.
+      syncInvoiceToBackend(savedDraft).catch(err => {
+        console.warn("Backend draft sync failed:", err?.message);
+      });
+      return;
     } catch (error) {
       console.error("Error saving draft:", error);
       setSuccessModal({ show: true, message: "Failed to save draft. Please try again.", type: "error" });
@@ -1250,6 +1257,8 @@ export default function AdminCreateInvoice() {
       const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
 
       let savedInvoice;
+      let modalMessage;
+      let modalType;
       if (isEditMode && editInvoiceId) {
         // Update existing invoice
         const existing = drafts.find(d => (d.invoiceNumber || d.id) === editInvoiceId);
@@ -1263,11 +1272,10 @@ export default function AdminCreateInvoice() {
           (draft.invoiceNumber || draft.id) === editInvoiceId ? savedInvoice : draft
         );
         localStorage.setItem("invoice_drafts", JSON.stringify(updatedDrafts));
-        await syncSharedInvoice(savedInvoice);
-        setSuccessModal({ show: true, message: "Invoice Updated", type: "updated" });
+        modalMessage = "Invoice Updated";
+        modalType = "updated";
       } else {
         // Create new invoice
-        console.log("Creating invoice:", finalFormData);
         savedInvoice = {
           id: `draft-${Date.now()}`,
           ...finalFormData,
@@ -1276,13 +1284,28 @@ export default function AdminCreateInvoice() {
         };
         drafts.push(savedInvoice);
         localStorage.setItem("invoice_drafts", JSON.stringify(drafts));
-        await syncSharedInvoice(savedInvoice);
-        setSuccessModal({ show: true, message: "Invoice Generated", type: "generated" });
+        modalMessage = "Invoice Generated";
+        modalType = "generated";
       }
 
-      // Mirror full invoice payload to backend so other devices see it
-      try { await syncInvoiceToBackend(savedInvoice); }
-      catch (err) { console.warn("Backend invoice sync failed:", err?.message); }
+      // Pop the success modal NOW — local save is durable and the user
+      // shouldn't wait on the remote DB for the UI to respond.
+      setSuccessModal({ show: true, message: modalMessage, type: modalType });
+      setLoading(false);
+
+      // Run both backend syncs in parallel in the background. Each is
+      // independent (different rows touched the same way is fine — last
+      // write wins and they carry the same payload). If either fails the
+      // local save is still intact and a future save will reconcile.
+      Promise.all([
+        syncSharedInvoice(savedInvoice).catch(err => {
+          console.warn("Shared-invoice sync failed:", err?.message);
+        }),
+        syncInvoiceToBackend(savedInvoice).catch(err => {
+          console.warn("Backend invoice sync failed:", err?.message);
+        }),
+      ]);
+      return;
     } catch (error) {
       console.error("Error creating/updating invoice:", error);
       setSuccessModal({ show: true, message: "Failed to save invoice", type: "error" });

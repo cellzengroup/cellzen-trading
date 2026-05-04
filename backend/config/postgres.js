@@ -17,6 +17,15 @@ const sqlLogging = String(process.env.SEQUELIZE_LOG || '').toLowerCase() === 'tr
   ? console.log
   : false;
 
+// Supabase (and most managed Postgres providers, plus any NAT/firewall in
+// between) silently drop idle TCP connections. If Sequelize keeps those in
+// the pool, the next request gets handed a dead socket and fails with
+// "Connection terminated unexpectedly". We mitigate three ways:
+//   1. min: 0 — don't keep warm connections sitting around to go stale.
+//   2. idle/evict short — recycle quickly so a dropped conn doesn't linger.
+//   3. TCP keepAlive on the pg socket — fights NAT idle timeouts.
+// Plus retry on connection errors so a single dead socket doesn't fail the
+// request; Sequelize will reconnect on the retry.
 const sequelize = databaseUrl
   ? new Sequelize(databaseUrl, {
       dialect: 'postgres',
@@ -26,15 +35,34 @@ const sequelize = databaseUrl
           require: true,
           rejectUnauthorized: false,
         },
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
+        // pg client-level statement/connection timeouts so a stuck conn
+        // surfaces as an error we can retry instead of hanging.
+        statement_timeout: 30000,
+        idle_in_transaction_session_timeout: 30000,
       },
       pool: {
         max: 10,
-        min: 2,           // keep warm connections to avoid cold-connect latency to Supabase
+        min: 0,
         acquire: 30000,
-        idle: 10000,
-        evict: 30000,
+        idle: 5000,
+        evict: 1000,
       },
-      retry: { max: 3 },
+      retry: {
+        max: 3,
+        match: [
+          /SequelizeConnectionError/,
+          /SequelizeConnectionRefusedError/,
+          /SequelizeHostNotFoundError/,
+          /SequelizeHostNotReachableError/,
+          /SequelizeInvalidConnectionError/,
+          /SequelizeConnectionTimedOutError/,
+          /Connection terminated unexpectedly/,
+          /ECONNRESET/,
+          /EPIPE/,
+        ],
+      },
     })
   : null;
 

@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { generateInvoiceExcel } from "../../../utils/generateCellzenInvoice.js";
 import { generateInvoicePDF } from "../../../utils/generateCellzenInvoicePDF.js";
+import { authFetch } from "../../../utils/apiBase.js";
 
-const API_BASE = import.meta.env.VITE_API_URL
-  || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
+// localStorage key for the per-user invoice cache. Keyed by token suffix so
+// multiple accounts on the same browser don't see each other's invoices.
+const INVOICE_CACHE_KEY = "shared_invoices_cache_v1";
+const REQUEST_TIMEOUT_MS = 15000;
 
 const currencySymbols = {
   NPR: "Rs.",
@@ -41,39 +44,80 @@ const toDownloadInvoice = (invoice) => {
   };
 };
 
+// Read the cached invoice list synchronously so the first paint shows data
+// immediately. Returns [] if no cache (or parse fails) — never throws.
+const readCachedInvoices = () => {
+  try {
+    const raw = localStorage.getItem(INVOICE_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
 export default function SharedInvoicesList({ subtitle = "View and manage invoices", allowExcelDownload = false }) {
-  const [invoices, setInvoices] = useState([]);
-  const [loading, setLoading] = useState(true);
+  // Seed from localStorage cache so the page renders instantly with whatever
+  // we last fetched. The network refresh below replaces it once it lands.
+  const [invoices, setInvoices] = useState(readCachedInvoices);
+  // Loading is only "true" when we have nothing to show — if we have cached
+  // data, render it and refresh silently in the background.
+  const [loading, setLoading] = useState(() => readCachedInvoices().length === 0);
   const [error, setError] = useState("");
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [downloadModal, setDownloadModal] = useState({ show: false, invoice: null });
   const [viewMode, setViewMode] = useState("card");
 
   useEffect(() => {
-    const loadInvoices = async () => {
-      setLoading(true);
-      setError("");
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+    const loadInvoices = async () => {
       try {
-        const token = localStorage.getItem("customer_token") || "";
-        const response = await fetch(`${API_BASE}/inventory/invoices/shared`, {
-          headers: { Authorization: `Bearer ${token}` },
+        // authFetch routes through resilientFetch — tries the same-origin /api
+        // first and falls back to known production hosts on network failure,
+        // so a hostname/CORS mismatch on a customer's tab doesn't show as
+        // "Failed to fetch".
+        const response = await authFetch("/inventory/invoices/shared", {
+          tokenKind: "customer",
+          signal: controller.signal,
         });
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
           throw new Error(data.message || "Unable to load invoices");
         }
 
-        setInvoices(data.data || []);
+        const next = data.data || [];
+        setInvoices(next);
+        try { localStorage.setItem(INVOICE_CACHE_KEY, JSON.stringify(next)); } catch { /* quota */ }
+        setError("");
       } catch (invoiceError) {
-        setError(invoiceError.message);
+        if (invoiceError.name === "AbortError") {
+          // Hit the timeout. Don't blow away cached data on screen — just
+          // surface a soft message so the user knows it's stale.
+          if (readCachedInvoices().length === 0) {
+            setError("Network is slow. Please try again.");
+          }
+        } else {
+          // Only show an error banner if we have nothing cached to fall back to.
+          if (readCachedInvoices().length === 0) {
+            setError(invoiceError.message || "Failed to load invoices");
+          }
+        }
       } finally {
+        clearTimeout(timeoutId);
         setLoading(false);
       }
     };
 
     loadInvoices();
+
+    return () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
   }, []);
 
   const handleDownloadPDF = async (invoice) => {

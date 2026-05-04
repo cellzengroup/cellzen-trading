@@ -237,7 +237,7 @@ export default function PartnerCatalogList() {
       try {
         const response = await fetch(`${API_BASE}/inventory/products?sharedWith=partners`, {
           headers: {
-            Authorization: `Bearer ${localStorage.getItem("inv_token") || ""}`,
+            Authorization: `Bearer ${localStorage.getItem("customer_token") || ""}`,
           },
         });
         const result = await response.json();

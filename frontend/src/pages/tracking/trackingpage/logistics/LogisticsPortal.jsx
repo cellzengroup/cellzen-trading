@@ -126,6 +126,7 @@ export default function LogisticsPortal({ activePage, children }) {
 
   const handleLogout = () => {
     localStorage.removeItem("customer_token");
+    localStorage.removeItem("shared_invoices_cache_v1");
     sessionStorage.removeItem("customer_user");
     navigate("/login", { replace: true });
   };
