@@ -35,6 +35,7 @@ import AdminCreateInvoice from './pages/auth/admin/adminInvoices/adminCreateInvo
 import CostumersDashboard from './pages/tracking/trackingpage/costumers/costumersdashboard';
 import CostumersGoodsTracking from './pages/tracking/trackingpage/costumers/CostumersGoodsTracking';
 import CostumersInvoices from './pages/tracking/trackingpage/costumers/costumerInvoice/costumerInvoices.jsx';
+import CostumerNotices from './pages/tracking/trackingpage/costumers/costumerNotices';
 import CostumerCatalog from './pages/tracking/trackingpage/costumers/CustomerCatalog/CostumerCatalog';
 import CostumerCatalogList from './pages/tracking/trackingpage/costumers/CustomerCatalog/CostumerCatalogList';
 import DistributorCatalog from './pages/tracking/trackingpage/distributor/DistributorCatalog/DistributorCatalog';
@@ -42,15 +43,19 @@ import DistributorCatalogList from './pages/tracking/trackingpage/distributor/Di
 import PartnerCatalog from './pages/tracking/trackingpage/partners/PartnerCatalog';
 import PartnerCatalogList from './pages/tracking/trackingpage/partners/PartnerCatalogList';
 import SupplierDashboard from './pages/tracking/trackingpage/suppliers/supplierdashboard';
+import SupplierNotices from './pages/tracking/trackingpage/suppliers/supplierNotices';
 import LogisticsDashboard from './pages/tracking/trackingpage/logistics/logisticsdashboard';
+import LogisticsNotices from './pages/tracking/trackingpage/logistics/logisticsNotices';
 import DistributorDashboard from './pages/tracking/trackingpage/distributor/distributordashboard';
 import DistributorManagement from './pages/tracking/trackingpage/distributor/DistributorManagement';
 import DistributorGoodsTracking from './pages/tracking/trackingpage/distributor/DistributorGoodsTracking';
 import DistributorInvoices from './pages/tracking/trackingpage/distributor/distributorInvoice/distributorInvoices.jsx';
+import DistributorNotices from './pages/tracking/trackingpage/distributor/distributorNotices';
 import PartnersDashboard from './pages/tracking/trackingpage/partners/partnersdashboard';
 import PartnersManagement from './pages/tracking/trackingpage/partners/PartnersManagement';
 import PartnersGoodsTracking from './pages/tracking/trackingpage/partners/PartnersGoodsTracking';
 import PartnersInvoices from './pages/tracking/trackingpage/partners/partnerInvoice/partnerInvoices.jsx';
+import PartnerNotices from './pages/tracking/trackingpage/partners/partnerNotices';
 import Portfolio from './pages/portfolio';
 import Notices from './pages/notices';
 import FAQ from './components/FAQ';
@@ -169,8 +174,13 @@ function App() {
         <Route path="/tracking/trackingpage/costumers/catalogs" element={<CostumerCatalog />} />
         <Route path="/tracking/trackingpage/costumers/catalog-list" element={<CostumerCatalogList />} />
         <Route path="/tracking/trackingpage/costumers/invoices" element={<CostumersInvoices />} />
+        <Route path="/tracking/trackingpage/costumers/notices" element={<CostumerNotices />} />
         <Route path="/tracking/trackingpage/supplierdashboard" element={<SupplierDashboard />} />
+        <Route path="/tracking/trackingpage/suppliers/dashboard" element={<SupplierDashboard />} />
+        <Route path="/tracking/trackingpage/suppliers/notices" element={<SupplierNotices />} />
         <Route path="/tracking/trackingpage/logisticsdashboard" element={<LogisticsDashboard />} />
+        <Route path="/tracking/trackingpage/logistics/dashboard" element={<LogisticsDashboard />} />
+        <Route path="/tracking/trackingpage/logistics/notices" element={<LogisticsNotices />} />
         <Route path="/tracking/trackingpage/distributordashboard" element={<DistributorDashboard />} />
         <Route path="/tracking/trackingpage/distributor/dashboard" element={<DistributorDashboard />} />
         <Route path="/tracking/trackingpage/distributor/management" element={<DistributorManagement />} />
@@ -178,6 +188,7 @@ function App() {
         <Route path="/tracking/trackingpage/distributor/catalogs" element={<DistributorCatalog />} />
         <Route path="/tracking/trackingpage/distributor/catalog-list" element={<DistributorCatalogList />} />
         <Route path="/tracking/trackingpage/distributor/invoices" element={<DistributorInvoices />} />
+        <Route path="/tracking/trackingpage/distributor/notices" element={<DistributorNotices />} />
         <Route path="/tracking/trackingpage/partnersdashboard" element={<PartnersDashboard />} />
         <Route path="/tracking/trackingpage/partners/dashboard" element={<PartnersDashboard />} />
         <Route path="/tracking/trackingpage/partners/management" element={<PartnersManagement />} />
@@ -185,6 +196,7 @@ function App() {
         <Route path="/tracking/trackingpage/partners/catalogs" element={<PartnerCatalog />} />
         <Route path="/tracking/trackingpage/partners/catalog-list" element={<PartnerCatalogList />} />
         <Route path="/tracking/trackingpage/partners/invoices" element={<PartnersInvoices />} />
+        <Route path="/tracking/trackingpage/partners/notices" element={<PartnerNotices />} />
         <Route path="/trackingpage/costumersdashboard" element={<Navigate to="/tracking/trackingpage/costumers/dashboard" replace />} />
         <Route path="/trackingpage/costumerdashboard" element={<Navigate to="/tracking/trackingpage/costumers/dashboard" replace />} />
         <Route path="/trackingpage/supplierdashboard" element={<Navigate to="/tracking/trackingpage/supplierdashboard" replace />} />

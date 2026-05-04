@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import NotificationBell from "../components/NotificationBell";
 
 // User Profile Dropdown Component
 function UserProfileDropdown({ adminUser, onLogout }) {
@@ -77,6 +78,7 @@ const NAV_LINKS = [
   { title: "Catalogs", path: "/tracking/trackingpage/costumers/catalogs", icon: "catalogs" },
   { title: "Products", path: "/tracking/trackingpage/costumers/products", icon: "products" },
   { title: "Invoices", path: "/tracking/trackingpage/costumers/invoices", icon: "invoices" },
+  { title: "Notices", path: "/tracking/trackingpage/costumers/notices", icon: "notices" },
 ];
 
 function NavIcon({ icon }) {
@@ -137,6 +139,15 @@ function NavIcon({ icon }) {
         <path d="M8 8h8" />
         <path d="M8 12h8" />
         <path d="M8 16h5" />
+      </svg>
+    );
+  }
+
+  if (icon === "notices") {
+    return (
+      <svg {...iconProps}>
+        <path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+        <path d="M10 21h4" />
       </svg>
     );
   }
@@ -253,12 +264,7 @@ export default function CostumersPortal({ activePage, children }) {
                   <path d="M20 20l-3-3" />
                 </svg>
               </button>
-              <button className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F4F2EF] text-[#2D2D2D]/60 transition-colors hover:bg-[#412460] hover:text-white" aria-label="Notifications">
-                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-                  <path d="M18 8a6 6 0 10-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-                  <path d="M10 21h4" />
-                </svg>
-              </button>
+              <NotificationBell noticesPath="/tracking/trackingpage/costumers/notices" />
               <UserProfileDropdown adminUser={adminUser} onLogout={handleLogout} />
               <button
                 type="button"

@@ -5,6 +5,7 @@ const Location = require('./Location');
 const Inventory = require('./Inventory');
 const Transaction = require('./Transaction');
 const Invoice = require('./Invoice');
+const UserNotice = require('./UserNotice');
 
 if (sequelize) {
   // Product <-> Inventory
@@ -32,6 +33,10 @@ if (sequelize) {
   // User <-> Invoice sharing
   User.hasMany(Invoice, { foreignKey: 'shared_user_id', as: 'sharedInvoices' });
   Invoice.belongsTo(User, { foreignKey: 'shared_user_id', as: 'sharedUser' });
+
+  // User <-> UserNotice
+  User.hasMany(UserNotice, { foreignKey: 'userId', as: 'notices', onDelete: 'CASCADE' });
+  UserNotice.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 }
 
 module.exports = {
@@ -42,4 +47,5 @@ module.exports = {
   Inventory,
   Transaction,
   Invoice,
+  UserNotice,
 };

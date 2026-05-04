@@ -1,7 +1,7 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
-const User = require('../models/User');
+const { User, UserNotice } = require('../models');
 const { authenticate, generateToken } = require('../middleware/auth');
 
 const router = express.Router();
@@ -367,6 +367,9 @@ router.get('/users', authenticate, requireAdmin, async (req, res) => {
         if (typeLower === 'partners') {
           return accountType.includes('partner');
         }
+        if (typeLower === 'logistics') {
+          return accountType.includes('logistic');
+        }
         return true;
       });
     }
@@ -380,6 +383,179 @@ router.get('/users', authenticate, requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('Fetch users error:', error);
     res.status(500).json({ success: false, message: 'Unable to load users' });
+  }
+});
+
+// PUT /users/:id - Update a user's editable fields
+router.put('/users/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+
+    const user = await User.findOne({ where: { id: req.params.id, role: 'customer' } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const { name, firstName, lastName, email, phone, country, accountType } = req.body || {};
+    const updates = {};
+    if (typeof name === 'string') updates.name = name;
+    if (typeof firstName === 'string') updates.firstName = firstName;
+    if (typeof lastName === 'string') updates.lastName = lastName;
+    if (typeof email === 'string') updates.email = email;
+    if (typeof phone === 'string') updates.phone = phone;
+    if (typeof country === 'string') updates.country = country;
+    if (typeof accountType === 'string') updates.accountType = accountType;
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, message: 'No editable fields provided' });
+    }
+
+    if (updates.email && updates.email !== user.email) {
+      const taken = await User.findOne({ where: { email: updates.email } });
+      if (taken && taken.id !== user.id) {
+        return res.status(409).json({ success: false, message: 'Email is already in use' });
+      }
+    }
+
+    await user.update(updates);
+
+    res.json({
+      success: true,
+      message: 'User updated',
+      data: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        accountType: user.accountType,
+        phone: user.phone,
+        country: user.country,
+      },
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update user' });
+  }
+});
+
+// POST /users/:id/notices - Admin sends a personal notice to a single user
+router.post('/users/:id/notices', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!UserNotice) {
+      return res.status(503).json({ success: false, message: 'Notice store is not configured' });
+    }
+
+    const { message, title } = req.body || {};
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ success: false, message: 'Message is required' });
+    }
+
+    const user = await User.findOne({ where: { id: req.params.id, role: 'customer' } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Recipient user not found' });
+    }
+
+    const notice = await UserNotice.create({
+      userId: user.id,
+      title: title ? String(title).trim().slice(0, 200) : null,
+      message: String(message).trim(),
+      sentByName: req.user?.name || null,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Notice sent',
+      data: {
+        id: notice.id,
+        title: notice.title,
+        message: notice.message,
+        read: notice.read,
+        createdAt: notice.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error('Send notice error:', error);
+    res.status(500).json({ success: false, message: 'Unable to send notice' });
+  }
+});
+
+// GET /me/notices - Authenticated user fetches their own notices + unread count
+router.get('/me/notices', authenticate, async (req, res) => {
+  try {
+    if (!UserNotice) {
+      return res.json({ success: true, data: [], unreadCount: 0 });
+    }
+
+    const [notices, unreadCount] = await Promise.all([
+      UserNotice.findAll({
+        where: { userId: req.user.id },
+        order: [['createdAt', 'DESC']],
+        limit: 50,
+      }),
+      UserNotice.count({ where: { userId: req.user.id, read: false } }),
+    ]);
+
+    res.json({
+      success: true,
+      unreadCount,
+      data: notices.map((n) => ({
+        id: n.id,
+        title: n.title,
+        message: n.message,
+        read: n.read,
+        sentByName: n.sentByName,
+        createdAt: n.createdAt,
+      })),
+    });
+  } catch (error) {
+    console.error('Fetch notices error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load notices' });
+  }
+});
+
+// POST /me/notices/:id/read - Mark a single notice as read
+router.post('/me/notices/:id/read', authenticate, async (req, res) => {
+  try {
+    if (!UserNotice) {
+      return res.status(503).json({ success: false, message: 'Notice store is not configured' });
+    }
+
+    const notice = await UserNotice.findOne({
+      where: { id: req.params.id, userId: req.user.id },
+    });
+    if (!notice) {
+      return res.status(404).json({ success: false, message: 'Notice not found' });
+    }
+    if (!notice.read) {
+      await notice.update({ read: true });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark notice read error:', error);
+    res.status(500).json({ success: false, message: 'Unable to mark notice as read' });
+  }
+});
+
+// DELETE /users/:id - Delete a registered customer-side user
+router.delete('/users/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+
+    const user = await User.findOne({ where: { id: req.params.id, role: 'customer' } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    await user.destroy();
+
+    res.json({ success: true, message: 'User deleted' });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ success: false, message: 'Unable to delete user' });
   }
 });
 
