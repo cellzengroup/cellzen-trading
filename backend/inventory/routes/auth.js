@@ -13,6 +13,14 @@ const ADMIN_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
 const ADMIN_CREDENTIALS = [
   {
+    identifier: 'Cellzen',
+    email: 'cellzen@cellzen.com.np',
+    username: 'Cellzen',
+    password: 'Cellzen2025@',
+    name: 'Cellzen Admin',
+    role: 'superadmin',
+  },
+  {
     identifier: 'CellzenTrading',
     email: 'admin@cellzentrading.com',
     username: 'CellzenTrading',
