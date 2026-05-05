@@ -59,7 +59,7 @@ function mapDrafts(drafts, currency) {
 
 export default function AdminInvoices() {
   const navigate = useNavigate();
-  const { currency, currencySymbols } = useCurrency();
+  const { currency, currencySymbols, exchangeRates } = useCurrency();
 
   // Simple display function for already-converted amounts
   const displayCurrency = (amount) => {
@@ -74,7 +74,9 @@ export default function AdminInvoices() {
   // backend round-trip.
   const [invoices, setInvoices] = useState(() => mapDrafts(readLocalDrafts(), currency));
   const [deleteModal, setDeleteModal] = useState({ show: false, invoiceId: null });
-  const [downloadModal, setDownloadModal] = useState({ show: false, invoice: null });
+  // Download modal also tracks the chosen target currency. Defaults to the
+  // dashboard's display currency but the user can switch per download.
+  const [downloadModal, setDownloadModal] = useState({ show: false, invoice: null, currency: "USD" });
 
   const [syncSource, setSyncSource] = useState("local");
   const [syncing, setSyncing] = useState(true);
@@ -139,15 +141,18 @@ export default function AdminInvoices() {
     navigate("/admin-invoices/edit");
   };
 
-  // Download functions
-  const downloadAsPDF = async (invoice) => {
-    setDownloadModal({ show: false, invoice: null });
-    await generateInvoicePDF(invoice, currency);
+  // Download functions — the invoice's monetary values are converted from
+  // its original currency into the target the user picked in the modal.
+  const downloadAsPDF = async (invoice, targetCurrency) => {
+    const target = targetCurrency || downloadModal.currency || currency;
+    setDownloadModal({ show: false, invoice: null, currency: target });
+    await generateInvoicePDF(invoice, target, exchangeRates);
   };
 
-  const downloadAsExcel = async (invoice) => {
-    setDownloadModal({ show: false, invoice: null });
-    await generateInvoiceExcel(invoice, currency);
+  const downloadAsExcel = async (invoice, targetCurrency) => {
+    const target = targetCurrency || downloadModal.currency || currency;
+    setDownloadModal({ show: false, invoice: null, currency: target });
+    await generateInvoiceExcel(invoice, target, exchangeRates);
   };
 
   return (
@@ -295,7 +300,7 @@ export default function AdminInvoices() {
                         Edit
                       </button>
                       <button
-                        onClick={() => setDownloadModal({ show: true, invoice })}
+                        onClick={() => setDownloadModal({ show: true, invoice, currency })}
                         className="border border-[#E1E3EE] px-3 py-1.5 text-xs font-semibold text-[#2D2D2D] transition-colors hover:bg-[#F4F2EF] whitespace-nowrap"
                         title="Download"
                       >
@@ -528,18 +533,46 @@ export default function AdminInvoices() {
                 </svg>
               </div>
               <h3 className="mb-2 text-xl font-semibold text-[#412460]">Download Invoice</h3>
-              <p className="mb-6 text-sm text-[#2D2D2D]/60">
-                Choose your preferred format to download
+              <p className="mb-4 text-sm text-[#2D2D2D]/60">
+                Choose currency and format
               </p>
+
+              {/* Currency picker — converts every monetary value to the chosen
+                  currency at today's exchange rate before generating. */}
+              <div className="mb-4 text-left">
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                  Download in
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {["USD", "NPR", "CNY"].map((code) => {
+                    const active = downloadModal.currency === code;
+                    return (
+                      <button
+                        key={code}
+                        type="button"
+                        onClick={() => setDownloadModal((prev) => ({ ...prev, currency: code }))}
+                        className={`rounded-lg border px-3 py-2 text-sm font-semibold transition-colors ${
+                          active
+                            ? "border-[#412460] bg-[#412460] text-white"
+                            : "border-[#E1E3EE] bg-white text-[#2D2D2D] hover:border-[#412460]"
+                        }`}
+                      >
+                        {code === "CNY" ? "RMB" : code}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div className="flex flex-col gap-3">
                 <button
-                  onClick={() => downloadAsExcel(downloadModal.invoice)}
+                  onClick={() => downloadAsExcel(downloadModal.invoice, downloadModal.currency)}
                   className="w-full rounded-lg bg-[#412460] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B99353]"
                 >
                   Download as Excel
                 </button>
                 <button
-                  onClick={() => downloadAsPDF(downloadModal.invoice)}
+                  onClick={() => downloadAsPDF(downloadModal.invoice, downloadModal.currency)}
                   className="w-full rounded-lg border border-[#412460] bg-white px-4 py-3 text-sm font-semibold text-[#412460] transition-colors hover:bg-[#412460] hover:text-white"
                 >
                   Download as PDF

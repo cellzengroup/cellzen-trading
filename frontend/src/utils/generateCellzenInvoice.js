@@ -1,5 +1,6 @@
 import ExcelJS from 'exceljs';
 import { buildInvoiceFilename } from './invoiceFilename';
+import { convertInvoiceCurrency } from './convertInvoiceCurrency';
 
 // ─── Brand colours ────────────────────────────────────────────────────────────
 const C = {
@@ -52,7 +53,11 @@ const numberToWords = (n) => {
 const symOf = (code) => ({ NPR: 'Rs.', USD: 'USD', CNY: 'RMB' }[code] || code);
 
 // ─── Main export ──────────────────────────────────────────────────────────────
-export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
+// `currency` is the target download currency. When `rates` is supplied, all
+// monetary values are converted from the invoice's original currency into
+// `currency` before the sheet is generated.
+export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates = null) => {
+  const invoice = rates ? convertInvoiceCurrency(invoiceInput, currency, rates) : invoiceInput;
   const raw   = invoice.rawData || {};
   const items = raw.items       || [];
   const sym   = symOf(currency);

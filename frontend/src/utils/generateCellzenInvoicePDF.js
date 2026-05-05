@@ -1,6 +1,7 @@
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
 import { buildInvoiceFilename } from './invoiceFilename';
+import { convertInvoiceCurrency } from './convertInvoiceCurrency';
 
 // ─── Brand colours ────────────────────────────────────────────────────────────
 const C = {
@@ -58,7 +59,12 @@ const numberToWords = (n) => {
 };
 
 // ─── Main export ──────────────────────────────────────────────────────────────
-export const generateInvoicePDF = async (invoice, currency = 'USD') => {
+// `currency` is the target download currency (USD/CNY/NPR). When `rates` is
+// supplied, every monetary value on the invoice is converted from its
+// original currency into `currency` before rendering — so an invoice entered
+// in CNY can be downloaded in NPR with all numbers correctly scaled.
+export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates = null) => {
+  const invoice = rates ? convertInvoiceCurrency(invoiceInput, currency, rates) : invoiceInput;
   const raw   = invoice.rawData || {};
   const items = raw.items       || [];
   const sym   = symOf(currency);
