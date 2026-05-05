@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import { apiGetJson, authFetch } from '../utils/apiBase';
 
 const CurrencyContext = createContext();
 
@@ -14,21 +15,86 @@ const CURRENCY_SYMBOLS = {
   NPR: '₨',
 };
 
+const RATES_STORAGE_KEY = 'cellzen_exchange_rates';
+
+function readCachedRates() {
+  if (typeof window === 'undefined') return DEFAULT_RATES;
+  try {
+    const saved = window.localStorage.getItem(RATES_STORAGE_KEY);
+    if (!saved) return DEFAULT_RATES;
+    const parsed = JSON.parse(saved);
+    return { ...DEFAULT_RATES, ...parsed };
+  } catch {
+    return DEFAULT_RATES;
+  }
+}
+
+function writeCachedRates(rates) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(RATES_STORAGE_KEY, JSON.stringify(rates));
+  } catch {
+    // localStorage may be disabled (private mode); fall through silently.
+  }
+}
+
 export function CurrencyProvider({ children }) {
   const [currency, setCurrency] = useState('CNY');
-  const [exchangeRates, setExchangeRates] = useState(() => {
-    // Load from localStorage if available
-    const saved = localStorage.getItem('cellzen_exchange_rates');
-    return saved ? JSON.parse(saved) : DEFAULT_RATES;
-  });
+  // Seed from localStorage so existing UI doesn't flash defaults on first render,
+  // then reconcile with the database below.
+  const [exchangeRates, setExchangeRates] = useState(readCachedRates);
 
-  // Save to localStorage whenever rates change
+  // Mirror to localStorage so subsequent loads are instant even before the
+  // network call resolves.
   useEffect(() => {
-    localStorage.setItem('cellzen_exchange_rates', JSON.stringify(exchangeRates));
+    writeCachedRates(exchangeRates);
   }, [exchangeRates]);
 
-  const updateExchangeRates = useCallback((newRates) => {
-    setExchangeRates(prev => ({ ...prev, ...newRates }));
+  // Pull authoritative rates from the database on mount. The database is the
+  // source of truth across browsers/devices; localStorage is only a cache.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { res, data } = await apiGetJson('/inventory/settings/exchange-rates');
+        if (cancelled) return;
+        if (res.ok && data && data.success && data.data) {
+          setExchangeRates((prev) => ({ ...prev, ...data.data }));
+        }
+      } catch {
+        // Network error — keep cached values, no UI disruption.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Update both context and database. Optimistic local update so the UI
+  // responds immediately; failures roll back to the previous values.
+  const updateExchangeRates = useCallback(async (newRates) => {
+    let previous;
+    setExchangeRates((prev) => {
+      previous = prev;
+      return { ...prev, ...newRates };
+    });
+
+    try {
+      const merged = { ...previous, ...newRates };
+      const res = await authFetch('/inventory/settings/exchange-rates', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(merged),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data && data.success && data.data) {
+        setExchangeRates((prev) => ({ ...prev, ...data.data }));
+      } else if (!res.ok) {
+        setExchangeRates(previous);
+        throw new Error(data?.message || 'Failed to save exchange rates');
+      }
+    } catch (err) {
+      setExchangeRates(previous);
+      throw err;
+    }
   }, []);
 
   // Convert from any currency to USD (for storage)

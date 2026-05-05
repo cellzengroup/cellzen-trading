@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import 'jspdf-autotable';
+import { buildInvoiceFilename } from './invoiceFilename';
 
 // ─── Brand colours ────────────────────────────────────────────────────────────
 const C = {
@@ -129,17 +130,26 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
   doc.setTextColor(...C.grey);
   doc.text(`Mode of Shipment: ${modeStr}`, margin, y);
 
+  // Buyer: customer name on this line, phone or email on the next line.
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10);
   doc.setTextColor(...C.dark);
   doc.text(invoice.customer || raw.customerName || '', pageWidth - margin, y, { align: 'right' });
   y += 6;
 
-  // ── Export Country ──────────────────────────────────────────────────────────
+  // ── Export Country (left) + Buyer contact (right) ──────────────────────────
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.setTextColor(...C.grey);
   doc.text(`Export Country: ${raw.exportCountry || ''}`, margin, y);
+
+  const buyerContact = (raw.customerPhone || raw.customerEmail || '').toString().trim();
+  if (buyerContact) {
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(...C.grey);
+    doc.text(buyerContact, pageWidth - margin, y, { align: 'right' });
+  }
   y += 10;
 
   // ── Table Header ───────────────────────────────────────────────────────────
@@ -166,7 +176,6 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
   items.forEach((it, idx) => {
     const base  = (it.quantity || 0) * (it.unitPrice || 0);
     const total = base + base * ((it.commission || 0) / 100);
-    const bg = idx % 2 === 1 ? C.light : C.white;
     const rowHeight = it.productImage ? 22 : 12;
 
     // Check if new page needed
@@ -175,8 +184,8 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
       y = margin;
     }
 
-    // Row background
-    doc.setFillColor(...bg);
+    // Plain white row background (no alternating tint).
+    doc.setFillColor(...C.white);
     doc.rect(startX, y, totalWidth, rowHeight, 'F');
 
     doc.setFont('helvetica', idx === 0 ? 'bold' : 'normal');
@@ -298,6 +307,7 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
     '5. The total quoted cost is inclusive of door-to-door delivery, covering transportation from origin to the final delivery destination.',
     '6. An additional 10% of the total goods charges shall be applied for warehouse storage, quality inspection, and goods handling services.',
     '7. Other Charges means can include Delivery cost from factory to warehouse and many more.',
+    '8. Upon arrival at the destination, the consignee must inspect the goods within 1–3 days of receipt. Any claims for damaged, broken, or missing items must be reported within this period; thereafter, the company shall not be held liable for any such damage or loss.',
   ];
 
   doc.setFont('helvetica', 'normal');
@@ -348,7 +358,7 @@ export const generateInvoicePDF = async (invoice, currency = 'USD') => {
   }
 
   // ── Save & download ─────────────────────────────────────────────────────────
-  doc.save(`${invoice.id || 'Invoice'}_Cellzen.pdf`);
+  doc.save(buildInvoiceFilename(invoice, 'pdf'));
 };
 
 export default generateInvoicePDF;

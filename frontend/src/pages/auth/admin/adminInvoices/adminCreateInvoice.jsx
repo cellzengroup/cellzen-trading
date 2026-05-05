@@ -5,6 +5,7 @@ import CountrySelector from "../../../../components/ui/CountrySelector";
 import { countries } from "../../../../components/countries";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { saveInvoice as syncInvoiceToBackend } from "../../../../utils/invoiceSync.js";
+import { authFetch } from "../../../../utils/apiBase.js";
 
 // Invoice Number Input Component
 function InvoiceNumberInput({ value, onChange }) {
@@ -623,6 +624,28 @@ export default function AdminCreateInvoice() {
     }
   }, []);
 
+  // Auto-generate the next invoice number from the backend on mount. Skipped
+  // when editing an existing invoice so we don't overwrite its number.
+  useEffect(() => {
+    // If sessionStorage still has edit data, the edit-mode effect will populate
+    // the number. Bail so we don't race that.
+    if (sessionStorage.getItem("edit_invoice_data")) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authFetch("/inventory/invoices/next-number");
+        const data = await res.json().catch(() => ({}));
+        if (cancelled || !res.ok || !data?.success || !data.data?.invoiceNumber) return;
+        setFormData((prev) => ({ ...prev, invoiceNumber: data.data.invoiceNumber }));
+      } catch {
+        // Network error — keep the default CZN-MM-0001 placeholder so the
+        // user can still type and submit.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // Currency options
   const CURRENCIES = [
     { code: "NPR", symbol: "Rs. ", name: "NPR" },
@@ -630,27 +653,17 @@ export default function AdminCreateInvoice() {
     { code: "CNY", symbol: "¥ ", name: "RMB" },
   ];
 
-  // Generate invoice number with format CZN-MM-0001 (sequential from 0001)
-  const generateInvoiceNumber = () => {
-    const now = new Date();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-
-    // Get last sequence from localStorage for this month
-    const storageKey = `invoice_seq_${month}`;
-    const lastSeq = parseInt(localStorage.getItem(storageKey) || "0");
-    const nextSeq = lastSeq + 1;
-
-    // Save the new sequence
-    localStorage.setItem(storageKey, nextSeq.toString());
-
-    // Format as 4-digit number starting from 0001
-    const sequence = String(nextSeq).padStart(4, "0");
-    return `CZN-${month}-${sequence}`;
+  // Default invoice number for the current month — used as a placeholder until
+  // the backend returns the authoritative next sequence (see effect below).
+  // Format: CZN-MM-NNNN starting at 0001.
+  const defaultInvoiceNumber = () => {
+    const month = String(new Date().getMonth() + 1).padStart(2, "0");
+    return `CZN-${month}-0001`;
   };
 
   // Form State
   const [formData, setFormData] = useState({
-    invoiceNumber: generateInvoiceNumber(),
+    invoiceNumber: defaultInvoiceNumber(),
     invoiceDate: new Date().toISOString().split("T")[0],
     customerName: "",
     customerEmail: "",

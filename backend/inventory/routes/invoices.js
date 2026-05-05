@@ -1,4 +1,5 @@
 const express = require('express');
+const { Op } = require('sequelize');
 const { Invoice } = require('../models');
 const { authenticate } = require('../middleware/auth');
 
@@ -37,11 +38,48 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
       order: [['updatedAt', 'DESC']],
       limit: 1000,
     });
-    res.set('Cache-Control', 'private, max-age=10');
+    // Invoices change frequently (create/edit/delete from the admin panel).
+    // A browser cache here meant freshly-saved invoices took up to 10s to
+    // appear in the dashboard — disable it so every fetch is fresh.
+    res.set('Cache-Control', 'no-store');
     res.json({ success: true, count: invoices.length, data: invoices });
   } catch (error) {
     console.error('List invoices error:', error);
     res.status(500).json({ success: false, message: 'Unable to load invoices' });
+  }
+});
+
+// GET /next-number - Compute the next sequential invoice number for the
+// current month from the database. Format: CZN-MM-NNNN (4-digit, starts at
+// 0001 each month). The DB is the source of truth so all admins / devices
+// agree, regardless of localStorage state.
+router.get('/next-number', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!Invoice) {
+      return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
+    }
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const prefix = `CZN-${month}-`;
+
+    const rows = await Invoice.findAll({
+      where: { invoice_number: { [Op.like]: `${prefix}%` } },
+      attributes: ['invoice_number'],
+    });
+
+    let maxSeq = 0;
+    for (const row of rows) {
+      const tail = String(row.invoice_number || '').slice(prefix.length);
+      const n = parseInt(tail, 10);
+      if (!isNaN(n) && n > maxSeq) maxSeq = n;
+    }
+
+    const next = String(maxSeq + 1).padStart(4, '0');
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: { invoiceNumber: `${prefix}${next}`, sequence: maxSeq + 1, month } });
+  } catch (error) {
+    console.error('Next invoice number error:', error);
+    res.status(500).json({ success: false, message: 'Unable to compute next invoice number' });
   }
 });
 

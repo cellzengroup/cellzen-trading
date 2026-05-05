@@ -1,10 +1,61 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminPageShell from "../AdminPageShell";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { generateInvoiceExcel } from "../../../../utils/generateCellzenInvoice.js";
 import { generateInvoicePDF } from "../../../../utils/generateCellzenInvoicePDF.js";
-import { loadInvoices, deleteInvoice as deleteInvoiceRemote } from "../../../../utils/invoiceSync.js";
+import { loadInvoices, deleteInvoice as deleteInvoiceRemote, readLocalDrafts } from "../../../../utils/invoiceSync.js";
+
+// Convert an amount between currencies using the rates cached in localStorage
+// (the CurrencyContext writes them there). Defined at module scope so the
+// useState initializer can call it without depending on component-only refs.
+function convertCurrency(amount, fromCurrency, toCurrency) {
+  if (!amount || isNaN(amount)) return 0;
+  if (fromCurrency === toCurrency) return parseFloat(amount);
+  const rates = { USD: 1, CNY: 7.24, NPR: 135.50 };
+  try {
+    const saved = localStorage.getItem('cellzen_exchange_rates');
+    if (saved) Object.assign(rates, JSON.parse(saved));
+  } catch { /* ignore */ }
+  const amountInUSD = parseFloat(amount) / rates[fromCurrency];
+  return amountInUSD * rates[toCurrency];
+}
+
+// Convert raw drafts (from localStorage or backend) into the row shape the
+// dashboard table expects. Lifted out so the useState initializer can run it
+// synchronously for instant first paint.
+function mapDrafts(drafts, currency) {
+  return (drafts || []).map((draft) => {
+    const itemsTotal = draft.items?.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0) || 0;
+    const commissionTotal = draft.items?.reduce((sum, item) => {
+      const baseTotal = item.quantity * item.unitPrice;
+      const commissionPercent = item.commission || 0;
+      return sum + (baseTotal * (commissionPercent / 100));
+    }, 0) || 0;
+    const customsDuty = parseFloat(draft.customsDuty || 0) > 0 ? parseFloat(draft.customsDuty) : 0;
+    const documentationCharges = parseFloat(draft.documentationCharges || 0) > 0 ? parseFloat(draft.documentationCharges) : 0;
+    const otherCharges = parseFloat(draft.otherCharges || 0) > 0 ? parseFloat(draft.otherCharges) : 0;
+    const transportCost = parseFloat(draft.transportCost || 0) > 0 ? parseFloat(draft.transportCost) : 0;
+    const grandTotal = itemsTotal + commissionTotal + customsDuty + documentationCharges + otherCharges + transportCost;
+
+    const originalCurrency = draft.currency || draft.originalCurrency || "USD";
+    const convertedAmount = convertCurrency(grandTotal, originalCurrency, currency);
+
+    return {
+      id: draft.invoiceNumber || draft.id,
+      customer: draft.customerName || "Unknown",
+      amount: convertedAmount,
+      status: draft.status || "Pending",
+      date: draft.invoiceDate || new Date().toISOString().split("T")[0],
+      rawData: {
+        ...draft,
+        itemsTotal,
+        grandTotal,
+        originalCurrency,
+      },
+    };
+  });
+}
 
 export default function AdminInvoices() {
   const navigate = useNavigate();
@@ -18,57 +69,26 @@ export default function AdminInvoices() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [selectedInvoice, setSelectedInvoice] = useState(null);
-  const [invoices, setInvoices] = useState([]);
+  // Seed from the localStorage cache synchronously so a freshly-saved invoice
+  // shows up the instant the user lands on this page — no waiting for the
+  // backend round-trip.
+  const [invoices, setInvoices] = useState(() => mapDrafts(readLocalDrafts(), currency));
   const [deleteModal, setDeleteModal] = useState({ show: false, invoiceId: null });
   const [downloadModal, setDownloadModal] = useState({ show: false, invoice: null });
-
 
   const [syncSource, setSyncSource] = useState("local");
   const [syncing, setSyncing] = useState(true);
 
-  // Load invoices — backend first, then fall back to localStorage cache
+  // Background sync with backend. The list is already painted from cache (see
+  // the useState seed above) — this just reconciles with the server so a peer
+  // admin's changes show up too.
   useEffect(() => {
     let alive = true;
     setSyncing(true);
     loadInvoices().then((result) => {
       if (!alive) return;
       setSyncSource(result.source);
-      const drafts = result.invoices || [];
-      const loadedInvoices = drafts.map((draft) => {
-      // Calculate total amount from items in the original currency
-      const itemsTotal = draft.items?.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0) || 0;
-      // Calculate commission from items
-      const commissionTotal = draft.items?.reduce((sum, item) => {
-        const baseTotal = item.quantity * item.unitPrice;
-        const commissionPercent = item.commission || 0;
-        return sum + (baseTotal * (commissionPercent / 100));
-      }, 0) || 0;
-      // Only add customs/transport if checkbox was checked (values exist and > 0)
-      const customsDuty = parseFloat(draft.customsDuty || 0) > 0 ? parseFloat(draft.customsDuty) : 0;
-      const documentationCharges = parseFloat(draft.documentationCharges || 0) > 0 ? parseFloat(draft.documentationCharges) : 0;
-      const otherCharges = parseFloat(draft.otherCharges || 0) > 0 ? parseFloat(draft.otherCharges) : 0;
-      const transportCost = parseFloat(draft.transportCost || 0) > 0 ? parseFloat(draft.transportCost) : 0;
-      const grandTotal = itemsTotal + commissionTotal + customsDuty + documentationCharges + otherCharges + transportCost;
-
-      // Convert to current currency for display
-      const originalCurrency = draft.currency || draft.originalCurrency || "USD";
-      const convertedAmount = convertCurrency(grandTotal, originalCurrency, currency);
-
-      return {
-        id: draft.invoiceNumber || draft.id,
-        customer: draft.customerName || "Unknown",
-        amount: convertedAmount,
-        status: draft.status || "Pending",
-        date: draft.invoiceDate || new Date().toISOString().split("T")[0],
-        rawData: {
-          ...draft,
-          itemsTotal,
-          grandTotal,
-          originalCurrency,
-        }, // Keep full data for viewing
-      };
-      });
-      setInvoices(loadedInvoices);
+      setInvoices(mapDrafts(result.invoices || [], currency));
       setSyncing(false);
     });
     return () => { alive = false; };
@@ -99,23 +119,6 @@ export default function AdminInvoices() {
       case "Overdue": return "bg-[#FFECEC] text-[#E05353]";
       default: return "bg-[#ECEBFF] text-[#6B5BD6]";
     }
-  };
-
-  // Delete invoice
-  // Convert amount from one currency to another
-  const convertCurrency = (amount, fromCurrency, toCurrency) => {
-    if (!amount || isNaN(amount)) return 0;
-    if (fromCurrency === toCurrency) return parseFloat(amount);
-
-    const rates = { USD: 1, CNY: 7.24, NPR: 135.50 };
-    const savedRates = localStorage.getItem('cellzen_exchange_rates');
-    if (savedRates) {
-      Object.assign(rates, JSON.parse(savedRates));
-    }
-
-    // Convert to USD first, then to target currency
-    const amountInUSD = parseFloat(amount) / rates[fromCurrency];
-    return amountInUSD * rates[toCurrency];
   };
 
   const handleDelete = async (invoiceId) => {

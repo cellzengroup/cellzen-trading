@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { buildInvoiceFilename } from './invoiceFilename';
 
 // ─── Brand colours ────────────────────────────────────────────────────────────
 const C = {
@@ -159,7 +160,7 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
   aln(buyerVal, 'right', 'middle');
 
   // ===========================================================================
-  // ROW 6  –  Export Country (left)
+  // ROW 6  –  Export Country (left) + Buyer phone/email (right)
   // ===========================================================================
   row(6).height = 18;
   mg(6, 1, 6, 6);
@@ -167,6 +168,16 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
   expCell.value = `Export Country: ${raw.exportCountry || ''}`;
   fnt(expCell, { size: 9, color: C.grey });
   aln(expCell, 'left', 'middle');
+
+  // Buyer contact line — phone preferred, otherwise email.
+  const buyerContact = (raw.customerPhone || raw.customerEmail || '').toString().trim();
+  if (buyerContact) {
+    mg(6, 7, 6, 9);
+    const contactCell = cel(6, 7);
+    contactCell.value = buyerContact;
+    fnt(contactCell, { size: 9, color: C.grey });
+    aln(contactCell, 'right', 'middle');
+  }
 
   // ===========================================================================
   // ROW 7  –  Spacer before table
@@ -219,7 +230,8 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
     const it     = items[i];
     const hasImg = !!it.productImage;
     row(curRow).height = hasImg ? IMG_H : TEXT_H;
-    const bg = i % 2 === 1 ? C.light : C.white;
+    // Plain white for every product row — no alternating tint.
+    const bg = C.white;
 
     const sc = (col, value, opts = {}) => {
       const c = cel(curRow, col);
@@ -376,6 +388,7 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
     'The total quoted cost is inclusive of door-to-door delivery, covering transportation from origin to the final delivery destination.',
     'An additional 10% of the total goods charges shall be applied for warehouse storage, quality inspection, and goods handling services.',
     'Other Charges means can include Delivery cost from factory to warehouse and many more.',
+    'Upon arrival at the destination, the consignee must inspect the goods within 1–3 days of receipt. Any claims for damaged, broken, or missing items must be reported within this period; thereafter, the company shall not be held liable for any such damage or loss.',
   ];
 
   TERMS.forEach((text, idx) => {
@@ -424,7 +437,7 @@ export const generateInvoiceExcel = async (invoice, currency = 'USD') => {
   const url = URL.createObjectURL(blob);
   const a   = document.createElement('a');
   a.href     = url;
-  a.download = `${invoice.id || 'Invoice'}_Cellzen.xlsx`;
+  a.download = buildInvoiceFilename(invoice, 'xlsx');
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

@@ -6,6 +6,8 @@ const Inventory = require('./Inventory');
 const Transaction = require('./Transaction');
 const Invoice = require('./Invoice');
 const UserNotice = require('./UserNotice');
+const AppSetting = require('./AppSetting');
+const TransportRate = require('./TransportRate');
 
 if (sequelize) {
   // Product <-> Inventory
@@ -48,4 +50,6 @@ module.exports = {
   Transaction,
   Invoice,
   UserNotice,
+  AppSetting,
+  TransportRate,
 };

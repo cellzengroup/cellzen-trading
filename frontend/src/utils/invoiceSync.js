@@ -47,10 +47,14 @@ function unwrapServerInvoice(row) {
 }
 
 // Pull all invoices the admin should see. Falls back to localStorage if the
-// network fails so the page never goes blank.
+// network fails so the page never goes blank. `cache: 'no-store'` defeats any
+// stale browser cache so a freshly-saved invoice always shows up immediately.
 export async function loadInvoices() {
   try {
-    const res = await resilientFetch("/inventory/invoices", { headers: authHeaders() });
+    const res = await resilientFetch("/inventory/invoices", {
+      headers: authHeaders(),
+      cache: "no-store",
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     if (!json?.success) throw new Error(json?.message || "Failed to load");
@@ -71,7 +75,10 @@ export async function loadInvoices() {
       // Re-fetch so we include just-uploaded orphans
       if (orphans.length > 0) {
         try {
-          const res2 = await resilientFetch("/inventory/invoices", { headers: authHeaders() });
+          const res2 = await resilientFetch("/inventory/invoices", {
+            headers: authHeaders(),
+            cache: "no-store",
+          });
           if (res2.ok) {
             const json2 = await res2.json();
             if (json2?.success) {

@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { buildInvoiceFilename } from './invoiceFilename';
 
 // Convert number to words for total amount
 const numberToWords = (number) => {
@@ -196,7 +197,7 @@ export const generateInvoiceExcel = (invoice, currency = 'NPR') => {
   XLSX.utils.book_append_sheet(wb, ws, 'Invoice');
 
   // Generate file
-  const fileName = `${invoice.id || 'Invoice'}.xlsx`;
+  const fileName = buildInvoiceFilename(invoice, 'xlsx');
   XLSX.writeFile(wb, fileName);
 };
 

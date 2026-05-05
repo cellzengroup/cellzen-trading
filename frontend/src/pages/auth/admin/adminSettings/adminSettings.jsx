@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
 import AdminPageShell from "../AdminPageShell";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
+import { authFetch } from "../../../../utils/apiBase.js";
+
+const TRANSPORT_RATES_CACHE_KEY = "cellzen_transport_rates";
 
 const SETTINGS = [
   "Admin profile and access",
@@ -93,14 +96,41 @@ export default function AdminSettings() {
     setEditRateForm({ ...rate, rate: rateInDisplayCurrency });
   };
 
-  const handleUpdateRate = () => {
-    // Convert rate to USD before saving
+  const handleUpdateRate = async () => {
     const rateInUSD = convertToUSD(editRateForm.rate, currency);
-    setSavedTransportRates((prev) =>
-      prev.map((rate) => (rate.id === editingRateId ? { ...rate, ...editRateForm, rate: rateInUSD } : rate))
+    const previous = savedTransportRates;
+    const optimistic = savedTransportRates.map((rate) =>
+      rate.id === editingRateId ? { ...rate, ...editRateForm, rate: rateInUSD } : rate
     );
+    setSavedTransportRates(optimistic);
     setEditingRateId(null);
-    // TODO: Update in database - PUT /api/transport-rates/:id
+
+    try {
+      const res = await authFetch(`/inventory/settings/transport-rates/${editingRateId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: editRateForm.mode,
+          method: editRateForm.method,
+          from: editRateForm.from,
+          to: editRateForm.to,
+          rate: rateInUSD,
+          unit: editRateForm.unit,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success && data.data) {
+        setSavedTransportRates((prev) =>
+          prev.map((rate) => (rate.id === data.data.id ? data.data : rate))
+        );
+      } else if (!res.ok) {
+        setSavedTransportRates(previous);
+        alert(data?.message || "Failed to update rate");
+      }
+    } catch (err) {
+      setSavedTransportRates(previous);
+      alert("Network error while updating rate");
+    }
   };
 
   const openDeleteModal = (id) => {
@@ -108,11 +138,26 @@ export default function AdminSettings() {
     setDeleteModalOpen(true);
   };
 
-  const confirmDelete = () => {
-    setSavedTransportRates((prev) => prev.filter((rate) => rate.id !== deleteRateId));
+  const confirmDelete = async () => {
+    const id = deleteRateId;
+    const previous = savedTransportRates;
+    setSavedTransportRates((prev) => prev.filter((rate) => rate.id !== id));
     setDeleteModalOpen(false);
     setDeleteRateId(null);
-    // TODO: Delete from database - DELETE /api/transport-rates/:id
+
+    try {
+      const res = await authFetch(`/inventory/settings/transport-rates/${id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok && res.status !== 404) {
+        const data = await res.json().catch(() => ({}));
+        setSavedTransportRates(previous);
+        alert(data?.message || "Failed to delete rate");
+      }
+    } catch (err) {
+      setSavedTransportRates(previous);
+      alert("Network error while deleting rate");
+    }
   };
 
   const cancelDelete = () => {
@@ -138,19 +183,91 @@ export default function AdminSettings() {
     npr: exchangeRates.NPR.toString(),
   });
 
-  // Saved transport rates - load from localStorage or use defaults
+  // Saved transport rates — seeded from localStorage cache so the list shows
+  // immediately on mount, then reconciled with the database.
   const [savedTransportRates, setSavedTransportRates] = useState(() => {
-    const saved = localStorage.getItem("cellzen_transport_rates");
-    return saved ? JSON.parse(saved) : [
-      { id: 1, mode: "air", method: "express", from: "China", to: "USA", rate: "5.50", unit: "kg", date: "2026-04-29" },
-      { id: 2, mode: "sea", method: "fcl", from: "Shanghai", to: "Los Angeles", rate: "1200", unit: "container", date: "2026-04-28" },
-    ];
+    try {
+      const saved = localStorage.getItem(TRANSPORT_RATES_CACHE_KEY);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
   });
 
-  // Save transport rates to localStorage whenever they change
+  // Cache rates locally so subsequent loads paint instantly even before the
+  // network call resolves. The database remains the source of truth.
   useEffect(() => {
-    localStorage.setItem("cellzen_transport_rates", JSON.stringify(savedTransportRates));
+    try {
+      localStorage.setItem(TRANSPORT_RATES_CACHE_KEY, JSON.stringify(savedTransportRates));
+    } catch {
+      // localStorage may be disabled (private mode) — non-fatal.
+    }
   }, [savedTransportRates]);
+
+  // Pull authoritative list from the database on mount. If the database is
+  // empty but we have legacy entries in localStorage (from before this feature
+  // was wired to the API), migrate them up so the user doesn't lose work.
+  useEffect(() => {
+    let cancelled = false;
+    const isLegacyId = (id) =>
+      typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+    (async () => {
+      try {
+        const res = await authFetch("/inventory/settings/transport-rates");
+        const data = await res.json().catch(() => ({}));
+        if (cancelled || !res.ok || !data?.success || !Array.isArray(data.data)) return;
+
+        const remote = data.data;
+        let cachedLegacy = [];
+        try {
+          const cached = JSON.parse(localStorage.getItem(TRANSPORT_RATES_CACHE_KEY) || "[]");
+          cachedLegacy = Array.isArray(cached) ? cached.filter((r) => r && isLegacyId(r.id)) : [];
+        } catch {
+          cachedLegacy = [];
+        }
+
+        if (remote.length === 0 && cachedLegacy.length > 0) {
+          // One-time migration of pre-API entries into the database.
+          const migrated = [];
+          for (const r of cachedLegacy) {
+            try {
+              const postRes = await authFetch("/inventory/settings/transport-rates", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  mode: r.mode,
+                  method: r.method,
+                  from: r.from,
+                  to: r.to,
+                  rate: r.rate ? parseFloat(r.rate) : null,
+                  unit: r.unit,
+                  rateKg: r.rateKg ? parseFloat(r.rateKg) : null,
+                  rateCBM: r.rateCBM ? parseFloat(r.rateCBM) : null,
+                  rateBorder: r.rateBorder ? parseFloat(r.rateBorder) : null,
+                  unitBorder: r.unitBorder,
+                  date: r.date,
+                }),
+              });
+              const postData = await postRes.json().catch(() => ({}));
+              if (postRes.ok && postData?.success && postData.data) migrated.push(postData.data);
+            } catch {
+              // Skip failed migrations; the user can re-add manually.
+            }
+          }
+          if (!cancelled && migrated.length > 0) {
+            setSavedTransportRates(migrated);
+            return;
+          }
+        }
+
+        if (!cancelled) setSavedTransportRates(remote);
+      } catch {
+        // Network error — keep cached values.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Close country dropdowns when clicking outside
   useEffect(() => {
@@ -186,9 +303,8 @@ export default function AdminSettings() {
     setTransportForm((prev) => ({ ...prev, [field]: value }));
   };
 
-  const saveTransportRate = () => {
+  const saveTransportRate = async () => {
     const base = {
-      id: Date.now(),
       mode: transportForm.mode,
       method: transportForm.method,
       from: transportForm.from,
@@ -196,10 +312,9 @@ export default function AdminSettings() {
       date: new Date().toISOString().split("T")[0],
     };
 
-    let newRate;
+    let payload;
     if (borderCrossingSelected) {
-      // Two-leg Nepal border crossing route — store rateKg, rateCBM, rateBorder
-      newRate = {
+      payload = {
         ...base,
         rateKg: transportForm.rateKg ? convertToUSD(transportForm.rateKg, currency) : null,
         rateCBM: transportForm.rateCBM ? convertToUSD(transportForm.rateCBM, currency) : null,
@@ -207,28 +322,45 @@ export default function AdminSettings() {
         unitBorder: "cbm",
       };
     } else {
-      // Standard single-rate route
-      newRate = {
+      payload = {
         ...base,
         rate: convertToUSD(transportForm.rate, currency),
         unit: transportForm.unit,
       };
     }
 
-    setSavedTransportRates((prev) => [newRate, ...prev]);
-    // TODO: Save to database - POST /api/transport-rates
+    try {
+      const res = await authFetch("/inventory/settings/transport-rates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.success && data.data) {
+        setSavedTransportRates((prev) => [data.data, ...prev]);
+      } else {
+        alert(data?.message || "Failed to save transport rate");
+        return;
+      }
+    } catch (err) {
+      alert("Network error while saving transport rate");
+      return;
+    }
+
     setTransportForm({ mode: "", method: "", from: "", to: "", rate: "", unit: "kg", rateKg: "", rateCBM: "", rateBorder: "" });
     setActiveTab("list");
   };
 
-  const saveExchangeRates = () => {
-    // Update global exchange rates
-    updateExchangeRates({
-      CNY: parseFloat(editRates.cny),
-      NPR: parseFloat(editRates.npr),
-    });
-    // TODO: Save to database - POST /api/exchange-rates
-    closeModal();
+  const saveExchangeRates = async () => {
+    try {
+      await updateExchangeRates({
+        CNY: parseFloat(editRates.cny),
+        NPR: parseFloat(editRates.npr),
+      });
+      closeModal();
+    } catch (err) {
+      alert(err?.message || "Failed to save exchange rates");
+    }
   };
 
   const renderModalContent = () => {
