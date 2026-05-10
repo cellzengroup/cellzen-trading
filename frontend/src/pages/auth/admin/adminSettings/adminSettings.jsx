@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import AdminPageShell from "../AdminPageShell";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { authFetch } from "../../../../utils/apiBase.js";
+import HsCodesPanel from "./HsCodesPanel";
 
 const TRANSPORT_RATES_CACHE_KEY = "cellzen_transport_rates";
 
@@ -868,52 +869,7 @@ export default function AdminSettings() {
         );
 
       case "hscodes":
-        return (
-          <div className="space-y-4">
-            <h3 className="text-xl font-semibold text-[#412460]">HS Codes Management</h3>
-            <div className="rounded-xl border border-[#E1E3EE] p-4">
-              <p className="text-sm text-gray-600 mb-4">Manage Harmonized System codes for product classification.</p>
-              <div className="space-y-3 max-h-60 overflow-y-auto">
-                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <span className="text-sm font-medium block">8471.30.01</span>
-                    <span className="text-xs text-gray-500">Portable automatic data processing machines</span>
-                  </div>
-                  <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">Active</span>
-                </div>
-                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <span className="text-sm font-medium block">8517.62.00</span>
-                    <span className="text-xs text-gray-500">Machines for reception, conversion and transmission</span>
-                  </div>
-                  <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">Active</span>
-                </div>
-                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <span className="text-sm font-medium block">8528.72.32</span>
-                    <span className="text-xs text-gray-500">Reception apparatus for television</span>
-                  </div>
-                  <span className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded">Active</span>
-                </div>
-                <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                  <div>
-                    <span className="text-sm font-medium block">6203.42.11</span>
-                    <span className="text-xs text-gray-500">Men's or boys' trousers of cotton</span>
-                  </div>
-                  <span className="text-xs px-2 py-1 bg-yellow-100 text-yellow-700 rounded">Review</span>
-                </div>
-              </div>
-              <div className="flex gap-2 mt-4">
-                <button className="flex-1 py-2 border border-[#412460] text-[#412460] rounded-lg text-sm font-medium hover:bg-[#412460]/5 transition-colors">
-                  Add New
-                </button>
-                <button className="flex-1 py-2 bg-[#412460] text-white rounded-lg text-sm font-medium hover:bg-[#5a3680] transition-colors">
-                  Import CSV
-                </button>
-              </div>
-            </div>
-          </div>
-        );
+        return <HsCodesPanel />;
       default:
         return null;
     }

@@ -1,0 +1,40 @@
+{
+  "source": "Nepal Customs Tariff 2082/83 (FY 2025/26 BS)",
+  "publisher": "Department of Customs, Ministry of Finance, Government of Nepal",
+  "extractedFrom": "Customs_Tarrif_2083.pdf (689 pages)",
+  "descriptionSource": "WCO Harmonized System 2017 (public dataset, datasets/harmonized-system)",
+  "totalEntries": 6315,
+  "matchStats": {
+    "wco6digit": 6312,
+    "wco4digit": 1,
+    "noMatch": 2
+  },
+  "schema": {
+    "code": "8-digit Nepal HS code, formatted as XXXX.XX.XX",
+    "code6": "6-digit WCO international subheading",
+    "heading": "4-digit WCO heading",
+    "chapter": "2-digit chapter",
+    "section": "WCO section (Roman numeral)",
+    "description": "English description from WCO HS 2022 (best 6-digit match)",
+    "unit": "Unit of measure: kg | L | m | m2 | m3 | no | carat | ton",
+    "customsDuty": "Customs duty %: { saarc, other }",
+    "excise": "Excise duty % (अन्तःशुल्क)",
+    "agriFee": "Agriculture reform fee % (कृषि सुधार शुल्क)",
+    "advTax": "Advance income tax % (अग्रिम आय कर)",
+    "vat": "Value added tax % (मू.अ.कर)",
+    "effectiveRate": "Total effective tax rate %: { saarc, india, tibet, other }",
+    "page": "Source PDF page (1-indexed)"
+  },
+  "notes": [
+    "Item descriptions in the source PDF are in Nepali (Devanagari) — those have been replaced with English equivalents from the WCO HS standard, which Nepal officially follows.",
+    "The 6-digit code (code6) is internationally standardized; the last 2 digits are Nepal-specific national subdivisions.",
+    "Some HS 2022 additions (e.g. specific lithium-battery codes) won't match HS 2022 and fall back to the parent heading description.",
+    "Some rates may be null when the source row had blank cells (e.g. excise blank for non-excisable goods)."
+  ],
+  "layout": {
+    "searchIndex": "hsSearchIndex.json — bundled, [[code, description], ...]",
+    "chapters": "chapters/chapter-{01..97}.json — lazy-loaded per chapter",
+    "loadingStrategy": "1) Open panel: bundle chunk includes hsSearchIndex.json (~60 KB gzipped); user can search instantly. 2) Click a code: dynamic import of chapters/chapter-{XX}.json (~3 KB gzipped); subsequent codes in same chapter use the in-memory cache. 3) Calculation: pure-JS arithmetic on a single object — sub-millisecond."
+  },
+  "lastSplit": "see git log for split timestamp"
+}
