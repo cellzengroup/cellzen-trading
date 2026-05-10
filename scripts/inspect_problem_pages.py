@@ -13,7 +13,7 @@ lines = []
 # Chapter 22 (alcohol) — page 685 = 2206.00.90 anomaly
 # Page 619 = 0407.90.00 anomaly  ; pages 619-640 = no-SAARC cluster
 # Pages 596-617 = appendix area
-for p_idx in [486, 487, 488]:  # 0-indexed for PDF pages 487, 488, 489 (smartphone area)
+for p_idx in [207, 208, 215, 220]:  # chapter 39 plastics
     page = doc[p_idx]
     words = page.get_text("words")
 

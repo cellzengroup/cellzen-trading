@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminPageShell from "../AdminPageShell";
 import CountrySelector from "../../../../components/ui/CountrySelector";
@@ -6,6 +6,18 @@ import { countries } from "../../../../components/countries";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { saveInvoice as syncInvoiceToBackend } from "../../../../utils/invoiceSync.js";
 import { authFetch } from "../../../../utils/apiBase.js";
+import {
+  preloadTariff,
+  isReady as isTariffReady,
+  autoMatchHsCode,
+  lookupByCode,
+  calculateImportCost,
+  unitQuantityForItem,
+  effectiveDutyMultiplier,
+  invoiceUnitForHsUnit,
+} from "../../../../utils/hsCodeLookup";
+import HsCodeDrawer from "./HsCodeDrawer";
+import HsBreakdownModal from "./HsBreakdownModal";
 
 // Invoice Number Input Component
 function InvoiceNumberInput({ value, onChange }) {
@@ -671,7 +683,7 @@ export default function AdminCreateInvoice() {
     shareTo: "",
     modeOfDelivery: "",
     exportCountry: "",
-    items: [{ productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0 }],
+    items: [{ productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null }],
     notes: "",
     customsDuty: "",
     documentationCharges: "",
@@ -685,7 +697,56 @@ export default function AdminCreateInvoice() {
     trackingNumber: "",
     customsNotes: "",
     includeCustomsTransport: false, // Radio button state for adding customs/transport
+    defaultDutyOrigin: "CN", // Origin country used for HS-based duty calc unless an item overrides (China is the most common origin for Cellzen)
+    customsDutyAutoFilled: true, // True until the user manually edits the customs duty input — keeps the HS-derived value in sync
   });
+
+  // HS tariff loading + drawer/modal state
+  const [tariffReady, setTariffReady] = useState(isTariffReady());
+  const [hsDrawerIndex, setHsDrawerIndex] = useState(null); // null = drawer closed
+  const [hsModalOpen, setHsModalOpen] = useState(false);
+
+  // Preload the tariff bundle once. After this resolves, all HS lookups + calcs
+  // are pure in-memory and synchronous.
+  useEffect(() => {
+    if (tariffReady) return;
+    let cancelled = false;
+    preloadTariff()
+      .then(() => { if (!cancelled) setTariffReady(true); })
+      .catch(() => { /* tariff lookups will simply be no-ops until reload */ });
+    return () => { cancelled = true; };
+  }, [tariffReady]);
+
+  // After tariff finishes loading, auto-match HS codes for any items that were
+  // typed before the bundle was ready.
+  useEffect(() => {
+    if (!tariffReady) return;
+    setFormData(prev => {
+      let dirty = false;
+      const items = prev.items.map(item => {
+        if (!item.productName?.trim()) return item;
+        if (item.hsAutoMatched === false) return item; // user pinned manually
+        if (item.hsCode && item.hsConfidence && item.hsConfidence !== "none") return item;
+        const m = autoMatchHsCode(item.productName);
+        if ((m.code || "") !== (item.hsCode || "") || m.confidence !== item.hsConfidence) {
+          dirty = true;
+          const next = { ...item, hsCode: m.code || "", hsConfidence: m.confidence };
+          // Auto-sync invoice unit to HS unit (only if still on default KG).
+          if (m.code) {
+            const matched = lookupByCode(m.code);
+            const wantInv = invoiceUnitForHsUnit(matched?.unit);
+            if (wantInv && (next.unit === "KG" || !next.unit)) {
+              next.unit = wantInv;
+              next.priceUnit = wantInv;
+            }
+          }
+          return next;
+        }
+        return item;
+      });
+      return dirty ? { ...prev, items } : prev;
+    });
+  }, [tariffReady]);
 
   // Get current currency symbol with space
   const getCurrencySymbol = () => {
@@ -712,6 +773,23 @@ export default function AdminCreateInvoice() {
       Object.assign(rates, parsed);
     }
     return parseFloat(usdRate) * (rates[targetCurrency] || 1);
+  };
+
+  // Convert amount from one currency to another — returns full precision; callers apply .toFixed(2) for display.
+  // Hoisted up here so it's defined before computeItemCifNpr / aggregateHsDutyNpr (which reference it).
+  const convertCurrency = (amount, fromCurrency, toCurrency) => {
+    if (fromCurrency === toCurrency) return parseFloat(amount) || 0;
+    if (!amount || isNaN(amount)) return 0;
+
+    const rates = { USD: 1, CNY: 7.24, NPR: 135.50 };
+    const savedRates = localStorage.getItem('cellzen_exchange_rates');
+    if (savedRates) {
+      const parsed = JSON.parse(savedRates);
+      Object.assign(rates, parsed);
+    }
+
+    const amountInUSD = parseFloat(amount) / rates[fromCurrency];
+    return amountInUSD * rates[toCurrency];
   };
 
   // Fetch users on mount
@@ -857,7 +935,7 @@ export default function AdminCreateInvoice() {
   const addItem = () => {
     setFormData(prev => ({
       ...prev,
-      items: [...prev.items, { productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0 }],
+      items: [...prev.items, { productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null }],
     }));
   };
 
@@ -873,7 +951,36 @@ export default function AdminCreateInvoice() {
       ...prev,
       items: prev.items.map((item, i) => {
         if (i !== index) return item;
-        return { ...item, [field]: value };
+        const next = { ...item, [field]: value };
+        // Auto-match HS code when productName changes — but only if the user
+        // hasn't manually pinned a code (hsAutoMatched stays true until they
+        // override via the drawer's search).
+        if (field === "productName" && next.hsAutoMatched !== false) {
+          if (!value || !String(value).trim()) {
+            next.hsCode = "";
+            next.hsConfidence = "none";
+          } else if (isTariffReady()) {
+            const m = autoMatchHsCode(value);
+            next.hsCode = m.code || "";
+            next.hsConfidence = m.confidence;
+            // Auto-sync invoice line unit to the HS row's unit (kg → KG,
+            // L → Litre, no → Unit) so the duty calc uses the right
+            // multiplier without the user having to think about it. We
+            // only override the default "KG" — if the user has already
+            // picked Box / Pallet / Carton intentionally, leave it alone.
+            if (m.code) {
+              const matchedRow = lookupByCode(m.code);
+              const wantInvUnit = invoiceUnitForHsUnit(matchedRow?.unit);
+              if (wantInvUnit && (next.unit === "KG" || !next.unit)) {
+                next.unit = wantInvUnit;
+                next.priceUnit = wantInvUnit;
+              }
+            }
+          }
+          // If tariff isn't loaded yet, leave the field empty; the
+          // useEffect below will retry once preloadTariff() resolves.
+        }
+        return next;
       }),
     }));
   };
@@ -893,6 +1000,111 @@ export default function AdminCreateInvoice() {
       return hasWeight || hasCBM;
     });
   };
+
+  // CIF in NPR for an item. The Nepal customs tariff is denominated in NPR,
+  // so any HS-based duty calc must use NPR-denominated CIF regardless of
+  // what currency the invoice is being entered in.
+  //
+  //   CIF (NPR) = quantity × unitPrice (in originalCurrency) → converted to NPR
+  //
+  // If `unitPrice` is already stored in the invoice's `originalCurrency` (it is
+  // — `toStored` round-trips through originalCurrency), we just convert from
+  // that currency to NPR using the same exchange-rate table the rest of the
+  // invoice uses (localStorage `cellzen_exchange_rates`, falling back to the
+  // built-in defaults of 1 USD = 7.24 CNY = 135.50 NPR).
+  //
+  // We deliberately don't include `convertCurrency` as a useCallback dep:
+  // the function is redefined every render so including it would defeat memo,
+  // and since it only reads from localStorage (no closure over render-scoped
+  // state) the latest closure is always safe.
+  const computeItemCifNpr = useCallback((item) => {
+    const qty = parseFloat(item?.quantity) || 0;
+    const price = parseFloat(item?.unitPrice) || 0;
+    if (qty <= 0 || price <= 0) return 0;
+    const origCurr = formData.originalCurrency || currency;
+    const cifInOrigCurr = qty * price;
+    if (origCurr === "NPR") return cifInOrigCurr;
+    const npr = convertCurrency(cifInOrigCurr, origCurr, "NPR");
+    // Guard against NaN/Infinity in case a currency is missing from the rates
+    // table; fall back to no conversion so the user at least sees *something*
+    // (better than silently zeroing out their duty).
+    return (typeof npr === "number" && Number.isFinite(npr) && npr > 0)
+      ? npr
+      : cifInOrigCurr;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formData.originalCurrency, currency]);
+
+  // Aggregated HS-derived duty in NPR across all invoice items. The C&T panel
+  // uses this to auto-populate the customs duty field. Returns 0 if the tariff
+  // bundle hasn't loaded yet or no item has a valid HS code.
+  const aggregateHsDutyNpr = useMemo(() => {
+    if (!tariffReady) return 0;
+    let total = 0;
+    for (const item of formData.items) {
+      if (!item.hsCode) continue;
+      const cifNpr = computeItemCifNpr(item);
+      if (cifNpr <= 0) continue;
+      const row = lookupByCode(item.hsCode);
+      // For specific-duty rows, multiply Rs/unit by the quantity in the row's
+      // unit (kg → item.weight, m³ → item.cbm, etc.). For chapter 22 spirits
+      // the multiplier is further scaled by ABV% (LP-litre basis). For
+      // ad-valorem-only rows the `quantity` arg is unused.
+      const unitQty = row && row.specificDutyNpr != null
+        ? effectiveDutyMultiplier(item, row)
+        : (parseFloat(item.quantity) || 1);
+      const calc = calculateImportCost({
+        code: item.hsCode,
+        cifValue: cifNpr,
+        originCountry: item.dutyOrigin || formData.defaultDutyOrigin || "CN",
+        quantity: unitQty,
+      });
+      if (!calc || calc.error) continue;
+      // The C&T panel's Customs Duty field shows the FULL Total Duty for the
+      // shipment — every charge that the importer pays on top of CIF:
+      //   customs (ad-valorem) + specific duty (Rs/unit, ABV-scaled for spirits)
+      //   + excise + agri reform fee + advance income tax + VAT.
+      // This matches what a Nepal customs declaration totals up.
+      const b = calc.breakdown;
+      total += (b.customsDuty || 0)
+            + (b.specificDutyAmount || 0)
+            + (b.exciseAmount || 0)
+            + (b.agriFeeAmount || 0)
+            + (b.advTaxAmount || 0)
+            + (b.vatAmount || 0);
+    }
+    return total;
+  }, [tariffReady, formData.items, formData.defaultDutyOrigin, computeItemCifNpr]);
+
+  // Auto-write the HS-derived total into the Customs Duty field whenever it
+  // changes — but only while the user hasn't manually overridden the value
+  // (`customsDutyAutoFilled` flips to false the moment they type into the
+  // field). Conversion: NPR (basis of the Nepal tariff) → invoice's
+  // originalCurrency (the denomination `formData.customsDuty` is stored in).
+  // Rounded to 2 decimals so the input doesn't show ugly floats like
+  // "298.92666666666669" on a NPR→CNY conversion.
+  useEffect(() => {
+    if (!tariffReady) return;
+    if (!formData.customsDutyAutoFilled) return;
+    const origCurr = formData.originalCurrency || currency;
+    const aggInOrig = origCurr === "NPR"
+      ? aggregateHsDutyNpr
+      : convertCurrency(aggregateHsDutyNpr, "NPR", origCurr);
+    if (!Number.isFinite(aggInOrig)) return;
+    const rounded = Math.round(aggInOrig * 100) / 100;
+    const current = parseFloat(formData.customsDuty) || 0;
+    // Skip the update if we're already in sync (within half a cent), to avoid
+    // a re-render loop. When the aggregate drops to 0 (no HS codes / no CIF),
+    // we set the field to "" rather than 0 so the placeholder shows.
+    if (rounded <= 0) {
+      if (current !== 0 && formData.customsDuty !== "") {
+        setFormData((prev) => ({ ...prev, customsDuty: "" }));
+      }
+      return;
+    }
+    if (Math.abs(current - rounded) < 0.005) return;
+    setFormData((prev) => ({ ...prev, customsDuty: rounded }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tariffReady, aggregateHsDutyNpr, formData.originalCurrency, currency, formData.customsDutyAutoFilled]);
 
   const calculateGrandTotal = () => {
     return formData.items.reduce((sum, item) => {
@@ -989,22 +1201,6 @@ export default function AdminCreateInvoice() {
   const calculateTransportationCost = () => {
     const origCurr = formData.originalCurrency || currency;
     return convertCurrency(getTransportationCostInOriginal(), origCurr, currency);
-  };
-
-  // Convert amount from one currency to another — returns full precision; callers apply .toFixed(2) for display
-  const convertCurrency = (amount, fromCurrency, toCurrency) => {
-    if (fromCurrency === toCurrency) return parseFloat(amount) || 0;
-    if (!amount || isNaN(amount)) return 0;
-
-    const rates = { USD: 1, CNY: 7.24, NPR: 135.50 };
-    const savedRates = localStorage.getItem('cellzen_exchange_rates');
-    if (savedRates) {
-      const parsed = JSON.parse(savedRates);
-      Object.assign(rates, parsed);
-    }
-
-    const amountInUSD = parseFloat(amount) / rates[fromCurrency];
-    return amountInUSD * rates[toCurrency];
   };
 
   // origCurr = invoice denomination (right-side selector); currency = header display currency
@@ -1701,13 +1897,43 @@ export default function AdminCreateInvoice() {
                           )}
                         </td>
                         <td className="px-4 py-3">
-                          <input
-                            type="text"
-                            value={item.productName || ""}
-                            onChange={(e) => updateItem(index, "productName", e.target.value)}
-                            placeholder="Enter product name"
-                            className="w-full min-w-[180px] rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm focus:border-[#412460] focus:outline-none"
-                          />
+                          <div className="relative">
+                            <input
+                              type="text"
+                              value={item.productName || ""}
+                              onChange={(e) => updateItem(index, "productName", e.target.value)}
+                              placeholder="Enter product name"
+                              className="w-full min-w-[180px] rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 pr-9 text-sm focus:border-[#412460] focus:outline-none"
+                            />
+                            {/* HS confidence dot — opens the drawer when clicked.
+                                Color: green=high, amber=medium, gray=low/none. */}
+                            <button
+                              type="button"
+                              onClick={() => setHsDrawerIndex(index)}
+                              disabled={!tariffReady}
+                              title={
+                                !tariffReady
+                                  ? "Loading tariff…"
+                                  : item.hsCode
+                                    ? `HS ${item.hsCode} (${item.hsConfidence || "—"} confidence) — click to view/edit`
+                                    : "No HS match yet — click to search"
+                              }
+                              className={`absolute right-2 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-full transition-transform hover:scale-110 disabled:opacity-30 ${
+                                !tariffReady
+                                  ? "bg-gray-200"
+                                  : item.hsConfidence === "high"
+                                    ? "bg-green-500"
+                                    : item.hsConfidence === "medium"
+                                      ? "bg-amber-400"
+                                      : item.hsConfidence === "low"
+                                        ? "bg-amber-300"
+                                        : "bg-gray-300"
+                              }`}
+                              aria-label="View HS code details"
+                            >
+                              <span className="text-[9px] font-bold text-white">HS</span>
+                            </button>
+                          </div>
                         </td>
                         <td className="px-4 py-3">
                           <input
@@ -1732,6 +1958,7 @@ export default function AdminCreateInvoice() {
                             className="w-24 rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm focus:border-[#412460] focus:outline-none"
                           >
                             <option value="KG">KG</option>
+                            <option value="Litre">Litre</option>
                             <option value="Unit">Unit</option>
                             <option value="Box">Box</option>
                             <option value="Pallet">Pallet</option>
@@ -1901,23 +2128,76 @@ export default function AdminCreateInvoice() {
 
               return (
                 <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  {/* Customs Duty */}
+                  {/* Customs Duty — auto-filled from HS-code calculations.
+                      Value flows: aggregateHsDutyNpr (NPR) → originalCurrency
+                      (stored, rounded to 2 decimals) → display currency (shown).
+                      Manual edits flip `customsDutyAutoFilled` to false so the
+                      auto-update effect leaves the user's value alone. */}
                   <div>
                     <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
                       Customs Duty ({sym.trim()})
                     </label>
-                    <div className="flex items-center rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3">
+                    <div className={`flex items-center rounded-[1rem] border bg-white px-4 py-3 ${
+                      formData.customsDutyAutoFilled && aggregateHsDutyNpr > 0
+                        ? "border-green-300"
+                        : "border-[#E1E3EE]"
+                    }`}>
                       <span className="select-none text-sm font-semibold text-[#412460]">{sym}</span>
                       <input
                         type="number"
                         min="0"
                         step="0.01"
                         value={toDisplay(formData.customsDuty) || ""}
-                        onChange={(e) => setFormData(prev => ({ ...prev, customsDuty: e.target.value === "" ? "" : toStored(e.target.value) }))}
+                        onChange={(e) => setFormData(prev => ({
+                          ...prev,
+                          customsDuty: e.target.value === "" ? "" : toStored(e.target.value),
+                          customsDutyAutoFilled: false, // user took manual control
+                        }))}
                         className="flex-1 bg-transparent text-sm text-[#2D2D2D] focus:outline-none"
                         placeholder="0.00"
                       />
                     </div>
+
+                    {/* Status subline:
+                        - autoFilled + aggregate>0 → green "auto-filled from HS codes" + breakdown link
+                        - manual override + aggregate>0 → "Manual override" + reset-to-auto link + breakdown
+                        - aggregate=0 (no HS data yet) → just the breakdown link if anything to show */}
+                    {tariffReady && aggregateHsDutyNpr > 0 ? (
+                      <div className="mt-1.5 flex items-center justify-between gap-2 px-1 text-[11px]">
+                        {formData.customsDutyAutoFilled ? (
+                          <span className="text-green-700">
+                            ✓ Auto-filled — <strong>total duty</strong> (customs + specific + excise + agri + adv. tax + VAT)
+                          </span>
+                        ) : (() => {
+                          // Show what the auto value WOULD be so user can see the diff
+                          const aggInOrig = origCurr === "NPR"
+                            ? aggregateHsDutyNpr
+                            : convertCurrency(aggregateHsDutyNpr, "NPR", origCurr);
+                          const safeAgg = Number.isFinite(aggInOrig) && aggInOrig > 0 ? aggInOrig : 0;
+                          const aggDisplay = toDisplay(safeAgg);
+                          return (
+                            <span className="text-[#2D2D2D]/60">
+                              <span className="text-amber-700">Manual override.</span>{" "}
+                              HS total duty: <span className="font-mono font-semibold text-[#412460]">{sym}{aggDisplay.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>{" "}
+                              <button
+                                type="button"
+                                onClick={() => setFormData((prev) => ({ ...prev, customsDutyAutoFilled: true }))}
+                                className="font-semibold text-[#412460] hover:underline"
+                              >
+                                reset to auto
+                              </button>
+                            </span>
+                          );
+                        })()}
+                        <button
+                          type="button"
+                          onClick={() => setHsModalOpen(true)}
+                          className="font-semibold text-[#412460] hover:underline whitespace-nowrap"
+                        >
+                          View breakdown →
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
 
                   {/* Documentation Charges */}
@@ -2302,6 +2582,75 @@ export default function AdminCreateInvoice() {
           </div>
         )}
       </div>
+
+      {/* HS code side drawer — opens when the row's confidence dot is clicked */}
+      <HsCodeDrawer
+        open={hsDrawerIndex != null}
+        item={hsDrawerIndex != null ? formData.items[hsDrawerIndex] : null}
+        itemIndex={hsDrawerIndex ?? 0}
+        itemCount={formData.items.length}
+        cifNpr={hsDrawerIndex != null ? computeItemCifNpr(formData.items[hsDrawerIndex]) : 0}
+        invoiceCurrency={formData.originalCurrency || currency}
+        cifInInvoiceCurrency={
+          hsDrawerIndex != null
+            ? (parseFloat(formData.items[hsDrawerIndex].quantity) || 0)
+              * (parseFloat(formData.items[hsDrawerIndex].unitPrice) || 0)
+            : 0
+        }
+        defaultOrigin={formData.defaultDutyOrigin}
+        tariffReady={tariffReady}
+        onChangeHs={(code, manual) => {
+          if (hsDrawerIndex == null) return;
+          const idx = hsDrawerIndex;
+          // When the HS code changes (auto or manual), also sync the invoice
+          // unit to the HS row's unit so the duty calc uses the right
+          // multiplier — but only when the user hasn't picked Box/Pallet/
+          // Carton (then leave their packaging choice alone).
+          const matched = code ? lookupByCode(code) : null;
+          const wantInv = invoiceUnitForHsUnit(matched?.unit);
+          setFormData(prev => ({
+            ...prev,
+            items: prev.items.map((it, i) => {
+              if (i !== idx) return it;
+              const next = { ...it, hsCode: code, hsAutoMatched: !manual, hsConfidence: manual ? "high" : it.hsConfidence };
+              if (wantInv && (it.unit === "KG" || !it.unit || it.unit === "Litre" || it.unit === "Unit")) {
+                next.unit = wantInv;
+                next.priceUnit = wantInv;
+              }
+              return next;
+            }),
+          }));
+        }}
+        onChangeOrigin={(originCode) => {
+          if (hsDrawerIndex == null) return;
+          const idx = hsDrawerIndex;
+          setFormData(prev => ({
+            ...prev,
+            items: prev.items.map((it, i) => i === idx ? { ...it, dutyOrigin: originCode } : it),
+          }));
+        }}
+        onChangeAbv={(abvValue) => {
+          if (hsDrawerIndex == null) return;
+          const idx = hsDrawerIndex;
+          setFormData(prev => ({
+            ...prev,
+            items: prev.items.map((it, i) => i === idx ? { ...it, alcoholAbv: abvValue } : it),
+          }));
+        }}
+        onClose={() => setHsDrawerIndex(null)}
+        onPrev={() => setHsDrawerIndex((i) => Math.max(0, (i ?? 0) - 1))}
+        onNext={() => setHsDrawerIndex((i) => Math.min(formData.items.length - 1, (i ?? 0) + 1))}
+      />
+
+      {/* HS per-item breakdown modal — opened from the C&T panel */}
+      <HsBreakdownModal
+        open={hsModalOpen}
+        items={formData.items}
+        defaultOrigin={formData.defaultDutyOrigin}
+        computeCifNpr={computeItemCifNpr}
+        onClose={() => setHsModalOpen(false)}
+        onOpenItem={(idx) => setHsDrawerIndex(idx)}
+      />
     </AdminPageShell>
   );
 }

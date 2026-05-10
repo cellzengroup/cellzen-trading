@@ -5,6 +5,9 @@ import {
   lookupByCode,
   searchByDescription,
   TOTAL_CODE_COUNT,
+  isLpLitreCode,
+  defaultAbvForCode,
+  requiredFieldForUnit,
 } from "../../../../utils/hsCodeLookup";
 
 const SAARC_COUNTRIES = ["IN", "BD", "LK", "PK", "BT", "MV", "AF"];
@@ -25,6 +28,20 @@ const ORIGIN_OPTIONS = [
 const fmtPct = (v) => (v == null ? "—" : `${v}%`);
 const fmtNpr = (v) => (v == null ? "—" : v.toLocaleString("en-IN", { maximumFractionDigits: 2 }));
 
+// Friendly label for each unit so the quantity field tells the user exactly
+// what to enter (kg / L / sticks etc.).
+const unitLabel = (u) => {
+  if (!u) return "units";
+  const m = String(u).toLowerCase();
+  if (m === "kg")  return "kilograms (kg)";
+  if (m === "l")   return "litres (L)";
+  if (m === "m2")  return "square metres (m²)";
+  if (m === "m3")  return "cubic metres (m³)";
+  if (m === "ton") return "tonnes (t)";
+  if (m === "no")  return "pieces (no.)";
+  return String(u);
+};
+
 export default function HsCodesPanel() {
   const [ready, setReady] = useState(isReady());
   const [loadError, setLoadError] = useState(null);
@@ -33,10 +50,10 @@ export default function HsCodesPanel() {
   const [selectedCode, setSelectedCode] = useState(null);
   const [cifValue, setCifValue] = useState("");
   const [qtyValue, setQtyValue] = useState("");
-  const [origin, setOrigin] = useState("IN");
+  const [abvValue, setAbvValue] = useState("");
+  const [origin, setOrigin] = useState("CN");
 
-  // Load the bundle once when the panel mounts. After this, all operations
-  // are pure in-memory and synchronous (sub-millisecond).
+  // Load the bundle once when the panel mounts.
   useEffect(() => {
     if (ready) return;
     let cancelled = false;
@@ -46,7 +63,12 @@ export default function HsCodesPanel() {
     return () => { cancelled = true; };
   }, [ready]);
 
-  // Sync search — instant once the bundle is loaded.
+  // Reset transient inputs when switching codes
+  useEffect(() => {
+    setQtyValue("");
+    setAbvValue("");
+  }, [selectedCode]);
+
   const results = useMemo(() => {
     if (!ready) return [];
     const q = query.trim();
@@ -58,6 +80,9 @@ export default function HsCodesPanel() {
     if (!ready || !selectedCode) return null;
     return lookupByCode(selectedCode);
   }, [ready, selectedCode]);
+
+  const isLpLitre = !!selected && isLpLitreCode(selected.code) && selected.unit === "L";
+  const requiredField = selected?.specificDutyNpr != null ? requiredFieldForUnit(selected.unit) : null;
 
   const calc = useMemo(() => {
     if (!selected) return null;
@@ -78,12 +103,25 @@ export default function HsCodesPanel() {
     const agriAmt     = selected.agriFee  != null ? (cif * selected.agriFee)  / 100 : 0;
     const advAmt      = selected.advTax   != null ? (cif * selected.advTax)   / 100 : 0;
 
+    // Specific duty: use the user-entered quantity. For LP-litre spirits
+    // codes, scale by ABV% (litre-of-pure-alcohol basis).
     const qty = parseFloat(qtyValue);
     let specificAmt = 0;
     let specificNeedsQty = false;
+    let lpLitreEffectiveQty = null;
     if (selected.specificDutyNpr != null) {
       if (qty && qty > 0) {
-        specificAmt = selected.specificDutyNpr * qty;
+        if (isLpLitre) {
+          const abv = parseFloat(abvValue);
+          const effectiveAbv = Number.isFinite(abv) && abv > 0
+            ? abv
+            : defaultAbvForCode(selected.code);
+          const scaled = qty * (effectiveAbv / 100);
+          specificAmt = selected.specificDutyNpr * scaled;
+          lpLitreEffectiveQty = scaled;
+        } else {
+          specificAmt = selected.specificDutyNpr * qty;
+        }
       } else {
         specificNeedsQty = true;
       }
@@ -99,10 +137,10 @@ export default function HsCodesPanel() {
     return {
       bucket: customsBucket, effBucket,
       customsRate, customsAmt, exciseAmt, agriAmt, advAmt, vatAmt, vatBase, total,
-      specificAmt, specificNeedsQty,
+      specificAmt, specificNeedsQty, lpLitreEffectiveQty,
       effRate, totalFromEff,
     };
-  }, [selected, cifValue, origin, qtyValue]);
+  }, [selected, cifValue, origin, qtyValue, abvValue, isLpLitre]);
 
   if (loadError) {
     return (
@@ -118,6 +156,21 @@ export default function HsCodesPanel() {
       </div>
     );
   }
+
+  // Effective ABV that will be used in the calc (user value or default).
+  const resolvedAbv = isLpLitre
+    ? (parseFloat(abvValue) > 0 ? parseFloat(abvValue) : defaultAbvForCode(selected.code))
+    : null;
+
+  // How many quantity-style inputs to show (CIF + maybe Quantity + maybe ABV + Origin)
+  const inputCols = 1 /* CIF */
+    + (selected?.specificDutyNpr != null ? 1 : 0)
+    + (isLpLitre ? 1 : 0)
+    + 1 /* Origin */;
+  const gridClass =
+    inputCols >= 4 ? "sm:grid-cols-4"
+    : inputCols === 3 ? "sm:grid-cols-3"
+    : "sm:grid-cols-2";
 
   return (
     <div className="space-y-4">
@@ -184,6 +237,31 @@ export default function HsCodesPanel() {
             </p>
           </div>
 
+          {/* Calculation method indicator — same as the invoice drawer.
+              Tells the user EXACTLY how this code's duty is computed. */}
+          <div className="rounded-lg bg-white border border-[#412460]/15 p-2 text-[11px] text-[#2D2D2D]/80">
+            {selected.specificDutyNpr != null ? (
+              <>
+                <span className="font-semibold text-[#412460]">Calculation method:</span>{" "}
+                Mixed — ad-valorem <span className="font-mono">% × CIF</span> +
+                specific <span className="font-mono">NPR {fmtNpr(selected.specificDutyNpr)}/{isLpLitre ? "LP-L" : selected.unit}</span>
+                {" × "}{requiredField}.
+                {isLpLitre && <> Spirits code — duty is per <strong>LP-litre</strong> (litre of pure alcohol = bulk litres × ABV/100).</>}
+              </>
+            ) : (
+              <>
+                <span className="font-semibold text-[#412460]">Calculation method:</span>{" "}
+                Ad-valorem only — <span className="font-mono">% × CIF value</span>.
+                {selected.unit && (
+                  <>
+                    {" "}Unit <span className="font-mono uppercase">{selected.unit}</span> is informational;
+                    quantity is <em>not</em> used in the duty calculation for this code.
+                  </>
+                )}
+              </>
+            )}
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
             <RateCell label="Customs (SAARC)"   value={fmtPct(selected.customsDuty?.saarc)} />
             <RateCell label="Customs (Other)"   value={fmtPct(selected.customsDuty?.other)} />
@@ -197,7 +275,7 @@ export default function HsCodesPanel() {
 
           <div className="border-t border-[#412460]/20 pt-4">
             <p className="text-xs uppercase tracking-wider text-[#412460]/70 mb-2">Landed-cost calculator</p>
-            <div className={`grid gap-3 ${selected.specificDutyNpr != null ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+            <div className={`grid gap-3 ${gridClass}`}>
               <div>
                 <label className="text-xs text-gray-600 block mb-1">CIF value (NPR)</label>
                 <input
@@ -211,7 +289,7 @@ export default function HsCodesPanel() {
               {selected.specificDutyNpr != null && (
                 <div>
                   <label className="text-xs text-gray-600 block mb-1">
-                    Quantity ({selected.unit || "unit"})
+                    Quantity in {unitLabel(selected.unit)}
                     <span className="text-[#B99353] ml-1">required</span>
                   </label>
                   <input
@@ -219,6 +297,23 @@ export default function HsCodesPanel() {
                     value={qtyValue}
                     onChange={(e) => setQtyValue(e.target.value)}
                     placeholder="e.g. 100"
+                    className="w-full p-2 rounded-lg border border-[#E1E3EE] text-sm"
+                  />
+                </div>
+              )}
+              {isLpLitre && (
+                <div>
+                  <label className="text-xs text-gray-600 block mb-1">
+                    Alcohol strength (% ABV)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    value={abvValue}
+                    onChange={(e) => setAbvValue(e.target.value)}
+                    placeholder={String(defaultAbvForCode(selected.code))}
                     className="w-full p-2 rounded-lg border border-[#E1E3EE] text-sm"
                   />
                 </div>
@@ -239,7 +334,10 @@ export default function HsCodesPanel() {
 
             {selected.specificDutyNpr != null && (
               <p className="mt-2 text-[11px] text-[#B99353] bg-[#B99353]/10 rounded p-2">
-                This code has a <strong>specific duty of NPR {fmtNpr(selected.specificDutyNpr)} per {selected.unit || "unit"}</strong> on top of the ad-valorem rate. Enter quantity for an accurate landed-cost calculation.
+                This code has a <strong>specific duty of NPR {fmtNpr(selected.specificDutyNpr)} per {isLpLitre ? "LP-litre" : (selected.unit || "unit")}</strong> on top of the ad-valorem rate.
+                {isLpLitre
+                  ? " Enter quantity in litres AND ABV % for accurate landed-cost calculation."
+                  : ` Enter quantity in ${unitLabel(selected.unit)} for accurate landed-cost calculation.`}
               </p>
             )}
 
@@ -248,8 +346,10 @@ export default function HsCodesPanel() {
                 <Row label={`Customs duty (${calc.customsRate ?? "—"}%)`} value={fmtNpr(calc.customsAmt)} />
                 {selected.specificDutyNpr != null && (
                   calc.specificNeedsQty
-                    ? <Row label={`Specific duty (NPR ${selected.specificDutyNpr}/${selected.unit || "unit"})`} value={<span className="text-[#B99353]">enter qty</span>} />
-                    : <Row label={`Specific duty (NPR ${selected.specificDutyNpr}/${selected.unit || "unit"} × ${qtyValue})`} value={fmtNpr(calc.specificAmt)} />
+                    ? <Row label={`Specific duty (NPR ${selected.specificDutyNpr}/${isLpLitre ? "LP-L" : (selected.unit || "unit")})`} value={<span className="text-[#B99353]">enter qty</span>} />
+                    : isLpLitre
+                      ? <Row label={`Specific duty (NPR ${selected.specificDutyNpr}/LP-L × ${qtyValue} L × ${resolvedAbv}% = ${fmtNpr(calc.lpLitreEffectiveQty)} LP-L)`} value={fmtNpr(calc.specificAmt)} />
+                      : <Row label={`Specific duty (NPR ${selected.specificDutyNpr}/${selected.unit || "unit"} × ${qtyValue})`} value={fmtNpr(calc.specificAmt)} />
                 )}
                 {selected.excise   != null && <Row label={`Excise (${selected.excise}%)`}                value={fmtNpr(calc.exciseAmt)} />}
                 {selected.agriFee  != null && <Row label={`Agri reform (${selected.agriFee}%)`}          value={fmtNpr(calc.agriAmt)} />}

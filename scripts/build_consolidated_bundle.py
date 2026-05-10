@@ -59,6 +59,30 @@ for r in nepal:
                    or "(description unavailable)")
 
     is_ref = r.get("dataSource") == "reference"
+
+    # Normalize specific duty.
+    #
+    # The extractor (post-rewrite) emits `specificDutyNpr` as a SINGLE scalar
+    # already in the row's unit (i.e., per-quintal and per-thousand divisors
+    # applied at extraction time). Older bundles may have emitted it as
+    # a list of {x, value} objects — we still accept both forms here for
+    # safety.
+    raw_s = r.get("specificDutyNpr")
+    spec = None
+    if raw_s is not None:
+        if isinstance(raw_s, list) and raw_s:
+            first = raw_s[0]
+            if isinstance(first, dict) and "value" in first:
+                spec = float(first["value"])
+            else:
+                spec = float(first) if isinstance(first, (int, float)) else None
+            # Legacy list-form values from chapter 17 were not yet
+            # quintal-divided at extraction time, so apply that here.
+            if spec is not None and code8.startswith("17") and r.get("unit") == "kg":
+                spec = round(spec / 100, 4)
+        elif isinstance(raw_s, (int, float)):
+            spec = float(raw_s)
+
     record = {
         "d":  description,
         "u":  r.get("unit"),
@@ -68,7 +92,7 @@ for r in nepal:
         "a":  r.get("agriFee"),
         "t":  r.get("advTax"),
         "v":  r.get("vat"),
-        "s":  r.get("specificDutyNpr"),
+        "s":  spec,
         "es": r.get("eff_saarc"),
         "ei": r.get("eff_india"),
         "et": r.get("eff_tibet"),

@@ -6557,6 +6557,21 @@
     "hs8": "0802.80.00",
     "unit": "kg",
     "heading": "08.02",
+    "specificDutyNpr": 100.0,
+    "specificDutyAll": [
+      {
+        "x": 325.8,
+        "value": 100.0
+      },
+      {
+        "x": 349.4,
+        "value": 100.0
+      },
+      {
+        "x": 370.6,
+        "value": 100.0
+      }
+    ],
     "vat": 13.0,
     "page": 44,
     "dataSource": "main"
@@ -9965,6 +9980,13 @@
     "hs8": "1404.90.10",
     "unit": "kg",
     "heading": "14.04",
+    "specificDutyNpr": 17.0,
+    "specificDutyAll": [
+      {
+        "x": 360.4,
+        "value": 17.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 6.0,
     "other": 10.0,
@@ -9975,6 +9997,13 @@
     "hs8": "1404.90.20",
     "unit": "kg",
     "heading": "14.04",
+    "specificDutyNpr": 155.0,
+    "specificDutyAll": [
+      {
+        "x": 358.6,
+        "value": 155.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 6.0,
     "other": 10.0,
@@ -11541,12 +11570,14 @@
     "hs8": "1701.13.10",
     "unit": "kg",
     "heading": "17.01",
-    "specificDutyNpr": [
+    "specificDutyNpr": 1.38,
+    "specificDutyAll": [
       {
         "x": 330.2,
         "value": 138.0
       }
     ],
+    "specificDutyContext": "quintal",
     "vat": 13.0,
     "agriFee": 9.0,
     "agriFeeFootnote": true,
@@ -11587,12 +11618,14 @@
     "hs8": "1701.14.10",
     "unit": "kg",
     "heading": "17.01",
-    "specificDutyNpr": [
+    "specificDutyNpr": 1.38,
+    "specificDutyAll": [
       {
         "x": 330.2,
         "value": 138.0
       }
     ],
+    "specificDutyContext": "quintal",
     "vat": 13.0,
     "agriFee": 9.0,
     "agriFeeFootnote": true,
@@ -12178,6 +12211,13 @@
     "hs8": "1902.11.00",
     "unit": "kg",
     "heading": "19.02",
+    "specificDutyNpr": 20.0,
+    "specificDutyAll": [
+      {
+        "x": 354.1,
+        "value": 20.0
+      }
+    ],
     "vat": 13.0,
     "page": 75,
     "dataSource": "main"
@@ -12186,6 +12226,13 @@
     "hs8": "1902.19.00",
     "unit": "kg",
     "heading": "19.02",
+    "specificDutyNpr": 20.0,
+    "specificDutyAll": [
+      {
+        "x": 354.1,
+        "value": 20.0
+      }
+    ],
     "vat": 13.0,
     "page": 75,
     "dataSource": "main"
@@ -12194,6 +12241,13 @@
     "hs8": "1902.20.00",
     "unit": "kg",
     "heading": "19.02",
+    "specificDutyNpr": 20.0,
+    "specificDutyAll": [
+      {
+        "x": 354.1,
+        "value": 20.0
+      }
+    ],
     "vat": 13.0,
     "page": 75,
     "dataSource": "main"
@@ -12202,6 +12256,13 @@
     "hs8": "1902.30.00",
     "unit": "kg",
     "heading": "19.02",
+    "specificDutyNpr": 20.0,
+    "specificDutyAll": [
+      {
+        "x": 354.1,
+        "value": 20.0
+      }
+    ],
     "vat": 13.0,
     "page": 75,
     "dataSource": "main"
@@ -12210,6 +12271,13 @@
     "hs8": "1902.40.00",
     "unit": "kg",
     "heading": "19.02",
+    "specificDutyNpr": 20.0,
+    "specificDutyAll": [
+      {
+        "x": 354.1,
+        "value": 20.0
+      }
+    ],
     "vat": 13.0,
     "page": 75,
     "dataSource": "main"
@@ -12438,6 +12506,13 @@
     "hs8": "1905.90.20",
     "unit": "kg",
     "heading": "19.05",
+    "specificDutyNpr": 20.0,
+    "specificDutyAll": [
+      {
+        "x": 353.2,
+        "value": 20.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 40.0,
     "other": 40.0,
@@ -12522,6 +12597,13 @@
     "hs8": "1905.90.81",
     "unit": "kg",
     "heading": "19.05",
+    "specificDutyNpr": 20.0,
+    "specificDutyAll": [
+      {
+        "x": 353.1,
+        "value": 20.0
+      }
+    ],
     "vat": 13.0,
     "page": 76,
     "dataSource": "main"
@@ -12530,6 +12612,13 @@
     "hs8": "1905.90.89",
     "unit": "kg",
     "heading": "19.05",
+    "specificDutyNpr": 20.0,
+    "specificDutyAll": [
+      {
+        "x": 353.1,
+        "value": 20.0
+      }
+    ],
     "vat": 13.0,
     "page": 76,
     "dataSource": "main"
@@ -12703,6 +12792,13 @@
     "hs8": "2005.20.10",
     "unit": "kg",
     "heading": "20.05",
+    "specificDutyNpr": 18.0,
+    "specificDutyAll": [
+      {
+        "x": 361.3,
+        "value": 18.0
+      }
+    ],
     "vat": 13.0,
     "page": 78,
     "dataSource": "main"
@@ -13166,6 +13262,17 @@
     "hs8": "2009.11.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 296.6,
+        "value": 60.0
+      },
+      {
+        "x": 325.1,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13174,6 +13281,17 @@
     "hs8": "2009.12.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 296.6,
+        "value": 60.0
+      },
+      {
+        "x": 325.1,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13182,6 +13300,17 @@
     "hs8": "2009.19.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 296.6,
+        "value": 60.0
+      },
+      {
+        "x": 325.1,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13190,6 +13319,17 @@
     "hs8": "2009.21.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 296.6,
+        "value": 60.0
+      },
+      {
+        "x": 325.1,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13198,6 +13338,17 @@
     "hs8": "2009.29.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13206,6 +13357,17 @@
     "hs8": "2009.31.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13214,6 +13376,17 @@
     "hs8": "2009.39.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13222,6 +13395,17 @@
     "hs8": "2009.41.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13230,6 +13414,17 @@
     "hs8": "2009.49.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13238,6 +13433,17 @@
     "hs8": "2009.50.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13246,6 +13452,17 @@
     "hs8": "2009.61.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13254,6 +13471,17 @@
     "hs8": "2009.69.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13262,6 +13490,17 @@
     "hs8": "2009.71.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13270,6 +13509,17 @@
     "hs8": "2009.79.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 80,
     "dataSource": "main"
@@ -13278,6 +13528,17 @@
     "hs8": "2009.81.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 81,
     "dataSource": "main"
@@ -13286,6 +13547,17 @@
     "hs8": "2009.89.10",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 81,
     "dataSource": "main"
@@ -13294,6 +13566,17 @@
     "hs8": "2009.89.90",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 81,
     "dataSource": "main"
@@ -13302,6 +13585,17 @@
     "hs8": "2009.90.00",
     "unit": "L",
     "heading": "20.09",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 298.1,
+        "value": 60.0
+      },
+      {
+        "x": 326.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 81,
     "dataSource": "main"
@@ -13569,6 +13863,17 @@
     "hs8": "2106.90.20",
     "unit": "kg",
     "heading": "21.06",
+    "specificDutyNpr": 875.0,
+    "specificDutyAll": [
+      {
+        "x": 362.5,
+        "value": 875.0
+      },
+      {
+        "x": 408.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 83,
     "dataSource": "main"
@@ -13619,6 +13924,17 @@
     "hs8": "2106.90.60",
     "unit": "kg",
     "heading": "21.06",
+    "specificDutyNpr": 375.0,
+    "specificDutyAll": [
+      {
+        "x": 362.5,
+        "value": 375.0
+      },
+      {
+        "x": 408.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 83,
     "dataSource": "main"
@@ -13697,6 +14013,13 @@
     "hs8": "2106.90.99",
     "unit": "kg",
     "heading": "21.06",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 408.8,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 30.0,
     "other": 30.0,
@@ -13777,6 +14100,13 @@
     "hs8": "2202.91.00",
     "unit": "L",
     "heading": "22.02",
+    "specificDutyNpr": 45.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 45.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 40.0,
     "other": 40.0,
@@ -13787,6 +14117,13 @@
     "hs8": "2202.99.10",
     "unit": "L",
     "heading": "22.02",
+    "specificDutyNpr": 52.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 52.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 40.0,
     "other": 40.0,
@@ -13797,6 +14134,13 @@
     "hs8": "2202.99.20",
     "unit": "L",
     "heading": "22.02",
+    "specificDutyNpr": 25.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 25.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 40.0,
     "other": 40.0,
@@ -13807,6 +14151,13 @@
     "hs8": "2202.99.30",
     "unit": "L",
     "heading": "22.02",
+    "specificDutyNpr": 25.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 25.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 40.0,
     "other": 40.0,
@@ -13817,6 +14168,13 @@
     "hs8": "2202.99.90",
     "unit": "L",
     "heading": "22.02",
+    "specificDutyNpr": 25.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 25.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 40.0,
     "other": 40.0,
@@ -13827,6 +14185,21 @@
     "hs8": "2203.00.10",
     "unit": "L",
     "heading": "22.03",
+    "specificDutyNpr": 200.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 200.0
+      },
+      {
+        "x": 307.6,
+        "value": 200.0
+      },
+      {
+        "x": 343.8,
+        "value": 240.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13838,6 +14211,21 @@
     "hs8": "2203.00.20",
     "unit": "L",
     "heading": "22.03",
+    "specificDutyNpr": 200.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 200.0
+      },
+      {
+        "x": 307.6,
+        "value": 200.0
+      },
+      {
+        "x": 343.8,
+        "value": 240.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13849,6 +14237,21 @@
     "hs8": "2204.10.10",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13860,6 +14263,21 @@
     "hs8": "2204.10.20",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13871,6 +14289,21 @@
     "hs8": "2204.10.30",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 535.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13882,6 +14315,21 @@
     "hs8": "2204.21.10",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13893,6 +14341,21 @@
     "hs8": "2204.21.20",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13913,6 +14376,21 @@
     "hs8": "2204.22.10",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13924,6 +14402,17 @@
     "hs8": "2204.22.20",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13935,6 +14424,17 @@
     "hs8": "2204.22.30",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13946,6 +14446,21 @@
     "hs8": "2204.29.10",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13957,6 +14472,17 @@
     "hs8": "2204.29.20",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13968,6 +14494,17 @@
     "hs8": "2204.29.30",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13979,6 +14516,21 @@
     "hs8": "2204.30.10",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -13990,6 +14542,17 @@
     "hs8": "2204.30.20",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -14001,6 +14564,17 @@
     "hs8": "2204.30.30",
     "unit": "L",
     "heading": "22.04",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -14012,6 +14586,21 @@
     "hs8": "2205.10.10",
     "unit": "L",
     "heading": "22.05",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "page": 87,
@@ -14021,6 +14610,17 @@
     "hs8": "2205.10.20",
     "unit": "L",
     "heading": "22.05",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -14032,6 +14632,17 @@
     "hs8": "2205.10.30",
     "unit": "L",
     "heading": "22.05",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -14043,6 +14654,21 @@
     "hs8": "2205.90.10",
     "unit": "L",
     "heading": "22.05",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      },
+      {
+        "x": 343.8,
+        "value": 460.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -14054,6 +14680,17 @@
     "hs8": "2205.90.20",
     "unit": "L",
     "heading": "22.05",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -14065,6 +14702,17 @@
     "hs8": "2205.90.30",
     "unit": "L",
     "heading": "22.05",
+    "specificDutyNpr": 300.0,
+    "specificDutyAll": [
+      {
+        "x": 272.0,
+        "value": 300.0
+      },
+      {
+        "x": 307.6,
+        "value": 300.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 80.0,
@@ -14134,6 +14782,21 @@
     "hs8": "2207.10.10",
     "unit": "L",
     "heading": "22.07",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 274.1,
+        "value": 60.0
+      },
+      {
+        "x": 309.8,
+        "value": 60.0
+      },
+      {
+        "x": 346.9,
+        "value": 80.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 30.0,
@@ -14145,6 +14808,21 @@
     "hs8": "2207.10.20",
     "unit": "L",
     "heading": "22.07",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 274.1,
+        "value": 60.0
+      },
+      {
+        "x": 309.8,
+        "value": 60.0
+      },
+      {
+        "x": 346.9,
+        "value": 80.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 30.0,
@@ -14156,6 +14834,21 @@
     "hs8": "2207.10.30",
     "unit": "L",
     "heading": "22.07",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 274.1,
+        "value": 60.0
+      },
+      {
+        "x": 309.8,
+        "value": 60.0
+      },
+      {
+        "x": 345.9,
+        "value": 90.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 30.0,
     "other": 30.0,
@@ -14166,6 +14859,21 @@
     "hs8": "2207.10.40",
     "unit": "L",
     "heading": "22.07",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 274.1,
+        "value": 60.0
+      },
+      {
+        "x": 309.8,
+        "value": 60.0
+      },
+      {
+        "x": 346.9,
+        "value": 12.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 30.0,
@@ -14177,6 +14885,21 @@
     "hs8": "2207.10.90",
     "unit": "L",
     "heading": "22.07",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 274.1,
+        "value": 60.0
+      },
+      {
+        "x": 309.8,
+        "value": 60.0
+      },
+      {
+        "x": 345.9,
+        "value": 90.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 30.0,
@@ -14188,6 +14911,21 @@
     "hs8": "2207.20.10",
     "unit": "L",
     "heading": "22.07",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 274.1,
+        "value": 60.0
+      },
+      {
+        "x": 309.8,
+        "value": 60.0
+      },
+      {
+        "x": 345.9,
+        "value": 35.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 30.0,
@@ -14199,6 +14937,21 @@
     "hs8": "2207.20.90",
     "unit": "L",
     "heading": "22.07",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 274.1,
+        "value": 60.0
+      },
+      {
+        "x": 309.8,
+        "value": 60.0
+      },
+      {
+        "x": 345.9,
+        "value": 90.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 30.0,
@@ -14210,6 +14963,21 @@
     "hs8": "2208.20.10",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 1500.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 1500.0
+      },
+      {
+        "x": 309.5,
+        "value": 1500.0
+      },
+      {
+        "x": 343.8,
+        "value": 235.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 80.0,
     "page": 90,
@@ -14219,6 +14987,25 @@
     "hs8": "2208.20.91",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 2188.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14230,6 +15017,25 @@
     "hs8": "2208.20.92",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 1854.0
+      },
+      {
+        "x": 343.0,
+        "value": 1390.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14241,6 +15047,25 @@
     "hs8": "2208.20.93",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 1843.0
+      },
+      {
+        "x": 343.0,
+        "value": 1290.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14252,6 +15077,25 @@
     "hs8": "2208.20.99",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 2188.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14263,6 +15107,21 @@
     "hs8": "2208.30.10",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 1500.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 1500.0
+      },
+      {
+        "x": 309.5,
+        "value": 1500.0
+      },
+      {
+        "x": 343.8,
+        "value": 235.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 80.0,
     "page": 90,
@@ -14272,6 +15131,25 @@
     "hs8": "2208.30.91",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 2188.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14283,6 +15161,25 @@
     "hs8": "2208.30.92",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 1853.0
+      },
+      {
+        "x": 343.0,
+        "value": 1390.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14294,6 +15191,25 @@
     "hs8": "2208.30.93",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 1843.0
+      },
+      {
+        "x": 343.0,
+        "value": 1290.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14305,6 +15221,25 @@
     "hs8": "2208.30.99",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 2188.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14316,6 +15251,21 @@
     "hs8": "2208.40.10",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 1500.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 1500.0
+      },
+      {
+        "x": 309.5,
+        "value": 1500.0
+      },
+      {
+        "x": 343.8,
+        "value": 235.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 80.0,
     "page": 91,
@@ -14325,6 +15275,25 @@
     "hs8": "2208.40.91",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 2188.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14336,6 +15305,25 @@
     "hs8": "2208.40.92",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 1853.0
+      },
+      {
+        "x": 343.0,
+        "value": 1390.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14347,6 +15335,25 @@
     "hs8": "2208.40.93",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 1843.0
+      },
+      {
+        "x": 343.0,
+        "value": 1290.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14358,6 +15365,25 @@
     "hs8": "2208.40.99",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 341.6,
+        "value": 2188.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14369,6 +15395,21 @@
     "hs8": "2208.50.10",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 1500.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 1500.0
+      },
+      {
+        "x": 309.5,
+        "value": 1500.0
+      },
+      {
+        "x": 343.8,
+        "value": 235.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 80.0,
     "page": 91,
@@ -14378,6 +15419,25 @@
     "hs8": "2208.50.91",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      },
+      {
+        "x": 343.0,
+        "value": 2188.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14389,6 +15449,25 @@
     "hs8": "2208.50.92",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1390.0
+      },
+      {
+        "x": 343.0,
+        "value": 1853.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14400,6 +15479,25 @@
     "hs8": "2208.50.93",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1290.0
+      },
+      {
+        "x": 343.0,
+        "value": 1843.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14411,6 +15509,25 @@
     "hs8": "2208.50.99",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      },
+      {
+        "x": 343.0,
+        "value": 2188.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14421,6 +15538,13 @@
   {
     "hs8": "2208.60.10",
     "heading": "22.08",
+    "specificDutyNpr": 235.0,
+    "specificDutyAll": [
+      {
+        "x": 515.0,
+        "value": 235.0
+      }
+    ],
     "page": 649,
     "dataSource": "reference"
   },
@@ -14428,6 +15552,25 @@
     "hs8": "2208.60.91",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      },
+      {
+        "x": 343.0,
+        "value": 2188.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14439,6 +15582,25 @@
     "hs8": "2208.60.92",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1390.0
+      },
+      {
+        "x": 343.0,
+        "value": 1853.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14450,6 +15612,25 @@
     "hs8": "2208.60.93",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1290.0
+      },
+      {
+        "x": 343.0,
+        "value": 1843.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14461,6 +15642,25 @@
     "hs8": "2208.60.99",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      },
+      {
+        "x": 343.0,
+        "value": 2188.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14472,6 +15672,21 @@
     "hs8": "2208.70.10",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 1500.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 1500.0
+      },
+      {
+        "x": 309.5,
+        "value": 1500.0
+      },
+      {
+        "x": 343.8,
+        "value": 235.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 80.0,
     "page": 92,
@@ -14481,6 +15696,21 @@
     "hs8": "2208.70.20",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 345.2,
+        "value": 240.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14492,6 +15722,25 @@
     "hs8": "2208.70.91",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      },
+      {
+        "x": 343.0,
+        "value": 2188.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14503,6 +15752,25 @@
     "hs8": "2208.70.92",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1390.0
+      },
+      {
+        "x": 343.0,
+        "value": 1853.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14514,6 +15782,25 @@
     "hs8": "2208.70.93",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1290.0
+      },
+      {
+        "x": 343.0,
+        "value": 1843.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14525,6 +15812,21 @@
     "hs8": "2208.70.99",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14536,6 +15838,21 @@
     "hs8": "2208.90.10",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 1500.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 1500.0
+      },
+      {
+        "x": 309.5,
+        "value": 1500.0
+      },
+      {
+        "x": 343.8,
+        "value": 235.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 80.0,
     "page": 93,
@@ -14545,6 +15862,25 @@
     "hs8": "2208.90.91",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      },
+      {
+        "x": 343.0,
+        "value": 2188.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14556,6 +15892,25 @@
     "hs8": "2208.90.92",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1390.0
+      },
+      {
+        "x": 343.0,
+        "value": 1853.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14567,6 +15922,25 @@
     "hs8": "2208.90.93",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1290.0
+      },
+      {
+        "x": 343.0,
+        "value": 1843.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14578,6 +15952,17 @@
     "hs8": "2208.90.94",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14589,6 +15974,17 @@
     "hs8": "2208.90.95",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14600,6 +15996,17 @@
     "hs8": "2208.90.96",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14611,6 +16018,25 @@
     "hs8": "2208.90.99",
     "unit": "L",
     "heading": "22.08",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 273.9,
+        "value": 2000.0
+      },
+      {
+        "x": 309.5,
+        "value": 2000.0
+      },
+      {
+        "x": 343.0,
+        "value": 1860.0
+      },
+      {
+        "x": 343.0,
+        "value": 2188.0
+      }
+    ],
     "vat": 13.0,
     "advTax": 2.0,
     "saarc": 100.0,
@@ -14964,7 +16390,8 @@
     "hs8": "2401.10.00",
     "unit": "kg",
     "heading": "24.01",
-    "specificDutyNpr": [
+    "specificDutyNpr": 130.0,
+    "specificDutyAll": [
       {
         "x": 351.2,
         "value": 130.0
@@ -14988,6 +16415,13 @@
     "hs8": "2401.30.00",
     "unit": "kg",
     "heading": "24.01",
+    "specificDutyNpr": 130.0,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 130.0
+      }
+    ],
     "vat": 13.0,
     "page": 96,
     "dataSource": "main"
@@ -14995,6 +16429,27 @@
   {
     "hs8": "2402.10.00",
     "heading": "24.02",
+    "unit": "no",
+    "specificDutyNpr": 11000.0,
+    "specificDutyAll": [
+      {
+        "x": 282.2,
+        "value": 11000.0
+      },
+      {
+        "x": 310.5,
+        "value": 11000.0
+      },
+      {
+        "x": 348.1,
+        "value": 31.0
+      },
+      {
+        "x": 395.7,
+        "value": 0.6
+      }
+    ],
+    "specificDutyContext": "stick",
     "vat": 13.0,
     "page": 96,
     "dataSource": "main"
@@ -15002,6 +16457,27 @@
   {
     "hs8": "2402.20.10",
     "heading": "24.02",
+    "unit": "no",
+    "specificDutyNpr": 5500.0,
+    "specificDutyAll": [
+      {
+        "x": 284.3,
+        "value": 5500.0
+      },
+      {
+        "x": 312.7,
+        "value": 5500.0
+      },
+      {
+        "x": 345.9,
+        "value": 778.0
+      },
+      {
+        "x": 395.7,
+        "value": 0.6
+      }
+    ],
+    "specificDutyContext": "stick",
     "vat": 13.0,
     "page": 96,
     "dataSource": "main"
@@ -15009,6 +16485,27 @@
   {
     "hs8": "2402.20.21",
     "heading": "24.02",
+    "unit": "no",
+    "specificDutyNpr": 5500.0,
+    "specificDutyAll": [
+      {
+        "x": 284.3,
+        "value": 5500.0
+      },
+      {
+        "x": 312.7,
+        "value": 5500.0
+      },
+      {
+        "x": 343.8,
+        "value": 1792.0
+      },
+      {
+        "x": 395.7,
+        "value": 0.6
+      }
+    ],
+    "specificDutyContext": "stick",
     "vat": 13.0,
     "page": 96,
     "dataSource": "main"
@@ -15016,6 +16513,27 @@
   {
     "hs8": "2402.20.22",
     "heading": "24.02",
+    "unit": "no",
+    "specificDutyNpr": 5500.0,
+    "specificDutyAll": [
+      {
+        "x": 284.3,
+        "value": 5500.0
+      },
+      {
+        "x": 312.7,
+        "value": 5500.0
+      },
+      {
+        "x": 343.8,
+        "value": 2441.0
+      },
+      {
+        "x": 395.7,
+        "value": 0.6
+      }
+    ],
+    "specificDutyContext": "stick",
     "vat": 13.0,
     "page": 96,
     "dataSource": "main"
@@ -15023,6 +16541,27 @@
   {
     "hs8": "2402.20.23",
     "heading": "24.02",
+    "unit": "no",
+    "specificDutyNpr": 5500.0,
+    "specificDutyAll": [
+      {
+        "x": 284.3,
+        "value": 5500.0
+      },
+      {
+        "x": 312.7,
+        "value": 5500.0
+      },
+      {
+        "x": 343.8,
+        "value": 3213.0
+      },
+      {
+        "x": 395.7,
+        "value": 0.6
+      }
+    ],
+    "specificDutyContext": "stick",
     "vat": 13.0,
     "page": 96,
     "dataSource": "main"
@@ -15030,6 +16569,27 @@
   {
     "hs8": "2402.20.24",
     "heading": "24.02",
+    "unit": "no",
+    "specificDutyNpr": 5500.0,
+    "specificDutyAll": [
+      {
+        "x": 284.3,
+        "value": 5500.0
+      },
+      {
+        "x": 312.7,
+        "value": 5500.0
+      },
+      {
+        "x": 343.8,
+        "value": 4410.0
+      },
+      {
+        "x": 395.7,
+        "value": 0.6
+      }
+    ],
+    "specificDutyContext": "stick",
     "vat": 13.0,
     "page": 96,
     "dataSource": "main"
@@ -15043,6 +16603,27 @@
   {
     "hs8": "2402.90.20",
     "heading": "24.02",
+    "unit": "no",
+    "specificDutyNpr": 11000.0,
+    "specificDutyAll": [
+      {
+        "x": 282.2,
+        "value": 11000.0
+      },
+      {
+        "x": 310.5,
+        "value": 11000.0
+      },
+      {
+        "x": 348.1,
+        "value": 31.0
+      },
+      {
+        "x": 395.7,
+        "value": 0.6
+      }
+    ],
+    "specificDutyContext": "stick",
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15050,12 +16631,27 @@
   {
     "hs8": "2402.90.90",
     "heading": "24.02",
-    "specificDutyNpr": [
+    "unit": "no",
+    "specificDutyNpr": 11000.0,
+    "specificDutyAll": [
+      {
+        "x": 282.2,
+        "value": 11000.0
+      },
+      {
+        "x": 310.5,
+        "value": 11000.0
+      },
       {
         "x": 355.6,
         "value": 31.0
+      },
+      {
+        "x": 395.7,
+        "value": 0.6
       }
     ],
+    "specificDutyContext": "stick",
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15064,6 +16660,17 @@
     "hs8": "2403.11.00",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 343.9,
+        "value": 2000.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15072,6 +16679,17 @@
     "hs8": "2403.19.10",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 2000.0,
+    "specificDutyAll": [
+      {
+        "x": 343.9,
+        "value": 2000.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15080,6 +16698,17 @@
     "hs8": "2403.19.20",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 350.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 350.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15088,6 +16717,17 @@
     "hs8": "2403.19.90",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 350.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 350.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15096,6 +16736,17 @@
     "hs8": "2403.91.00",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 500.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 500.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15104,6 +16755,17 @@
     "hs8": "2403.99.10",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 880.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 880.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15112,6 +16774,17 @@
     "hs8": "2403.99.20",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 480.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 480.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15120,6 +16793,17 @@
     "hs8": "2403.99.30",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 520.0,
+    "specificDutyAll": [
+      {
+        "x": 345.9,
+        "value": 520.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15128,6 +16812,13 @@
     "hs8": "2403.99.91",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 60.0,
+    "specificDutyAll": [
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15136,6 +16827,17 @@
     "hs8": "2403.99.99",
     "unit": "kg",
     "heading": "24.03",
+    "specificDutyNpr": 1500.0,
+    "specificDutyAll": [
+      {
+        "x": 343.8,
+        "value": 1500.0
+      },
+      {
+        "x": 401.0,
+        "value": 60.0
+      }
+    ],
     "vat": 13.0,
     "page": 97,
     "dataSource": "main"
@@ -15162,6 +16864,13 @@
     "hs8": "2404.12.10",
     "unit": "kg",
     "heading": "24.04",
+    "specificDutyNpr": 30.0,
+    "specificDutyAll": [
+      {
+        "x": 401.0,
+        "value": 30.0
+      }
+    ],
     "vat": 13.0,
     "saarc": 40.0,
     "other": 40.0,
@@ -16099,6 +17808,19 @@
   {
     "hs8": "2523.10.00",
     "heading": "25.23",
+    "unit": "kg",
+    "specificDutyNpr": 2.4,
+    "specificDutyAll": [
+      {
+        "x": 297.2,
+        "value": 2400.0
+      },
+      {
+        "x": 330.1,
+        "value": 2400.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "page": 105,
     "dataSource": "main"
@@ -16121,6 +17843,19 @@
   {
     "hs8": "2523.29.00",
     "heading": "25.23",
+    "unit": "kg",
+    "specificDutyNpr": 4.05,
+    "specificDutyAll": [
+      {
+        "x": 297.2,
+        "value": 4050.0
+      },
+      {
+        "x": 330.1,
+        "value": 4050.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "agriFee": 5.0,
     "page": 105,
@@ -16705,6 +18440,19 @@
   {
     "hs8": "2618.00.00",
     "heading": "26.18",
+    "unit": "kg",
+    "specificDutyNpr": 1.0,
+    "specificDutyAll": [
+      {
+        "x": 280.9,
+        "value": 1000.0
+      },
+      {
+        "x": 310.6,
+        "value": 1000.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "page": 109,
     "dataSource": "main"
@@ -16712,6 +18460,19 @@
   {
     "hs8": "2619.00.00",
     "heading": "26.19",
+    "unit": "kg",
+    "specificDutyNpr": 1.0,
+    "specificDutyAll": [
+      {
+        "x": 280.9,
+        "value": 1000.0
+      },
+      {
+        "x": 310.6,
+        "value": 1000.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "page": 109,
     "dataSource": "main"
@@ -16845,6 +18606,19 @@
   {
     "hs8": "2621.10.00",
     "heading": "26.21",
+    "unit": "kg",
+    "specificDutyNpr": 1.0,
+    "specificDutyAll": [
+      {
+        "x": 280.9,
+        "value": 1000.0
+      },
+      {
+        "x": 310.6,
+        "value": 1000.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "page": 110,
     "dataSource": "main"
@@ -16852,6 +18626,19 @@
   {
     "hs8": "2621.90.00",
     "heading": "26.21",
+    "unit": "kg",
+    "specificDutyNpr": 1.0,
+    "specificDutyAll": [
+      {
+        "x": 280.9,
+        "value": 1000.0
+      },
+      {
+        "x": 310.6,
+        "value": 1000.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "page": 110,
     "dataSource": "main"
@@ -16860,6 +18647,13 @@
     "hs8": "2701.11.00",
     "unit": "kg",
     "heading": "27.01",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "saarc": 5.0,
     "other": 5.0,
@@ -16870,6 +18664,13 @@
     "hs8": "2701.12.00",
     "unit": "kg",
     "heading": "27.01",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "saarc": 5.0,
     "other": 5.0,
@@ -16880,6 +18681,13 @@
     "hs8": "2701.19.00",
     "unit": "kg",
     "heading": "27.01",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "saarc": 5.0,
     "other": 5.0,
@@ -16890,6 +18698,13 @@
     "hs8": "2701.20.00",
     "unit": "kg",
     "heading": "27.01",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "saarc": 5.0,
     "other": 5.0,
@@ -16942,6 +18757,13 @@
     "hs8": "2704.00.00",
     "unit": "kg",
     "heading": "27.04",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "saarc": 5.0,
     "other": 5.0,
@@ -17119,6 +18941,30 @@
   {
     "hs8": "2710.12.10",
     "heading": "27.10",
+    "specificDutyNpr": 25200.0,
+    "specificDutyAll": [
+      {
+        "x": 292.5,
+        "value": 25200.0
+      },
+      {
+        "x": 324.1,
+        "value": 25200.0
+      },
+      {
+        "x": 362.0,
+        "value": 1.0
+      },
+      {
+        "x": 384.5,
+        "value": 10.0
+      },
+      {
+        "x": 410.6,
+        "value": 4.0
+      }
+    ],
+    "specificDutyContext": "L",
     "vat": 13.0,
     "page": 113,
     "dataSource": "main"
@@ -17126,6 +18972,22 @@
   {
     "hs8": "2710.12.20",
     "heading": "27.10",
+    "specificDutyNpr": 25200.0,
+    "specificDutyAll": [
+      {
+        "x": 292.5,
+        "value": 25200.0
+      },
+      {
+        "x": 324.1,
+        "value": 25200.0
+      },
+      {
+        "x": 362.0,
+        "value": 1.0
+      }
+    ],
+    "specificDutyContext": "L",
     "vat": 13.0,
     "page": 113,
     "dataSource": "main"
@@ -17133,6 +18995,30 @@
   {
     "hs8": "2710.12.90",
     "heading": "27.10",
+    "specificDutyNpr": 25200.0,
+    "specificDutyAll": [
+      {
+        "x": 292.5,
+        "value": 25200.0
+      },
+      {
+        "x": 324.1,
+        "value": 25200.0
+      },
+      {
+        "x": 362.0,
+        "value": 1.0
+      },
+      {
+        "x": 384.5,
+        "value": 10.0
+      },
+      {
+        "x": 410.6,
+        "value": 4.0
+      }
+    ],
+    "specificDutyContext": "L",
     "vat": 13.0,
     "page": 113,
     "dataSource": "main"
@@ -17147,6 +19033,17 @@
   {
     "hs8": "2710.19.20",
     "heading": "27.10",
+    "specificDutyNpr": 2100.0,
+    "specificDutyAll": [
+      {
+        "x": 294.7,
+        "value": 2100.0
+      },
+      {
+        "x": 326.2,
+        "value": 2100.0
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17154,6 +19051,30 @@
   {
     "hs8": "2710.19.30",
     "heading": "27.10",
+    "specificDutyNpr": 12000.0,
+    "specificDutyAll": [
+      {
+        "x": 292.5,
+        "value": 12000.0
+      },
+      {
+        "x": 324.1,
+        "value": 12000.0
+      },
+      {
+        "x": 362.0,
+        "value": 1.0
+      },
+      {
+        "x": 384.5,
+        "value": 10.0
+      },
+      {
+        "x": 410.6,
+        "value": 2.0
+      }
+    ],
+    "specificDutyContext": "L",
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17161,6 +19082,17 @@
   {
     "hs8": "2710.19.40",
     "heading": "27.10",
+    "specificDutyNpr": 440.0,
+    "specificDutyAll": [
+      {
+        "x": 296.8,
+        "value": 440.0
+      },
+      {
+        "x": 329.8,
+        "value": 440.0
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17169,6 +19101,13 @@
     "hs8": "2710.19.50",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17177,6 +19116,13 @@
     "hs8": "2710.19.60",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17185,6 +19131,13 @@
     "hs8": "2710.19.70",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "page": 114,
     "dataSource": "main"
   },
@@ -17202,6 +19155,13 @@
     "hs8": "2710.19.91",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17210,6 +19170,13 @@
     "hs8": "2710.19.92",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17218,6 +19185,13 @@
     "hs8": "2710.19.93",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17226,6 +19200,13 @@
     "hs8": "2710.19.94",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17234,6 +19215,13 @@
     "hs8": "2710.19.95",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17242,6 +19230,13 @@
     "hs8": "2710.19.96",
     "unit": "L",
     "heading": "27.10",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "page": 114,
     "dataSource": "main"
@@ -17485,6 +19480,13 @@
     "hs8": "2713.11.00",
     "unit": "kg",
     "heading": "27.13",
+    "specificDutyNpr": 0.5,
+    "specificDutyAll": [
+      {
+        "x": 355.8,
+        "value": 0.5
+      }
+    ],
     "vat": 13.0,
     "saarc": 5.0,
     "other": 5.0,
@@ -29549,6 +31551,13 @@
     "hs8": "3707.90.90",
     "unit": "kg",
     "heading": "37.07",
+    "specificDutyNpr": 15.0,
+    "specificDutyAll": [
+      {
+        "x": 60.6,
+        "value": 15.0
+      }
+    ],
     "eff_saarc": 10.0,
     "eff_india": 18.65,
     "eff_tibet": 18.65,
@@ -56207,6 +58216,14 @@
     "hs8": "7206.10.00",
     "unit": "kg",
     "heading": "72.06",
+    "specificDutyNpr": 3.5,
+    "specificDutyAll": [
+      {
+        "x": 346.6,
+        "value": 3500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 5.0,
@@ -56217,6 +58234,14 @@
     "hs8": "7206.90.00",
     "unit": "kg",
     "heading": "72.06",
+    "specificDutyNpr": 3.5,
+    "specificDutyAll": [
+      {
+        "x": 347.5,
+        "value": 3500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 5.0,
@@ -56479,6 +58504,14 @@
     "hs8": "7209.15.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56489,6 +58522,14 @@
     "hs8": "7209.16.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56499,6 +58540,14 @@
     "hs8": "7209.17.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56509,6 +58558,14 @@
     "hs8": "7209.18.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56519,6 +58576,14 @@
     "hs8": "7209.25.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56529,6 +58594,14 @@
     "hs8": "7209.26.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56539,6 +58612,14 @@
     "hs8": "7209.27.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56549,6 +58630,14 @@
     "hs8": "7209.28.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56559,6 +58648,14 @@
     "hs8": "7209.90.00",
     "unit": "kg",
     "heading": "72.09",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 5.0,
     "other": 15.0,
@@ -56625,6 +58722,14 @@
     "hs8": "7210.41.00",
     "unit": "kg",
     "heading": "72.10",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 30.0,
     "other": 30.0,
@@ -56719,6 +58824,14 @@
     "hs8": "7211.13.00",
     "unit": "kg",
     "heading": "72.11",
+    "specificDutyNpr": 7.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 7500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 6.0,
     "other": 30.0,
@@ -56729,6 +58842,14 @@
     "hs8": "7211.14.00",
     "unit": "kg",
     "heading": "72.11",
+    "specificDutyNpr": 7.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 7500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 6.0,
     "other": 30.0,
@@ -56739,6 +58860,14 @@
     "hs8": "7211.19.00",
     "unit": "kg",
     "heading": "72.11",
+    "specificDutyNpr": 7.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 7500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 6.0,
     "other": 30.0,
@@ -56749,6 +58878,14 @@
     "hs8": "7211.23.00",
     "unit": "kg",
     "heading": "72.11",
+    "specificDutyNpr": 7.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 7500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 6.0,
     "other": 30.0,
@@ -56759,6 +58896,14 @@
     "hs8": "7211.29.00",
     "unit": "kg",
     "heading": "72.11",
+    "specificDutyNpr": 7.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 7500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 6.0,
     "other": 30.0,
@@ -56769,6 +58914,14 @@
     "hs8": "7211.90.00",
     "unit": "kg",
     "heading": "72.11",
+    "specificDutyNpr": 7.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 7500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 6.0,
     "other": 30.0,
@@ -56863,6 +59016,14 @@
     "hs8": "7213.10.00",
     "unit": "kg",
     "heading": "72.13",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 30.0,
     "other": 30.0,
@@ -56873,6 +59034,14 @@
     "hs8": "7213.20.00",
     "unit": "kg",
     "heading": "72.13",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 348.1,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 30.0,
     "other": 30.0,
@@ -56883,6 +59052,14 @@
     "hs8": "7213.91.10",
     "unit": "kg",
     "heading": "72.13",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 346.6,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 10.0,
     "other": 10.0,
@@ -56893,6 +59070,14 @@
     "hs8": "7213.91.90",
     "unit": "kg",
     "heading": "72.13",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 346.6,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 30.0,
     "other": 30.0,
@@ -56903,6 +59088,14 @@
     "hs8": "7213.99.00",
     "unit": "kg",
     "heading": "72.13",
+    "specificDutyNpr": 4.5,
+    "specificDutyAll": [
+      {
+        "x": 346.6,
+        "value": 4500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 15.0,
     "other": 15.0,
@@ -58915,6 +61108,14 @@
     "hs8": "7318.11.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -58925,6 +61126,14 @@
     "hs8": "7318.12.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -58935,6 +61144,14 @@
     "hs8": "7318.13.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -58945,6 +61162,14 @@
     "hs8": "7318.14.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -58955,6 +61180,14 @@
     "hs8": "7318.15.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -58965,6 +61198,14 @@
     "hs8": "7318.16.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -58975,6 +61216,14 @@
     "hs8": "7318.19.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -58985,6 +61234,14 @@
     "hs8": "7318.21.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -58995,6 +61252,14 @@
     "hs8": "7318.22.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -59005,6 +61270,14 @@
     "hs8": "7318.23.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -59015,6 +61288,14 @@
     "hs8": "7318.24.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -59025,6 +61306,14 @@
     "hs8": "7318.29.00",
     "unit": "kg",
     "heading": "73.18",
+    "specificDutyNpr": 2.5,
+    "specificDutyAll": [
+      {
+        "x": 322.9,
+        "value": 2500.0
+      }
+    ],
+    "specificDutyContext": "ton",
     "vat": 13.0,
     "saarc": 7.25,
     "other": 15.0,
@@ -77095,6 +79384,13 @@
     "hs8": "8703.21.11",
     "unit": "no",
     "heading": "87.03",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 511,
     "dataSource": "main"
@@ -77103,6 +79399,13 @@
     "hs8": "8703.21.19",
     "unit": "no",
     "heading": "87.03",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 511,
     "dataSource": "main"
@@ -77505,6 +79808,13 @@
     "hs8": "8703.80.11",
     "unit": "no",
     "heading": "87.03",
+    "specificDutyNpr": 10000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 10000.0
+      }
+    ],
     "vat": 13.0,
     "page": 512,
     "dataSource": "main"
@@ -77513,6 +79823,13 @@
     "hs8": "8703.80.19",
     "unit": "no",
     "heading": "87.03",
+    "specificDutyNpr": 10000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 10000.0
+      }
+    ],
     "vat": 13.0,
     "page": 512,
     "dataSource": "main"
@@ -77783,6 +80100,13 @@
     "hs8": "8704.21.40",
     "unit": "no",
     "heading": "87.04",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 514,
     "dataSource": "main"
@@ -78106,6 +80430,13 @@
     "hs8": "8704.31.40",
     "unit": "no",
     "heading": "87.04",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 515,
     "dataSource": "main"
@@ -78324,6 +80655,13 @@
     "hs8": "8704.41.40",
     "unit": "no",
     "heading": "87.04",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 516,
     "dataSource": "main"
@@ -78647,6 +80985,13 @@
     "hs8": "8704.51.40",
     "unit": "no",
     "heading": "87.04",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 517,
     "dataSource": "main"
@@ -78835,6 +81180,13 @@
     "hs8": "8704.60.20",
     "unit": "no",
     "heading": "87.04",
+    "specificDutyNpr": 10000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 10000.0
+      }
+    ],
     "vat": 13.0,
     "page": 517,
     "dataSource": "main"
@@ -79565,6 +81917,13 @@
     "hs8": "8711.10.00",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 520,
     "dataSource": "main"
@@ -79573,6 +81932,13 @@
     "hs8": "8711.20.11",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 520,
     "dataSource": "main"
@@ -79581,6 +81947,13 @@
     "hs8": "8711.20.12",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 18000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 18000.0
+      }
+    ],
     "vat": 13.0,
     "page": 520,
     "dataSource": "main"
@@ -79589,6 +81962,13 @@
     "hs8": "8711.20.19",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 18000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 18000.0
+      }
+    ],
     "vat": 13.0,
     "page": 520,
     "dataSource": "main"
@@ -79597,6 +81977,13 @@
     "hs8": "8711.20.91",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 15000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 15000.0
+      }
+    ],
     "vat": 13.0,
     "page": 520,
     "dataSource": "main"
@@ -79605,6 +81992,13 @@
     "hs8": "8711.20.92",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 18000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 18000.0
+      }
+    ],
     "vat": 13.0,
     "page": 520,
     "dataSource": "main"
@@ -79613,6 +82007,13 @@
     "hs8": "8711.20.99",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 18000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 18000.0
+      }
+    ],
     "vat": 13.0,
     "page": 520,
     "dataSource": "main"
@@ -79621,6 +82022,13 @@
     "hs8": "8711.30.11",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 20000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 20000.0
+      }
+    ],
     "vat": 13.0,
     "agriFee": 60.0,
     "saarc": 30.0,
@@ -79632,6 +82040,13 @@
     "hs8": "8711.30.19",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 20000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 20000.0
+      }
+    ],
     "vat": 13.0,
     "agriFee": 60.0,
     "saarc": 70.0,
@@ -79717,6 +82132,13 @@
     "hs8": "8711.60.20",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 10000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 10000.0
+      }
+    ],
     "vat": 13.0,
     "page": 521,
     "dataSource": "main"
@@ -79725,6 +82147,13 @@
     "hs8": "8711.60.31",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 10000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 10000.0
+      }
+    ],
     "vat": 13.0,
     "page": 521,
     "dataSource": "main"
@@ -79733,6 +82162,13 @@
     "hs8": "8711.60.32",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 10000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 10000.0
+      }
+    ],
     "vat": 13.0,
     "page": 521,
     "dataSource": "main"
@@ -79741,6 +82177,13 @@
     "hs8": "8711.60.39",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 10000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 10000.0
+      }
+    ],
     "vat": 13.0,
     "page": 521,
     "dataSource": "main"
@@ -79749,6 +82192,13 @@
     "hs8": "8711.60.90",
     "unit": "no",
     "heading": "87.11",
+    "specificDutyNpr": 10000.0,
+    "specificDutyAll": [
+      {
+        "x": 373.6,
+        "value": 10000.0
+      }
+    ],
     "vat": 13.0,
     "page": 521,
     "dataSource": "main"

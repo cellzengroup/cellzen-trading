@@ -93,11 +93,14 @@ for r in nepal:
     # These are alternative or additive to the ad-valorem rates and matter
     # for accurate landed-cost calculation on those goods.
     specific_duty_npr = None
-    if r.get("specificDutyNpr"):
-        # Pick the largest captured value as the specific duty rate.
-        # The PDF sometimes shows the same Rs amount in multiple unit columns
-        # (e.g. "Rs 100 per kg" appears 3 times across the column row).
-        specific_duty_npr = max(d["value"] for d in r["specificDutyNpr"])
+    raw_spec = r.get("specificDutyNpr")
+    if raw_spec is not None:
+        # New extractor emits a scalar (already per-row-unit normalized).
+        # Older extractors emitted a list of {x, value} dicts.
+        if isinstance(raw_spec, (int, float)):
+            specific_duty_npr = float(raw_spec)
+        elif isinstance(raw_spec, list) and raw_spec:
+            specific_duty_npr = max(d.get("value", 0) for d in raw_spec if isinstance(d, dict))
 
     # Slim runtime record. Dropped fields (saved ~700 KB raw / ~35 KB gzipped):
     #   - code6        → derive at runtime from code (`code.replace(/\D/g,'').slice(0,6)`)

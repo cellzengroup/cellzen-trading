@@ -71,7 +71,69 @@ UNIT_MAP = {
     "नॊ.": "no", "नॊग": "no", "थान": "no", "गोटा": "no",
     "क्मायेट": "carat", "ङ्ञक्भलं": "carat",
     "लं.टग": "ton", "टग": "ton",
+    # Per-unit context markers used in chapters 17 (sugar), 22 (alcohol),
+    # 24 (tobacco). These act as both a unit declaration AND a divisor.
+    "प्र.क्वी.": "quintal",   # per quintal = per 100 kg
+    "प्र.हजाय": "thousand",   # per thousand sticks (cigarettes)
+    "प्र.हजार": "thousand",
+    "प्र.ङ्झर.": "L",          # per litre
+    "प्र.लि.": "L",
+    "ङ्ञखल्री": "stick",       # per stick (cigarettes)
 }
+
+# Per-unit divisors. When a row's specific-duty rate is expressed "per X" but
+# the row's own unit is in finer granularity (e.g., per quintal but unit=kg),
+# we divide the rate so it can be applied directly to item.weight.
+SPECIFIC_DIVISOR = {
+    "quintal": 100,    # 1 quintal = 100 kg → Rs/quintal ÷ 100 = Rs/kg
+    "thousand": 1000,  # 1000 sticks → Rs/1000 ÷ 1000 = Rs/stick
+    "ton":      1000,  # 1 ton = 1000 kg → Rs/ton ÷ 1000 = Rs/kg
+}
+
+# When a per-unit context is detected but the row never declared a unit,
+# default to this. Cigarettes use "no" (per stick) when "per thousand" is
+# the rate basis.
+CONTEXT_TO_FALLBACK_UNIT = {
+    "thousand": "no",
+    "stick":    "no",
+    "quintal":  "kg",
+    "ton":      "kg",
+}
+
+# Prefix-match detection of per-unit context markers. The PDF's corrupted CMap
+# produces slightly different glyph variants for "प्र.क्वी." vs "प्र.हजाय" vs
+# "प्र.लि." across chapters, so we use a startswith check on a few stable
+# prefix patterns rather than exact-match against UNIT_MAP. Returns the
+# context name if matched, else None.
+def detect_per_unit_context(token):
+    if not token:
+        return None
+    # Per-quintal: "प्र.क्वी." or "प्र.क्व..."
+    if token.startswith("प्र.क्वी") or token.startswith("प्र.क्व"):
+        return "quintal"
+    # Per-thousand: "प्र.हजाय" or "प्र.हजार" (typical for cigarettes/cigars)
+    if token.startswith("प्र.हजा") or token.startswith("प्र.हजार"):
+        return "thousand"
+    # Per-litre: "प्र.लि." or "प्र.ङ्झर." (alcohol; PDF uses corrupted form)
+    if token.startswith("प्र.लि") or token.startswith("प्र.ङ्झर"):
+        return "L"
+    # Per-ton: "प्र.टन" or "प्र.म.ट" (metric ton)
+    if token.startswith("प्र.टन") or token.startswith("प्र.भे.ट") or token.startswith("प्र.म.ट"):
+        return "ton"
+    return None
+
+# Match a "रु.X" or "रू.X" rupee token where the number is JOINED to the
+# marker (most common form in chapters 22, 24). Captures the numeric part
+# (including Devanagari digits, optional ".N" decimals, optional trailing
+# Nepali punctuation "।-" or "/N" fractional notation).
+#
+# Examples that match:
+#   रु.130          → "130"
+#   रु.4५।-         → "4५"
+#   रू.११०००        → "११०००"
+#   रु.0/60         → "0/60"   (handled separately as "0.60" decimal)
+#   रु.२०४२         → "२०४२"
+RUPEE_JOINED_RE = re.compile(r"^र[ुू]\.([०-९0-9]+(?:[/.][०-९0-9]+)?)(?:।-?|।)?$")
 
 # "Exempt" markers — Nepali customs convention for "duty NIL / EXEMPTED".
 # Treated as numeric 0 in the column-assignment logic. These are the words
@@ -186,36 +248,61 @@ def parse_row(toks):
     and isn't useful.
     """
     rec = {"hs8": None, "raw": []}
-    numeric_tokens = []  # (x, value, has_star)
-    rupee_marker_x = []  # x positions of "रु." (Rs) tokens — these mark a
-                         # following number as a SPECIFIC duty (Rs/unit), not
-                         # an ad-valorem %. Used in chapters 17 (sugar),
-                         # 22 (alcohol), 24 (tobacco), 27 (petroleum).
-    unit_x = None        # X-position of the unit token. Rate columns start
-                         # ~25pt to its right; tokens before it are
-                         # description-embedded numbers (e.g., "5000 kg"
-                         # capacity specs in chapter 84 machinery).
+    numeric_tokens = []      # (x, value, has_star) — generic ad-valorem candidates
+    rupee_marker_x = []      # x positions of standalone "रु." tokens (split form)
+    joined_rupee_values = [] # (x, value) — pre-extracted from "रु.X" joined tokens
+    per_unit_context = None  # "quintal" / "thousand" / "L" / "stick" if any
+                             # context marker found in the row
+    unit_x = None            # rightmost unit-token x (rate columns start ~22pt right)
 
     for x, t in toks:
         rec["raw"].append((round(x, 1), t))
         if HS8_RE.match(t):
             rec["hs8"] = deva_to_ascii(t)
-        elif t in UNIT_MAP:
-            rec["unit"] = UNIT_MAP[t]
-            # Track the rightmost unit position; some rows have multiple
-            # unit-like tokens (e.g., "गोटा/कि.ग्रा.") and the rightmost is
-            # the actual unit-column anchor.
-            if unit_x is None or x > unit_x:
-                unit_x = x
-        elif t in ("रु.", "रू.", "रुपैयाँ", "Rs.", "Rs"):
+            continue
+        # Joined rupee token: "रु.130" / "रु.११०००" / "रु.4५।-" / "रु.0/60"
+        m = RUPEE_JOINED_RE.match(t)
+        if m:
+            raw_val = deva_to_ascii(m.group(1))
+            try:
+                if "/" in raw_val:
+                    # PDF uses "0/60" notation for sub-rupee values like Rs 0.60
+                    a, b = raw_val.split("/", 1)
+                    if a == "0":
+                        val = float("0." + b)
+                    else:
+                        bf = float(b)
+                        val = float(a) / bf if bf > 0 else float(a)
+                else:
+                    val = float(raw_val)
+                joined_rupee_values.append((x, val))
+            except ValueError:
+                pass
+            continue
+        # Per-unit context (prefix match — handles corrupted CMap variants)
+        ctx = detect_per_unit_context(t)
+        if ctx:
+            per_unit_context = ctx
+            continue
+        if t in UNIT_MAP:
+            mapped = UNIT_MAP[t]
+            # Some UNIT_MAP entries are per-unit context markers; treat them
+            # the same way (track context, don't set as primary unit).
+            if mapped in SPECIFIC_DIVISOR or mapped == "stick":
+                per_unit_context = mapped
+            else:
+                rec["unit"] = mapped
+                if unit_x is None or x > unit_x:
+                    unit_x = x
+            continue
+        if t in ("रु.", "रू.", "रुपैयाँ", "Rs.", "Rs"):
             rupee_marker_x.append(x)
-        elif t in EXEMPT_MARKERS:
+            continue
+        if t in EXEMPT_MARKERS:
             # "Exempt / NIL" customs duty cell — numerically zero.
-            # The legal effect is "no duty owed", which is 0% for calculation
-            # purposes. Distinguishes from a truly blank cell which we leave
-            # as null (= "data not in PDF" rather than "explicitly 0").
             numeric_tokens.append((x, 0.0, False))
-        elif NUM_RE.match(t):
+            continue
+        if NUM_RE.match(t):
             v, star = to_float(t)
             if v is not None:
                 numeric_tokens.append((x, v, star))
@@ -246,20 +333,78 @@ def parse_row(toks):
         rate_x_min = 265
     nums = [(x, v, s) for (x, v, s) in nums if x >= rate_x_min]
 
-    # Strip out specific-duty values (Rs/unit) marked by a preceding "रु." token.
-    # Any number within ~22pt to the right of a rupee marker is a specific duty,
-    # NOT an ad-valorem rate. Track them but don't assign to ad-valorem columns.
+    # Specific-duty (Rs/unit) extraction.
+    #
+    # Two source forms:
+    #   A) SPLIT  : "रु." marker followed by a number token within ~22pt
+    #               (chapter 17 sugars use this; rupee_marker_x captures these).
+    #   B) JOINED : "रु.130" or "रु.११०००" or "रु.0/60" all in one token
+    #               (chapters 22 alcohol, 24 tobacco use this; we already
+    #                pre-extracted these in joined_rupee_values).
+    #
+    # We collect all values from both forms, then convert to a single
+    # CANONICAL per-row scalar:
+    #   - If a per-unit context marker was detected (per quintal, per
+    #     thousand sticks), divide the rate so it lines up with the row's
+    #     own unit (kg or each).
+    #   - When multiple values are present (e.g., cigarettes have separate
+    #     SAARC and Other specific rates), we pick the FIRST value at the
+    #     leftmost x in the customs-duty band (x < 360). When the SAARC and
+    #     Other rates differ, the runtime calc uses this value for both;
+    #     this is a known limitation worth refining later.
+    specific_values = []  # (x, value)
     if rupee_marker_x:
-        specific_duties = []
         cleaned = []
-        for x, v, s in nums:
+        for x, v, sstar in nums:
             if any(0 <= x - rmx <= 22 for rmx in rupee_marker_x):
-                specific_duties.append({"x": round(x, 1), "value": v})
+                specific_values.append((x, v))
             else:
-                cleaned.append((x, v, s))
-        if specific_duties:
-            rec["specificDutyNpr"] = specific_duties
+                cleaned.append((x, v, sstar))
         nums = cleaned
+    for x, v in joined_rupee_values:
+        specific_values.append((x, v))
+
+    if specific_values:
+        # Sort by x, then take the leftmost as the canonical per-row rate.
+        # In cigarette rows the SAARC/Other rate (leftmost rupee token) is
+        # what we want; extra agri/excise rates are kept in the multi-value
+        # array for inspection but not used as the canonical rate.
+        specific_values.sort(key=lambda p: p[0])
+        canonical = specific_values[0][1]
+
+        # Apply per-unit context divisor (per-quintal /100, per-thousand /1000,
+        # per-ton /1000) so the stored rate is in the row's natural unit.
+        divisor = SPECIFIC_DIVISOR.get(per_unit_context, 1)
+        if divisor > 1:
+            canonical = canonical / divisor
+
+        # When per-unit context implies a specific item granularity (per
+        # thousand → sticks/no; per quintal → kg) but the row never declared
+        # an explicit unit, fall back so the runtime calc has SOMETHING to
+        # multiply by. Otherwise the duty would silently be 0.
+        if per_unit_context and not rec.get("unit"):
+            fallback = CONTEXT_TO_FALLBACK_UNIT.get(per_unit_context)
+            if fallback:
+                rec["unit"] = fallback
+
+        rec["specificDutyNpr"] = round(canonical, 4)
+        # Preserve the raw multi-value array for inspection / debugging.
+        rec["specificDutyAll"] = [{"x": round(x, 1), "value": v} for x, v in specific_values]
+        if per_unit_context:
+            rec["specificDutyContext"] = per_unit_context
+        # When the row's customs-duty columns ARE specific (cigarettes),
+        # the values that LOOK like SAARC% / Other% are actually the same
+        # specific rate. Suppress them so the runtime doesn't double-count.
+        # Heuristic: if any specific value is in the customs-duty band
+        # (x < 360) AND the row has unit "no" or per-unit-context "thousand"/"stick",
+        # treat the customs columns as duplicates of the specific rate.
+        if (per_unit_context in ("thousand", "stick")) or rec.get("unit") in ("no",):
+            # Filter out numeric tokens that are duplicates of specific values
+            # in the customs-duty x-band.
+            specific_xs = [x for x, _ in specific_values if x < 360]
+            if specific_xs:
+                nums = [(x, v, s) for (x, v, s) in nums
+                        if not any(abs(x - sx) <= 5 for sx in specific_xs)]
 
     # Detect the effective-rate cluster: the 4 rightmost numerics that are
     # tightly packed (each within ~35pt of the next), with the rightmost at
