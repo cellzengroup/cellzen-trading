@@ -40,25 +40,44 @@ export function getCachedBase() {
 }
 
 // Try each candidate base in turn. Returns the first response that completes
-// (regardless of HTTP status) and caches the base that worked. Throws only if
-// every candidate hits a network/CORS error.
+// without a network error, and caches the base ONLY if the response code is
+// 2xx/3xx — never caches a 4xx/5xx response. This avoids the "sticky-cache"
+// bug where a 401 from a stale Render replica would lock the whole session
+// onto that bad host and produce intermittent login failures.
 export async function resilientFetch(path, init = {}) {
-  // If we already have a working base, use it directly
+  // If we already have a known-good base, use it directly.
   if (cachedWorkingBase) {
-    return fetch(`${cachedWorkingBase}${path}`, init);
+    try {
+      return await fetch(`${cachedWorkingBase}${path}`, init);
+    } catch (err) {
+      // Network error on the cached base — clear the cache and re-try the
+      // full candidate list. (Don't propagate stale routing decisions.)
+      cachedWorkingBase = null;
+    }
   }
 
   const bases = getApiBaseCandidates();
   let lastErr = null;
+  let firstResponse = null;
   for (const base of bases) {
     try {
       const res = await fetch(`${base}${path}`, init);
-      cachedWorkingBase = base;
-      return res;
+      // Cache the base only if it actually answered successfully — a 401
+      // from a stale replica should NOT pin the session to it.
+      if (res.ok || (res.status >= 300 && res.status < 400)) {
+        cachedWorkingBase = base;
+        return res;
+      }
+      // Non-2xx/3xx — keep this response as a fallback but try the next base
+      // first to see if a better one exists.
+      if (!firstResponse) firstResponse = res;
     } catch (err) {
       lastErr = err;
     }
   }
+  // No base returned 2xx/3xx — return the first non-success response (so the
+  // caller still gets a real error code/body) without poisoning the cache.
+  if (firstResponse) return firstResponse;
   throw lastErr || new Error("All API hosts failed");
 }
 

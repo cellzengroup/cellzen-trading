@@ -11,6 +11,7 @@ const { errorHandler, notFoundHandler } = require('./middleware/validation');
 const formsRoutes = require('./routes/forms');
 const customerAuthRoutes = require('./routes/customerAuth');
 const inventoryRoutes = require('./inventory/routes');
+const manasRoutes = require('./routes/manas');
 const sequelize = require('./config/postgres');
 
 // Initialize Express app
@@ -85,9 +86,18 @@ app.options('*', cors({
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
-// Request logging middleware
+// Request logging middleware — only verbose in dev. In prod, log only
+// non-2xx responses so the log isn't drowned in 200s from healthy traffic.
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  if (!isProduction) {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  } else {
+    res.on('finish', () => {
+      if (res.statusCode >= 400) {
+        console.log(`${new Date().toISOString()} ${res.statusCode} ${req.method} ${req.path}`);
+      }
+    });
+  }
   next();
 });
 
@@ -116,6 +126,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/forms', formsRoutes);
 app.use('/api/customer/auth', customerAuthRoutes);
 app.use('/api/inventory', inventoryRoutes);
+app.use('/api/manas', manasRoutes);
 
 // Catch-all route — serve frontend index.html for non-API routes when dist exists
 app.all('*', (req, res, next) => {

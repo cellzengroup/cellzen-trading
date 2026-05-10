@@ -63,6 +63,7 @@ import HelpCenter from './components/HelpCenter';
 import Support from './components/Support';
 import Privacy from './components/Privacy';
 import Terms from './components/Terms';
+import ManasBubble from './components/Manas/ManasBubble';
 
 function App() {
   const { i18n } = useTranslation();
@@ -121,6 +122,11 @@ function App() {
     <CurrencyProvider>
     <Router basename={basename}>
       <ScrollToTop />
+      {/* Isolate MANAS in its own boundary so any crash inside the chat panel
+          (network/streaming/markdown edge cases) cannot take down the whole site. */}
+      <ErrorBoundary>
+        <ManasBubble />
+      </ErrorBoundary>
       <Routes>
         {/* Inventory Management - independent layout (no main site nav/footer) */}
         <Route

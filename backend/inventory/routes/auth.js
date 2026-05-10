@@ -84,23 +84,38 @@ const requireAdmin = (req, res, next) => {
 // POST /admin-login
 router.post('/admin-login', async (req, res) => {
   try {
-    const { identifier, password } = req.body;
+    const rawIdentifier = req.body?.identifier;
+    const rawPassword   = req.body?.password;
 
-    if (!identifier || !password) {
+    if (!rawIdentifier || !rawPassword) {
       return res.status(400).json({ success: false, message: 'ID/email and password are required' });
     }
 
-    const matched = ADMIN_CREDENTIALS.find((credential) => {
-      const normalizedIdentifier = identifier.trim().toLowerCase();
-      return (
-        (credential.identifier.toLowerCase() === normalizedIdentifier
-          || credential.email.toLowerCase() === normalizedIdentifier
-          || credential.username.toLowerCase() === normalizedIdentifier)
-        && credential.password === password
-      );
-    });
+    // Defense against browser autofill / paste leaving whitespace, zero-width
+    // spaces, or non-breaking spaces around the credentials. Strict === fails
+    // on a single trailing space, which is a common cause of "intermittent"
+    // login failures users can't reproduce.
+    const identifier = String(rawIdentifier).replace(/[\s​ ]+/g, ' ').trim();
+    const password   = String(rawPassword).replace(/^[\s​ ]+|[\s​ ]+$/g, '');
+    const normalizedIdentifier = identifier.toLowerCase();
+
+    const matched = ADMIN_CREDENTIALS.find((credential) =>
+      (credential.identifier.toLowerCase() === normalizedIdentifier
+        || credential.email.toLowerCase() === normalizedIdentifier
+        || credential.username.toLowerCase() === normalizedIdentifier)
+      && credential.password === password
+    );
 
     if (!matched) {
+      // Diagnostic: log WHICH part failed (identifier vs password) without
+      // leaking the actual values. Helps debug intermittent failures.
+      const idMatch = ADMIN_CREDENTIALS.find((c) =>
+        c.identifier.toLowerCase() === normalizedIdentifier
+        || c.email.toLowerCase() === normalizedIdentifier
+        || c.username.toLowerCase() === normalizedIdentifier
+      );
+      console.warn('[AdminLogin] Reject:', idMatch ? 'wrong-password' : 'unknown-identifier',
+        '| id-length:', identifier.length, '| pw-length:', password.length);
       return res.status(401).json({ success: false, message: 'Invalid admin credentials' });
     }
 
