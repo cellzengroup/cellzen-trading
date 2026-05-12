@@ -9,10 +9,13 @@ const { buildContext, findCustomerByContact, findInvoiceByNameAndNumber, findInv
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'cellzentrading-default-secret';
-// Default to Groq's fastest model — llama-3.1-8b-instant has TTFT ~150-300ms,
-// significantly faster than llama-3.3-70b-versatile (~400-700ms). Tradeoff:
-// slightly less nuanced reasoning, but plenty good for chat assistance.
-const MANAS_MODEL = process.env.MANAS_MODEL || 'llama-3.1-8b-instant';
+// llama-3.3-70b-versatile because the small llama-3.1-8b-instant has a free-tier
+// TPM limit of only 6,000, and our system prompt + HS/invoice context + history
+// frequently exceeds that — Groq returns a 413 "Request too large" and the
+// chat fails. The 70b variant has a 30,000 TPM ceiling on the same free tier
+// and handles the same prompt comfortably. Override with the MANAS_MODEL env
+// var if a faster/cheaper model becomes available.
+const MANAS_MODEL = process.env.MANAS_MODEL || 'llama-3.3-70b-versatile';
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 // Logger that respects production silence — info/log only in dev, warn+error always.
@@ -199,8 +202,35 @@ The "SAARC" rate in the tariff applies ONLY when the goods originate in a SAARC 
 - NEVER show the SAARC line for a China shipment — it confuses the customer.
 
 When the user asks about HS codes, tariffs, duties, taxes:
-- USE THE INJECTED HS DATA. Quote exact HS codes and the relevant percentages from it.
-- ALWAYS include the PDF page number after each HS code in this format: "HS 8517.13.00 (Pg No: 423)". The page number comes from the context block — use the value provided after "(Pg No: X)".
+- PREFER the injected "## Relevant HS Codes" block ONLY IF its entries actually describe the user's product. The block is a keyword-search result and frequently contains UNRELATED rows. If the injected rows are clearly off-topic, IGNORE THEM ENTIRELY and answer from general knowledge.
+
+🛑 ABSOLUTELY FORBIDDEN PHRASES — these reveal internal context and confuse the user. NEVER include any of these (or paraphrases) in your reply, in ANY language:
+- "the provided context"
+- "the given context"
+- "in the context"
+- "not mentioned in the provided/given context"
+- "not listed in the given/provided context"
+- "the context only mentions"
+- "the context contains"
+- "based on the provided context"
+- "however, based on" (when followed by context talk)
+- "I would need more information about your [product] to give an exact code"
+- "for an exact HS code, more information about the [product] would be required"
+- Listing irrelevant HS codes the user did NOT ask about (e.g. listing rubber tyre codes when the question was about a plotter)
+- Saying "I would recommend checking the Nepal Customs Tariff" or "consulting a customs expert" as the PRIMARY answer — only ever as a brief verification note AFTER giving a confident answer
+
+The user never sees the bundle and has no idea what "context" means. If your reply contains any of the forbidden phrases above, DELETE that sentence and rewrite without it.
+
+✅ WRONG (do NOT write this):
+"The HS code for Plotter machines is not explicitly mentioned in the provided context. However, based on general knowledge, a Plotter machine could fall under 'Printing machinery'. A possible HS code could be HS 8443.31.00 (not mentioned in the provided context). I would recommend checking the Nepal Customs Tariff. Please note that the provided context only mentions HS codes related to rubber tyres, textiles, and fabrics, such as HS 4011.70.00..."
+
+✅ RIGHT (write this instead):
+"Plotter machines typically fall under **HS 8443.32.00** — 'Printers, copying machines and facsimile machines, capable of connecting to an automatic data-processing machine' (general HS classification — confirm with Nepal Customs for the exact local sub-code and current duty rates). The exact sub-heading depends on the plotter type (inkjet vs. laser vs. cutting plotter) and whether it connects to a computer. If you can share the model or specs, I can narrow it down further."
+
+Rules in two modes:
+- BUNDLE ROWS MATCH the product → quote the HS code with "(Pg No: X)" and the row's rates.
+- BUNDLE ROWS DON'T MATCH (or no block injected) → give the HS code from general knowledge, OMIT "(Pg No: X)", add the short "(general HS classification — confirm with Nepal Customs ...)" note. Answer confidently, no hedging, no asking for "more info" before answering.
+- For duty / VAT / excise rates: if the bundle row has them, quote those numbers; otherwise quote typical Nepal Customs Tariff ranges from general knowledge and clearly mark them as approximate (e.g. "typically ~15% customs duty, 13% VAT — confirm with Customs"). Never invent a precise percentage you don't know.
 - Show only the rate columns that APPLY to this origin (per the rules above). If origin = China, show the "Other countries" customs duty, then excise, agri fee, advance tax, VAT — do NOT show or label any SAARC numbers.
 - If a rate is "—" / null / 0% in the context, write "not applicable" instead of computing a meaningless line.
 
@@ -243,7 +273,7 @@ When the user asks about a PRODUCT/BRAND not in our catalog (e.g. "Kurkure", "Ai
 - Example: "Kurkure is an extruded corn snack — typically falls under HS 1905.90 (bakers' wares) or HS 2106.90 (food preparations n.e.s.). Confirm with the customs officer based on the ingredient list."
 - Always give actionable info, never a flat refusal.
 
-If no HS context block is provided for the query, answer using your general knowledge of the Harmonized System and clearly note that the user should verify with Nepal customs for the exact local code.
+REMINDER: never refuse an HS question. If the bundle has it → quote the bundle with the page number. If the bundle doesn't have it → answer from general knowledge of the international HS system and add the "confirm with Nepal Customs" line. Both modes are valid — pick whichever produces a more accurate answer for the specific product the user asked about.
 
 TONE: Warm, helpful, concise. Markdown bullets with hyphen (never asterisk). Under 200 words unless asked for more. You are MANAS — never claim to be Gemini, Claude, Llama, OpenAI, or any other AI.`;
 
@@ -760,7 +790,18 @@ router.post('/chat', async (req, res) => {
     else log.error('[MANAS] Chat error:', error);
     if (!res.headersSent) {
       const status = error?.status;
-      const isQuota = status === 429 || /quota|rate limit|too many requests/i.test(error?.message || '');
+      // Groq's 413 "Request too large for model ... TPM" is rate-limit-shaped
+      // (token budget per minute exceeded), and the error body uses the code
+      // "rate_limit_exceeded" with an underscore — the previous regex required
+      // a space, so it slipped through to the generic "unavailable" message.
+      const errMsg = String(error?.message || '');
+      const errBody = String(error?.error?.error?.message || error?.error?.message || '');
+      const errCode = String(error?.error?.error?.code || error?.code || '');
+      const isQuota =
+        status === 429 ||
+        status === 413 ||
+        errCode === 'rate_limit_exceeded' ||
+        /quota|rate[\s_]limit|too many requests|request too large|tokens per minute/i.test(errMsg + ' ' + errBody);
       const code = error?.cause?.code || error?.code || '';
       const isNetwork = ['ENOBUFS', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH', 'ECONNREFUSED'].includes(code);
 

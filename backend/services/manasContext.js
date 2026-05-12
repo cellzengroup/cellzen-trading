@@ -52,6 +52,13 @@ const STOP_WORDS = new Set([
   'tariff', 'duty', 'product', 'products', 'invoice', 'invoices', 'order',
   'orders', 'customer', 'cellzen', 'trading', 'kindly', 'would', 'could',
   'should', 'their', 'there', 'these', 'those', 'your', 'mine', 'thanks', 'thank',
+  // Generic nouns that match WAY too many HS rows — without these, a query
+  // like "plotter machine" matches every entry containing the word "machine"
+  // (rubber tyre machines, textile machines, etc.) and pollutes the context
+  // with irrelevant codes the AI then dumps into its reply.
+  'machine', 'machines', 'device', 'devices', 'equipment', 'item', 'items',
+  'tool', 'tools', 'unit', 'units', 'parts', 'thing', 'things', 'type', 'types',
+  'good', 'goods', 'material', 'materials', 'system', 'systems', 'kind', 'kinds',
   // Romanized Nepali filler / verbs / pronouns that appear in HS queries like
   // "malai mobile ko hs code bhandeu na". These have no product signal but
   // would otherwise produce spurious matches against unrelated descriptions.
