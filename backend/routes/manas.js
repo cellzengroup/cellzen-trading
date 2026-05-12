@@ -89,7 +89,13 @@ Nepali intro template:
 
 आज तपाईंलाई के मद्दत चाहिन्छ?"
 
-LANGUAGE (strict): English input → English reply. Nepali Devanagari input → Devanagari reply. Romanized Nepali input ("namaste", "kasto chha", "mero invoice", "tapai", "k garna", "chahincha", "herna", "ramro", "kati") → reply in pure Nepali Devanagari (NEVER Romanized). Mixed → Devanagari. Other languages → English: "I can only help in English or Nepali."
+LANGUAGE (strict):
+- English input → English reply.
+- Nepali in Devanagari script → reply in Devanagari.
+- Romanized Nepali (Nepali written in Latin/English letters — e.g. "tapai ko ho", "yo k ho", "mero invoice herna chahanchu", "kasari madat garna saknuhuncha", "namaste", "kasto cha", "kati parcha", "ramro cha", "ke garne", "ho", "haina", "chha", "saknuhuncha", "garnuhos", "dinos", "huncha", "tapailai", "hamilai") IS NEPALI. Treat it as Nepali and reply in pure Devanagari (NEVER Romanized, NEVER English). Do NOT tell the user you can only help in English or Nepali — they ARE writing Nepali.
+- Mixed English/Nepali → Devanagari.
+- Truly different language (Hindi/French/Spanish/Chinese/etc., NOT romanized Nepali) → English: "I can only help in English or Nepali (in either Devanagari or Roman script)."
+When in doubt whether something is romanized Nepali vs. English, prefer treating it as Nepali if it contains any Nepali word — and reply in Devanagari.
 
 REFUSALS — translate into the user's language:
 
@@ -100,6 +106,60 @@ REFUSALS — translate into the user's language:
 3. OTHER CUSTOMERS' DATA — Only share invoice/profile data for the verified or logged-in user themselves.
 
 DATA RULES: For specific HS codes/product names/prices/invoices from Cellzen → use the "## Relevant ..." context blocks below; never invent specific Cellzen invoice numbers/prices. General trade concepts → use your knowledge freely.
+
+NEPAL ↔ CHINA TRANSPORT — answer only when asked:
+
+If the user asks about shipping / freight / transport / logistics cost between Nepal and China, give a SHORT response with typical industry ranges and ALWAYS end with a "contact Cellzen for an exact quote" line + [NAV:/contact] tag. These are market estimates, not a Cellzen price list — never present them as fixed prices.
+
+FIRST — identify the mode the user is asking about:
+- "land" / "road" / "truck" / "by road" / "container" / "Kerung" / "Tatopani" / "Rasuwagadhi" / "Kodari" / "Gyirong" / "Zhangmu" → use the LAND section below.
+- "air" / "by air" / "air freight" / "air cargo" / "express" / "flight" / "TIA" / "airport" → use the AIR section below. NEVER mention Kerung or Tatopani in an air-freight answer — those are LAND border crossings only.
+- "sea" / "by sea" / "ocean" / "vessel" → AIR/LAND don't apply directly; Nepal is landlocked, so sea cargo from China typically routes to Kolkata (India) and then trucks to Nepal. Mention this briefly and route to [NAV:/contact] for a real quote.
+- If unspecified, list both LAND (with both borders) and AIR briefly so the user can pick.
+
+LAND — Nepal ↔ China by road (two border crossings):
+
+ROUTE 1 — Rasuwagadhi ↔ Kerung (Gyirong port) — the primary all-weather crossing today, ~150 km from Kathmandu:
+- LCL (loose cargo) by road: roughly USD 1.5 – 3.5 per kg
+- FCL 20ft container: roughly USD 4,000 – 6,500
+- FCL 40ft container: roughly USD 6,500 – 9,500
+- Door-to-door transit time: about 15 – 25 days from major China hubs (Guangzhou / Yiwu / Shenzhen) to Kathmandu
+
+ROUTE 2 — Tatopani ↔ Kodari (Zhangmu port) — older route, reopened with limited capacity, ~115 km from Kathmandu:
+- LCL by road: roughly USD 1.5 – 3.0 per kg
+- FCL 20ft container: roughly USD 3,500 – 6,000
+- FCL 40ft container: roughly USD 6,000 – 8,500
+- Door-to-door transit time: about 12 – 20 days; capacity is more restricted than Kerung, so availability varies
+
+Note: Kerung is currently the preferred route for most commercial cargo because of more reliable infrastructure and customs throughput, while Tatopani can sometimes be slightly cheaper / shorter when it's open and capacity is available.
+
+AIR — Nepal ↔ China by air (Kathmandu Tribhuvan International Airport, TIA):
+
+Main Chinese gateway airports: Guangzhou (CAN), Shenzhen (SZX), Kunming (KMG), Chengdu (CTU), Beijing (PEK), Hong Kong (HKG). Connections via Kunming and Guangzhou are typically the most cost-effective.
+
+- Air freight, general cargo (LCL air): roughly USD 4 – 8 per kg, depending on weight break (rates fall for 100+ kg / 500+ kg / 1000+ kg shipments)
+- Express courier (DHL / FedEx / UPS small parcels): roughly USD 8 – 15 per kg
+- Transit time door-to-door: about 3 – 7 days for standard air freight; 2 – 4 days for express
+- Surcharges to mention: fuel surcharge, security surcharge, and Kathmandu (TIA) airport handling / clearance fees apply on top of the per-kg rate
+
+DO NOT mention land borders (Kerung, Tatopani, Rasuwagadhi, Kodari) in an air-freight answer — they don't apply to air cargo at all.
+
+ALWAYS close any transport answer with: "These are ballpark market ranges — actual cost depends on your goods, weight, volume, and the season. For an exact quote tailored to your shipment, please contact our team." followed by [NAV:/contact].
+
+DO NOT quote rates outside the ranges above. DO NOT invent specific Cellzen tariffs. If the user gives weight / volume / commodity details, you may give a rough estimate using the per-kg or per-container range — show the math briefly — but still end with the disclaimer + [NAV:/contact].
+
+CELLZEN PRODUCTS — STRICT (FOUR-PART REPLY SHAPE):
+When the user asks about "your products", "what do you sell", "what's in your catalog", "tell me about your products", etc., your reply MUST have exactly these four parts in this order:
+
+1. OPENING PARAGRAPH — 1-2 friendly sentences giving a high-level sense of what Cellzen offers (sourcing across categories, supply-chain coordination, factory partners). No product names yet.
+2. BULLET LIST — hyphen bullets, ONE bullet per product, NAME ONLY (no descriptions, no images, no retail prices, no wholesale prices, no weights, no sizes). Use the names from the "[CONTEXT: PRODUCT CATALOG SUMMARY]" block exactly as written. Never quote a price (retail OR wholesale) anywhere.
+3. CLOSING PARAGRAPH — 1-2 short sentences inviting the user to open the Products page to see the full catalog with photos and details.
+4. [NAV:/products] tag on its own line so the "View Products" button shows.
+
+Other rules:
+- Pull product names ONLY from the catalog context block when it's present. DO NOT invent products and DO NOT invent categories like "vegetables", "groceries", or "raw materials".
+- If NO catalog context block is provided, give the opening paragraph, skip the bullets, give a short closing paragraph, and still end with [NAV:/products].
+- If the user asks for prices (retail/wholesale), reply that pricing depends on order volume/specs and direct them to the Contact page for a quote — do NOT make up numbers.
 
 INVOICE LOOKUP — STRICT ANTI-HALLUCINATION RULES (most important section):
 
@@ -131,16 +191,51 @@ HS CODE / TARIFF / DUTY ANSWERS — IMPORTANT:
 
 You have AUTHORITATIVE Nepal Customs Tariff 2082/83 data injected as context blocks ("## Relevant HS Codes ..."). Each entry includes: HS code, description, customs duty (SAARC vs Other), excise %, agriculture fee %, advance income tax %, VAT %, and effective total tax rates by origin (SAARC / India / Tibet / Other).
 
+ORIGIN → RATE MAPPING (READ THIS CAREFULLY):
+The "SAARC" rate in the tariff applies ONLY when the goods originate in a SAARC member country. SAARC members are: Afghanistan, Bangladesh, Bhutan, India, Maldives, Nepal, Pakistan, Sri Lanka. CHINA IS NOT A SAARC COUNTRY.
+- Origin = China (Guangzhou, Shenzhen, Yiwu, Beijing, Shanghai, Hong Kong, Tibet, anywhere on mainland China, or shipment routed via Kerung / Tatopani / Rasuwagadhi / Kodari) → USE THE "OTHER COUNTRIES" CUSTOMS-DUTY RATE. Do NOT quote the SAARC rate. (For Tibet origin you may use the "Tibet" effective rate column when shown in the context — but never SAARC.)
+- Origin = India / Bangladesh / Bhutan / Pakistan / Sri Lanka / Maldives / Afghanistan → use the SAARC rate.
+- Origin not specified → assume China (it's our primary sourcing market) and tell the user "I'm assuming origin = China; let me know if it's a SAARC country and I'll recalculate."
+- NEVER show the SAARC line for a China shipment — it confuses the customer.
+
 When the user asks about HS codes, tariffs, duties, taxes:
-- USE THE INJECTED HS DATA. Quote exact codes and percentages from it.
+- USE THE INJECTED HS DATA. Quote exact HS codes and the relevant percentages from it.
 - ALWAYS include the PDF page number after each HS code in this format: "HS 8517.13.00 (Pg No: 423)". The page number comes from the context block — use the value provided after "(Pg No: X)".
-- Always show the breakdown: customs duty, excise, agri fee, advance tax, VAT — and the EFFECTIVE TOTAL by country of origin.
-- If the user provides a value (CIF / invoice / product price), CALCULATE the tax amounts and total landed cost. Show your math step-by-step:
-    Example: "For HS 8517.13.00 (smartphones) imported from China (Other), CIF NPR 100,000:
-    - Customs duty (15%): NPR 15,000
-    - Excise (5%): NPR 5,750  ← (100,000 + 15,000) × 5%
-    - VAT (13%): NPR 15,697.50  ← (100,000 + 15,000 + 5,750) × 13%
-    - Total landed cost: NPR 136,447.50"
+- Show only the rate columns that APPLY to this origin (per the rules above). If origin = China, show the "Other countries" customs duty, then excise, agri fee, advance tax, VAT — do NOT show or label any SAARC numbers.
+- If a rate is "—" / null / 0% in the context, write "not applicable" instead of computing a meaningless line.
+
+CALCULATING LANDED COST — ROUGH NUMBERS IN A TRI-CURRENCY TABLE:
+
+OUTPUT FORMAT (REQUIRED): present the breakdown as a markdown table with four columns: Item | RMB | USD | NPR. Three currencies side-by-side so the user sees the cost in their preferred unit.
+
+Rough conversion rates (use these — they're approximations, not bank-quality FX):
+- 1 USD ≈ 7.2 RMB
+- 1 USD ≈ 133 NPR
+- 1 RMB ≈ 18.5 NPR
+- 1 NPR ≈ 0.054 RMB ≈ 0.0075 USD
+
+Conversion rules:
+- Whatever currency the user gave the CIF in, convert it to the other two using the rates above. State at the bottom of the table which rate snapshot you used and that rates fluctuate.
+- Numbers must be APPROXIMATE / rounded — no decimals, no "USD 15,697.50"; round to the nearest 100 (or nearest 10 for small amounts). Use "≈" or write "approximately" so the user knows it's a ballpark.
+- Skip line items that are not applicable (excise, agri fee, advance tax may be 0% / null — drop the row entirely, don't write "0 / not applicable").
+- Last row of the table is "Total landed cost".
+- Below the table, one short closing sentence + [NAV:/contact].
+- If the user asks for an exact number, politely refuse the false precision and direct them to Contact.
+
+Example for a China → Nepal shipment, HS 8517.13.00 (smartphones), CIF USD 13,900 (≈ RMB 100,000 ≈ NPR 1,850,000):
+
+"From China (non-SAARC), HS 8517.13.00 (Pg No: 423). Origin = China → using the 'Other countries' customs-duty rate (15%).
+
+| Item | RMB | USD | NPR |
+|---|---|---|---|
+| CIF value | ≈ 100,000 | ≈ 13,900 | ≈ 1,850,000 |
+| Customs duty (15%) | ≈ 15,000 | ≈ 2,100 | ≈ 277,500 |
+| VAT (13%) | ≈ 14,950 | ≈ 2,080 | ≈ 276,500 |
+| **Total landed cost** | **≈ 130,000** | **≈ 18,100** | **≈ 2,404,000** |
+
+Rates used: 1 USD ≈ 7.2 RMB ≈ 133 NPR (rates fluctuate daily). Excise and agriculture fee don't apply to this HS code. These are rough estimates — for an exact calculation please contact our team. [NAV:/contact]"
+
+NEVER add a SAARC row when origin = China. NEVER quote exact decimals. NEVER omit the table when a CIF amount is provided.
 
 When the user asks about a PRODUCT/BRAND not in our catalog (e.g. "Kurkure", "AirPods Max", "Yeti coolers"):
 - DO NOT say "I'm not aware of that product".
@@ -262,7 +357,65 @@ const isVerifyIntent = (currentMessage, history) => {
 // follow the language rule consistently from the system prompt alone, so we
 // inject an explicit per-message directive.
 const DEVANAGARI_RX = /[ऀ-ॿ]/;
-const ROMAN_NEPALI_RX = /\b(namaste|namaskar|kasto|kati|tapai|tapailai|hamro|mero|herna|garna|chahincha|chahanchu|chha|cha|dhanyabad|kun|kaha|garcha|garchhau|sakcha|sakchha|sakchhau|baal|chhainan|hudaina|huncha|hunchha|bhanus|bhana|bhaneko|aaune|jaane|aaeko|jaaeko|tapaiko|hamilai|hamile|raheko|chha|rahecha|kasari|kahile|kasaile|nepali|nepalima)\b/i;
+// Comprehensive romanized-Nepali vocabulary. Earlier the list was too narrow
+// — common words like "ho", "ke", "yo", "saknuhuncha" weren't matched, so
+// questions like "tapai ko ho?" or "kasari sahayog garnu huncha?" fell through
+// to the English default and MANAS replied "I can only help in English or
+// Nepali" even though the user WAS speaking Nepali (just in Latin script).
+const ROMAN_NEPALI_RX = new RegExp(
+  '\\b(' + [
+    // Greetings / pleasantries
+    'namaste', 'namaskar', 'dhanyabad', 'dhanyabaad', 'hajur', 'maaph', 'maph', 'kripya',
+    // Pronouns
+    'ma', 'malai', 'mero', 'mera', 'meri',
+    'hami', 'hamro', 'hamilai', 'hamile', 'hamra', 'hamri',
+    'timi', 'timro', 'timilai', 'timile', 'timra',
+    'tapai', 'tapaai', 'tapaain', 'tapailai', 'tapaiko', 'tapaile', 'tapaiharu', 'tapaiharuko',
+    'usko', 'uska', 'uslai', 'usle', 'unko', 'unle', 'unlai', 'unka',
+    'aafu', 'aafnu', 'aafno', 'aafna', 'aafule', 'afai', 'afnai', 'aaphno', 'aaphnu',
+    // Demonstratives & question words
+    'yo', 'tyo', 'yi', 'ti', 'yaha', 'tyaha', 'yahaa', 'tyahaa',
+    'ke', 'k', 'kun', 'kati', 'kaha', 'kahaan', 'kahile', 'kasari', 'kaslai', 'kasko', 'kasaile',
+    // Be / have / negation (the workhorses of Nepali)
+    'ho', 'hoina', 'haina', 'hau', 'hun', 'huncha', 'hunchha', 'hudaina', 'hudaina',
+    'bhayo', 'bhayena', 'bhaye', 'bhayeko', 'bhaecha', 'hunecha', 'hunechha',
+    'cha', 'chha', 'chaina', 'chhaina', 'chhainan', 'chainan',
+    'thiyo', 'thiyena', 'thiye', 'rahecha', 'raheko', 'rahechha',
+    // Common verbs (root + conjugated forms)
+    'garna', 'garnu', 'garney', 'garne', 'garnos', 'garnuhos', 'garcha', 'garchha',
+    'garchu', 'garchhu', 'garchau', 'garchhau', 'garyo', 'garyou', 'gareko', 'gardina',
+    'herna', 'hernu', 'hernos', 'hernuhos', 'herchu', 'hercha', 'heryo', 'hereko',
+    'bhanna', 'bhannu', 'bhanus', 'bhanos', 'bhana', 'bhaneko', 'bhanchu', 'bhancha',
+    'dina', 'dinu', 'dinos', 'dinuhos', 'dieko', 'dincha', 'didaina',
+    'linu', 'lina', 'linos', 'linchu', 'lincha', 'liyo', 'liyera',
+    'jaana', 'jaanu', 'jaanos', 'jaanchu', 'jaanchau', 'jaancha', 'jaaney', 'gayo', 'gayee',
+    'aaunu', 'aauna', 'aaunos', 'aaunchu', 'aauncha', 'aaune', 'aayo', 'aaeko', 'aaeki',
+    'sakna', 'saknu', 'saknos', 'saknuhos', 'saknuhuncha', 'saknuhunchha',
+    'sakcha', 'sakchha', 'sakchu', 'sakchhu', 'sakchau', 'sakchhau', 'sakdina', 'sakdaina',
+    'sakney', 'sakne', 'sakeko', 'sakiyo',
+    'chahanchu', 'chahanchhu', 'chahancha', 'chahincha', 'chahinchha', 'chahane', 'chahyo',
+    'lagcha', 'lagchha', 'lagdaina', 'lagne', 'lageko', 'laagcha', 'laagchha',
+    'parcha', 'parchha', 'pardaina', 'parney', 'paryo', 'pareko',
+    'milcha', 'milchha', 'mildaina', 'milne', 'milyo', 'mileko',
+    'bujhna', 'bujhnu', 'bujheko', 'bujhe', 'bujhyo', 'samjhanu',
+    'khojcha', 'khojchu', 'khojne', 'khojeko', 'khojiraheko',
+    // Helpful / asking
+    'sahayog', 'madat', 'sodhna', 'sodhnu', 'sodhe', 'sodhyo',
+    // Common adjectives & adverbs
+    'ramro', 'naramro', 'thulo', 'sano', 'dherai', 'ali', 'thorai', 'sabai', 'kunai',
+    'thik', 'thikai', 'sajilo', 'gahro', 'naya', 'puranu', 'puraano',
+    // Postpositions / connectives
+    'lai', 'sanga', 'sangai', 'bata', 'dekhi', 'samma', 'sammā', 'maathi', 'muni',
+    'pachhi', 'pahile', 'agadi', 'pachhadi', 'najik', 'tira', 'tarfa',
+    // Misc common
+    'kaam', 'kaamko', 'paisa', 'paani', 'samaan', 'samaanharu', 'samasya', 'jaankari',
+    'invoice', // skip: english loan, but combined with others helps
+    'nepali', 'nepalima', 'nepaali', 'angreji',
+    // Yes/no/agreement
+    'huncha ki', 'ho ki', 'ho ra', 'hoina ra', 'po', 'pani', 'matra', 'matrai',
+  ].join('|') + ')\\b',
+  'i'
+);
 const NEPALI_REQUEST_RX = /\b(in nepali|talk in nepali|reply in nepali|speak in nepali|use nepali|nepalima|in devanagari|switch to nepali)\b/i;
 const ENGLISH_REQUEST_RX = /\b(in english|talk in english|reply in english|speak in english|use english|switch to english)\b/i;
 
@@ -296,8 +449,11 @@ const detectReplyLang = (currentMsg, history = []) => {
 const NAV_INTENT_RX = /\b(take me to|show me (the |my )?|open (the |my )?|browse|visit|go to|navigate to|where (can|do).{0,20}(find|see)|link( me)? to|link for|page (about|for)|see (the |all |our )?(your |our )?)\b/i;
 
 const NAV_LIST_RX = {
-  '/products':  /\b((all|full|complete|entire) (your |our )?(product|catalog|catalogue|inventory)|list (all |of )?(your |our )?(product|item|catalog)|what (products|items) (do you|you) (have|sell|offer)|show.{0,10}(product|catalog))\b/i,
-  '/contact':   /\b(how (do|can) (i|we) (contact|reach|email|message)|where.{0,10}(contact|email)|contact (form|page|info))\b/i,
+  '/products':  /\b((all|full|complete|entire) (your |our )?(products?|catalog(ue)?s?|inventory)|list (all |of )?(your |our )?(products?|items?|catalog(ue)?s?)|what (products|items|kinds? of products) (do you|you|are)|do you (have|sell|offer) (any |some )?(products?|items?)|tell me about (?:your |our |the |cellzen.{0,10}|cellzen'?s? )?(products?|catalog(ue)?s?)|(your|our|cellzen'?s?) (products?|catalog(ue)?s?)\b|what(?:'?s| is| are)? in (your|our|the) (catalog(ue)?s?|products?)|show.{0,10}(products?|catalog(ue)?s?)|(can you |could you |would you |please )?(give|send|share|provide|email|forward) (me |us )?(the |your |our |a |cellzen.{0,10})?(products?|catalog(ue)?s?|items?)|(catalog(ue)?s?) (please|now|me|us))\b/i,
+  // Contact intent — explicit "how do I reach you" phrasings PLUS freight/
+  // shipping/transport cost questions, which we route to /contact because the
+  // chat answer is only a ballpark range and the user needs a real quote.
+  '/contact':   /\b(how (do|can) (i|we) (contact|reach|email|message)|where.{0,10}(contact|email)|contact (form|page|info)|(freight|shipping|shipment|transport(ation)?|logistics|cargo) (cost|charge|price|rate|fee|quote)|(cost|price|charge|rate|fee|quote) (of|for|to) (ship|shipping|shipment|freight|transport|transportation|logistics|cargo|air|sea)|cost.{0,20}(ship|freight|transport|cargo|kerung|tatopani|rasuwagadhi|kodari|gyirong|zhangmu|by air|by sea|air freight|air cargo|sea freight)|(kerung|tatopani|rasuwagadhi|kodari|gyirong|zhangmu).{0,40}(cost|price|rate|charge|fee|quote|ship|freight|transport)|(ship|freight|transport|cargo|container|truck|lcl|fcl).{0,60}(kerung|tatopani|rasuwagadhi|kodari|gyirong|zhangmu)|nepal.{0,30}china.{0,30}(ship|freight|transport|cargo|cost|rate|air|sea)|china.{0,30}nepal.{0,30}(ship|freight|transport|cargo|cost|rate|air|sea)|(by air|by sea|air freight|air cargo|sea freight|ocean freight).{0,60}(cost|price|rate|charge|fee|quote|china|nepal)|(cost|price|rate|charge|fee|quote).{0,40}(by air|by sea|air freight|air cargo|sea freight|ocean freight))\b/i,
   '/tracking':  /\b(track (my )?(order|shipment|package)|where is my (order|shipment))\b/i,
 };
 
@@ -312,7 +468,10 @@ const NAV_KEYWORDS = [
 ];
 
 // Topical knowledge questions that should NEVER get a nav link.
-const NO_NAV_RX = /\b(hs.?code|hs ?code|harmoni[sz]ed system|tariff|customs? dut(y|ies)|import dut(y|ies)|export dut(y|ies)|excise|vat( rate)?|tax( rate)?|classification|incoterms?|fob|cif|exw|how (much|many).{0,30}(duty|tax|cost|charge|vat))\b/i;
+// NOTE: the "how much ... cost/charge" branch was removed because freight
+// questions ("how much does it cost to ship via Kerung") legitimately need
+// the /contact nav button. We still veto explicit duty/tax/VAT queries.
+const NO_NAV_RX = /\b(hs.?code|hs ?code|harmoni[sz]ed system|tariff|customs? dut(y|ies)|import dut(y|ies)|export dut(y|ies)|excise|vat( rate)?|tax( rate)?|classification|incoterms?|fob|cif|exw|how (much|many).{0,30}(duty|tax|vat))\b/i;
 
 const detectNavPath = (msg) => {
   const text = String(msg || '');
@@ -520,7 +679,12 @@ router.post('/chat', async (req, res) => {
           model: MANAS_MODEL,
           messages,
           temperature: 0.6,
-          max_tokens: 1500,
+          // Raised from 1500 → 4096 so longer answers (multi-item HS code
+          // breakdowns, full invoice tables, detailed Nepali replies which
+          // run longer than English in tokens) don't get cut off mid-reply.
+          // Groq's llama-3.1-8b-instant supports 8k generation; 4k leaves
+          // plenty of headroom for the system prompt + history.
+          max_tokens: 4096,
           top_p: 0.9,
           stream: true,
         });

@@ -9,7 +9,14 @@ const VIEWED_KEY = "cz_viewed_products";
 const VIEWED_LIMIT = 20;
 const GALLERY_CACHE_KEY = "cz_gallery_cache_v1";
 const EAGER_COUNT = 12;       // first N images load eagerly with high priority
-const GAP = 12;
+// Gap scales with container width so larger screens with bigger cards don't
+// look cramped, and tiny mobile widths don't waste space on padding.
+function gapFor(containerWidth) {
+  if (containerWidth < 500) return 8;
+  if (containerWidth < 1024) return 12;
+  if (containerWidth < 1440) return 16;
+  return 20;
+}
 const ZOOM_MIN = 0.5;
 const ZOOM_MAX = 5;
 // Display-side cap for thumbnails. Source uploads are 1600px; cards render at
@@ -277,7 +284,7 @@ function ImagePreview({ src, alt, onClose }) {
   );
 }
 
-function FlipCard({ product, eager, dims, onLoadDims, onView, onPreview }) {
+function FlipCard({ product, eager, dims, onLoadDims, onView, onPreview, gap = 12 }) {
   const originalImg = product.image_url || product.image_url_2;
   // Try the Supabase image-transform URL first (much smaller bytes for the
   // thumbnail size we actually render). On error we swap to the original.
@@ -316,7 +323,7 @@ function FlipCard({ product, eager, dims, onLoadDims, onView, onPreview }) {
   const aspectRatio = dims ? `${dims.w} / ${dims.h}` : "4 / 5";
 
   return (
-    <div className="group mb-3 block w-full [perspective:1200px]">
+    <div className="group block w-full [perspective:1200px]" style={{ marginBottom: gap }}>
       <div className="relative w-full transition-transform duration-[1100ms] ease-[cubic-bezier(0.22,1,0.36,1)] [transform-style:preserve-3d] [transition-delay:0ms] group-hover:[transition-delay:550ms] group-hover:[transform:rotateY(180deg)]">
         {/* Front — image with placeholder + fade-in */}
         <button
@@ -489,12 +496,21 @@ export default function Products() {
     setImageDims((prev) => prev[id] ? prev : { ...prev, [id]: { w: naturalWidth, h: naturalHeight } });
   }, []);
 
+  // Responsive column count. Tuned so cards stay visually large at each tier:
+  //  - mobile (<500)            : 2 cols
+  //  - large mobile/small tablet: 2 cols (bigger images, still 2-up)
+  //  - tablet (768–1024)        : 3 cols
+  //  - medium desktop (1024–1440): 4 cols  ← bigger image size per user
+  //  - large desktop (≥1440)    : 5 cols
   const columnCount = useMemo(() => {
-    if (containerWidth < 480) return 2;
-    if (containerWidth < 760) return 3;
-    if (containerWidth < 1100) return 4;
+    if (containerWidth < 500) return 2;
+    if (containerWidth < 768) return 2;
+    if (containerWidth < 1024) return 3;
+    if (containerWidth < 1440) return 4;
     return 5;
   }, [containerWidth]);
+
+  const gap = useMemo(() => gapFor(containerWidth), [containerWidth]);
 
   const columns = useMemo(() => {
     const items = filtered.map((p) => ({
@@ -521,7 +537,7 @@ export default function Products() {
   return (
     <>
       <section className="bg-[#F4F2EE] pt-6 pb-16 sm:pt-10 sm:pb-24">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6">
+        <div className="mx-auto w-full max-w-[1600px] px-4 sm:px-6 lg:px-16 xl:px-20 2xl:px-10">
 
           {/* Header — mobile: just the search button on the right.
               Desktop: title left, sliding search right. */}
@@ -612,7 +628,7 @@ export default function Products() {
           )}
 
           {!loading && !error && filtered.length > 0 && (
-            <div className="flex items-start" style={{ gap: GAP }}>
+            <div className="flex items-start" style={{ gap }}>
               {columns.map((col, ci) => (
                 <div key={ci} className="flex-1 min-w-0">
                   {col.items.map((item) => {
@@ -630,6 +646,7 @@ export default function Products() {
                         onLoadDims={(w, h) => captureDims(item.id, w, h)}
                         onView={handleView}
                         onPreview={handlePreview}
+                        gap={gap}
                       />
                     );
                   })}

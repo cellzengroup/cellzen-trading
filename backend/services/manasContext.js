@@ -1,4 +1,4 @@
-const { Op } = require('sequelize');
+const { Op, literal } = require('sequelize');
 const fs = require('fs');
 const path = require('path');
 const Product = require('../inventory/models/Product');
@@ -45,13 +45,102 @@ const loadHsBundle = () => {
 };
 
 const STOP_WORDS = new Set([
+  // English filler / question words
   'what', 'which', 'where', 'when', 'how', 'who', 'why', 'this', 'that', 'with',
   'have', 'from', 'about', 'tell', 'give', 'show', 'find', 'know', 'want',
-  'need', 'help', 'please', 'code', 'codes', 'tariff', 'duty', 'product',
-  'products', 'invoice', 'invoices', 'order', 'orders', 'customer', 'cellzen',
-  'trading', 'kindly', 'would', 'could', 'should', 'their', 'there', 'these',
-  'those', 'your', 'mine', 'thanks', 'thank',
+  'need', 'help', 'please', 'code', 'codes', 'conde', 'codee', // 'conde' = common typo of 'code'
+  'tariff', 'duty', 'product', 'products', 'invoice', 'invoices', 'order',
+  'orders', 'customer', 'cellzen', 'trading', 'kindly', 'would', 'could',
+  'should', 'their', 'there', 'these', 'those', 'your', 'mine', 'thanks', 'thank',
+  // Romanized Nepali filler / verbs / pronouns that appear in HS queries like
+  // "malai mobile ko hs code bhandeu na". These have no product signal but
+  // would otherwise produce spurious matches against unrelated descriptions.
+  'malai', 'mero', 'hami', 'hamro', 'hamilai', 'tapai', 'tapailai', 'tapaiko',
+  'tapaile', 'timilai', 'timro', 'timile',
+  'bhandeu', 'bhanus', 'bhanos', 'bhana', 'bhanna', 'bhaneko', 'bhanchu', 'bhancha',
+  'dinos', 'dinuhos', 'dieko', 'dincha', 'didaina',
+  'hernos', 'herna', 'hernuhos', 'hercha', 'herchu',
+  'garnos', 'garnu', 'garna', 'garney', 'garcha', 'garchu', 'garchhau',
+  'chahincha', 'chahanchu', 'chahanchhu', 'chahane',
+  'saknuhos', 'saknuhuncha', 'saknuhunchha', 'saknu', 'sakcha', 'sakney', 'sakchu',
+  'kasari', 'kasto', 'kahile', 'kasaile', 'kasko', 'kunai',
+  'nepali', 'nepalima', 'nepaali',
+  'haina', 'hoina', 'hudaina', 'huncha', 'hunchha',
+  'rahecha', 'raheko', 'rahechha',
+  'thiyo', 'thiyena',
+  'bhayo', 'bhayena', 'bhayechh', 'bhayeko',
+  'parcha', 'parney', 'pardaina', 'paryo', 'pareko',
+  'lagcha', 'lagne', 'lagdaina', 'lageko',
+  'milcha', 'milne', 'mildaina',
+  'ramro', 'naramro', 'thulo', 'sano', 'dherai', 'thorai', 'sabai',
+  'pachhi', 'pahile', 'agadi', 'pachhadi', 'najik',
+  'sanga', 'sangai', 'samma', 'dekhi', 'maathi',
 ]);
+
+// When the user asks about a common consumer product using a casual term,
+// the HS tariff description usually uses the formal term instead — so a
+// literal substring match misses the right code entirely.
+//   "mobile" only literally matches HS 8426.12.00 "Cranes; mobile lifting
+//   frames on tyres and straddle carriers", while the actual phone code
+//   8517.13.00 reads "Telephone sets; smartphones for cellular or other
+//   wireless networks" and contains none of the words "mobile" or "phone".
+// Each alias is a phrase that appears in the tariff for the right HS chapter.
+// Alias matches are weighted higher than literal matches (see searchHsCodes)
+// so the consumer-product interpretation wins.
+const PRODUCT_ALIASES = {
+  mobile:      ['smartphone', 'smart phone', 'telephone sets', 'for cellular'],
+  mobiles:     ['smartphone', 'smart phone', 'telephone sets', 'for cellular'],
+  phone:       ['smartphone', 'smart phone', 'telephone sets', 'for cellular'],
+  phones:      ['smartphone', 'smart phone', 'telephone sets', 'for cellular'],
+  smartphone:  ['smart phone', 'telephone sets', 'for cellular'],
+  smartphones: ['smart phone', 'telephone sets', 'for cellular'],
+  cellphone:   ['smartphone', 'telephone sets', 'for cellular'],
+  laptop:      ['automatic data processing machines; portable', 'data processing machines; portable'],
+  laptops:     ['automatic data processing machines; portable', 'data processing machines; portable'],
+  // Common typos — user complained that "lapptop" should resolve to the same
+  // HS code as "laptop". Other observed variants added for safety.
+  lapptop:     ['automatic data processing machines; portable', 'data processing machines; portable'],
+  lapptops:    ['automatic data processing machines; portable', 'data processing machines; portable'],
+  laptap:      ['automatic data processing machines; portable', 'data processing machines; portable'],
+  labtop:      ['automatic data processing machines; portable', 'data processing machines; portable'],
+  notebook:    ['automatic data processing machines; portable'],
+  computer:    ['automatic data processing machines'],
+  computers:   ['automatic data processing machines'],
+  desktop:     ['automatic data processing machines'],
+  pc:          ['automatic data processing machines'],
+  tv:          ['reception apparatus for television'],
+  tvs:         ['reception apparatus for television'],
+  television:  ['reception apparatus for television'],
+  monitor:     ['monitors;'],
+  monitors:    ['monitors;'],
+  fridge:      ['refrigerators'],
+  fridges:     ['refrigerators'],
+  refrigerator:['refrigerators'],
+  freezer:     ['freezers'],
+  freezers:    ['freezers'],
+  car:         ['motor cars', 'motor vehicles', 'passenger', 'principally designed for the transport of persons'],
+  cars:        ['motor cars', 'motor vehicles', 'passenger'],
+  bike:        ['motorcycles', 'motorcycle', 'bicycles', 'cycles'],
+  motorbike:   ['motorcycles', 'motorcycle'],
+  motorcycle:  ['motorcycles'],
+  bicycle:     ['bicycles', 'cycles'],
+  ac:          ['air conditioning machines', 'air conditioning'],
+  aircon:      ['air conditioning machines', 'air conditioning'],
+  fan:         ['electric fans', 'fans;'],
+  fans:        ['electric fans', 'fans;'],
+  watch:       ['wrist-watches', 'wristwatches', 'watches'],
+  watches:     ['wrist-watches', 'wristwatches'],
+  headphone:   ['headphones', 'earphones'],
+  headphones:  ['earphones'],
+  earphone:    ['earphones', 'headphones'],
+  earphones:   ['headphones'],
+  earbud:      ['earphones', 'headphones'],
+  earbuds:     ['earphones', 'headphones'],
+  speaker:     ['loudspeakers'],
+  speakers:    ['loudspeakers'],
+  camera:      ['photographic cameras', 'television cameras', 'digital cameras'],
+  cameras:     ['photographic cameras', 'digital cameras'],
+};
 
 const extractKeywords = (text) => {
   return Array.from(new Set(
@@ -59,7 +148,10 @@ const extractKeywords = (text) => {
       .toLowerCase()
       .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 3 && !STOP_WORDS.has(w))
+      // Keep words longer than 3 chars OR short product terms ("tv", "ac",
+      // "pc") that have an alias mapping — otherwise short queries like
+      // "tv ko hs code" extract no keywords at all.
+      .filter(w => (w.length > 3 || PRODUCT_ALIASES[w]) && !STOP_WORDS.has(w))
   )).slice(0, 8);
 };
 
@@ -88,11 +180,27 @@ const searchHsCodes = (text, limit = 5) => {
   const codes = bundle.c || {};
   const keywords = extractKeywords(text);
   if (keywords.length === 0) return [];
+
+  // Expand each keyword with its product aliases so casual user terms
+  // ("mobile") still match the formal tariff wording ("smartphones for
+  // cellular networks"). Aliases score higher than literal matches —
+  // otherwise the literal substring "mobile" in "mobile lifting frames"
+  // would beat the actual phone HS code, which is exactly the bug we hit.
+  const queries = keywords.map(kw => ({
+    primary: kw,
+    aliases: PRODUCT_ALIASES[kw] || [],
+  }));
+
   const matches = [];
   for (const code in codes) {
     const desc = String(codes[code].d || '').toLowerCase();
     let score = 0;
-    for (const kw of keywords) if (desc.includes(kw)) score++;
+    for (const { primary, aliases } of queries) {
+      if (desc.includes(primary)) score += 1;
+      for (const alias of aliases) {
+        if (desc.includes(alias)) score += 3;
+      }
+    }
     if (score > 0) matches.push({ code, packed: codes[code], score });
   }
   matches.sort((a, b) => b.score - a.score);
@@ -102,44 +210,91 @@ const searchHsCodes = (text, limit = 5) => {
 // Format a duty rate for display — null/undefined → "—"
 const fmtPct = (v) => (v == null ? '—' : `${v}%`);
 
+// Strip prices entirely — MANAS must never quote retail/wholesale numbers in
+// chat. Pricing is shown only on the actual /products page (or via direct
+// inquiry through Sales/Contact), never volunteered by the assistant.
 const sanitizeProduct = (p) => ({
   name: p.name,
   category: p.category,
-  description: p.description ? String(p.description).slice(0, 300) : null,
-  retail_price: p.retail_price,
-  wholesale_price: p.wholesale_price,
-  weight: p.weight,
-  size: p.size,
-  image_url: p.image_url || null,
 });
 
 // Whitelist of phrases that explicitly mean the user wants to see products.
 // Without one of these in the message we don't return any products — otherwise
 // generic queries like "who are you" or "hello" would dump the catalog.
-const PRODUCT_INTENT_RX = /\b(product|products|catalog|catalogue|item|items|inventory|sourcing|what (do you|you) (sell|have|offer|stock)|do you sell|browse|show me)\b/i;
+const PRODUCT_INTENT_RX = /\b(product|products|catalog|catalogue|item|items|inventory|sourcing|what (do you|you) (sell|have|offer|stock)|do you sell|browse|show me|tell me about (your |our |the )?(product|catalog))\b/i;
 
-const searchProducts = async (text, limit = 5) => {
+// The PUBLIC Cellzen product list — the same set the /products page on the
+// website shows. Internal inventory rows (vegetables, raw materials, test SKUs
+// added by admins) live under other categories and must NEVER be described to
+// the user as "our products". Matches the filter used by the public-gallery
+// endpoint at backend/inventory/routes/products.js → /public-gallery.
+const PUBLIC_PRODUCT_CATEGORY = 'Product Gallery';
+
+// Postgres random ordering — pulls a random sample of gallery rows each call
+// so the user sees a varied mix of items across turns instead of just the
+// most-recently-added ones.
+const RANDOM_ORDER = literal('RANDOM()');
+
+// Dedupe products by lowercased name. The gallery table can contain multiple
+// rows for the same product (different photos, different SKUs, or genuine
+// duplicates), and showing "a3MAX4" twice in MANAS's bullet list looks broken
+// to the user. We canonicalize on name only since that's the only field we
+// expose to the chat.
+const dedupeByName = (products) => {
+  const seen = new Set();
+  const out = [];
+  for (const p of products) {
+    const key = String(p.name || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(p);
+  }
+  return out;
+};
+
+const searchProducts = async (text, limit = 6) => {
   if (!Product) return [];
   const raw = String(text || '');
   // Only run product search when the user actually mentions products.
   if (!PRODUCT_INTENT_RX.test(raw)) return [];
   const keywords = extractKeywords(text);
+  // Pull a larger pool than we'll show so dedupe can drop collisions without
+  // leaving the list short. 4× headroom is plenty for the small public gallery.
+  const fetchPool = limit * 4;
   try {
     if (keywords.length === 0) {
-      // User mentioned "products" generically with no specifics — return a
-      // small recent sample so we have something useful to show.
-      const recent = await Product.findAll({ limit, order: [['createdAt', 'DESC']] });
-      return recent.map(sanitizeProduct);
+      // Generic "your products" / "what do you sell" — sample randomly from
+      // the public gallery so the bullet list varies between conversations.
+      const sample = await Product.findAll({
+        where: { category: PUBLIC_PRODUCT_CATEGORY },
+        limit: fetchPool,
+        order: RANDOM_ORDER,
+      });
+      return dedupeByName(sample.map(sanitizeProduct)).slice(0, limit);
     }
-    const where = {
-      [Op.or]: keywords.flatMap(kw => [
-        { name: { [Op.iLike]: `%${kw}%` } },
-        { description: { [Op.iLike]: `%${kw}%` } },
-        { category: { [Op.iLike]: `%${kw}%` } },
-      ]),
-    };
-    const products = await Product.findAll({ where, limit });
-    return products.map(sanitizeProduct);
+    const products = await Product.findAll({
+      where: {
+        category: PUBLIC_PRODUCT_CATEGORY,
+        [Op.or]: keywords.flatMap(kw => [
+          { name: { [Op.iLike]: `%${kw}%` } },
+          { description: { [Op.iLike]: `%${kw}%` } },
+        ]),
+      },
+      limit: fetchPool,
+      order: RANDOM_ORDER,
+    });
+    // If no specific match, fall back to a random sample so we always have
+    // something to ground the reply on — better than the model inventing
+    // "vegetables" because it had no context.
+    if (products.length === 0) {
+      const fallback = await Product.findAll({
+        where: { category: PUBLIC_PRODUCT_CATEGORY },
+        limit: fetchPool,
+        order: RANDOM_ORDER,
+      });
+      return dedupeByName(fallback.map(sanitizeProduct)).slice(0, limit);
+    }
+    return dedupeByName(products.map(sanitizeProduct)).slice(0, limit);
   } catch (e) {
     console.warn('[MANAS] Product search failed:', e.message);
     return [];
@@ -383,25 +538,21 @@ const buildContext = async ({ message, user, verifiedCustomer, matchedInvoice, l
   }
 
   if (products && products.length > 0) {
+    // Reply shape (4 parts in order):
+    //   1. Opening paragraph (1-2 sentences) — high-level overview of what Cellzen offers.
+    //   2. Bullet list — product NAMES ONLY, hyphen bullets. No prices/images/descriptions.
+    //   3. Closing paragraph (1-2 sentences) — invite the user to explore more.
+    //   4. [NAV:/products] tag — frontend renders the "View Products" button.
+    const sampleNames = products.map(p => p.name).filter(Boolean).slice(0, 6);
     blocks.push(
-      '[CONTEXT: PRODUCT CATALOG MATCHES — use only if the user is asking about products. Do NOT include the [CONTEXT: ...] line or "## Matching Products" heading in your reply.]\n' +
-      'When listing products, render each one in this exact markdown format so the image shows:\n' +
-      '![ProductName](image_url)\n' +
-      '**ProductName** — category | price details\n' +
-      'short description\n\n' +
-      'Product data:\n' +
-      products.map(p => {
-        const parts = [`**${p.name}**`];
-        if (p.category) parts.push(`category: ${p.category}`);
-        if (p.retail_price) parts.push(`retail: ${p.retail_price}`);
-        if (p.wholesale_price) parts.push(`wholesale: ${p.wholesale_price}`);
-        if (p.weight) parts.push(`weight: ${p.weight}`);
-        if (p.size) parts.push(`size: ${p.size}`);
-        let line = '- ' + parts.join(' | ');
-        if (p.image_url) line += `\n  image: ${p.image_url}`;
-        if (p.description) line += `\n  ${p.description}`;
-        return line;
-      }).join('\n')
+      '[CONTEXT: PRODUCT CATALOG SUMMARY — use only if the user is asking about products. Do NOT include the [CONTEXT: ...] line in your reply.]\n' +
+      'Reply format (use this EXACT 4-part shape):\n' +
+      '1. Opening paragraph: 1-2 friendly sentences giving a high-level sense of what Cellzen offers (sourcing across many categories, supply-chain coordination, factory partners).\n' +
+      '2. Bullet list: markdown hyphen bullets — ONE bullet per product, NAME ONLY. NO descriptions, NO prices, NO weights, NO sizes, NO images. Use ONLY the names provided below — do not invent or rephrase.\n' +
+      '3. Closing paragraph: 1-2 short sentences inviting the user to click through to see the full catalog with images and details (something like "These are just a few — head to our Products page to see everything with photos and full details.").\n' +
+      '4. End with the [NAV:/products] tag on its own line so the "View Products" button shows.\n\n' +
+      'Product names to bullet (use ALL of them, exactly as written):\n' +
+      sampleNames.map(n => `- ${n}`).join('\n')
     );
   }
 
