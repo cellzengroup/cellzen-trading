@@ -6,6 +6,17 @@ html, body, #root {
   background-color: #2A1740;
 }
 
+/* ── Remove number-input spin buttons everywhere ── */
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
 @theme {
   --color-primary-50: #F5F3F0;
   --color-primary-100: #E8E0D6;

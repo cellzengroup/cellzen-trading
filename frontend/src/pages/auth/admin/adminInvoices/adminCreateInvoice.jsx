@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import * as XLSX from 'xlsx';
 import AdminPageShell from "../AdminPageShell";
 import CountrySelector from "../../../../components/ui/CountrySelector";
 import { countries } from "../../../../components/countries";
@@ -683,7 +684,7 @@ export default function AdminCreateInvoice() {
     shareTo: "",
     modeOfDelivery: "",
     exportCountry: "",
-    items: [{ productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null }],
+    items: [{ productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null, mergedInto: {} }],
     notes: "",
     customsDuty: "",
     documentationCharges: "",
@@ -705,6 +706,20 @@ export default function AdminCreateInvoice() {
   const [tariffReady, setTariffReady] = useState(isTariffReady());
   const [hsDrawerIndex, setHsDrawerIndex] = useState(null); // null = drawer closed
   const [hsModalOpen, setHsModalOpen] = useState(false);
+
+  // Excel-like fill-drag state: tracks which column is being dragged and the row range
+  const [fillDrag, setFillDrag] = useState(null); // { colKey, fromIndex, toIndex }
+  // Excel-like selected cell: { row, col }
+  const [focusedCell, setFocusedCell] = useState(null);
+  // Row selection (Set of row indices) — click row-number gutter to select rows
+  const [selRows, setSelRows] = useState(new Set());
+  const [lastSelRow, setLastSelRow] = useState(null);
+  // Cell-range selection — drag on data cells to select a rectangle { r1, c1, r2, c2 } (col indices into MERGE_COLS)
+  const [selRange, setSelRange] = useState(null);
+  // Image drag-over: index of row whose image drop zone is currently hovered
+  const [imgDragOver, setImgDragOver] = useState(null);
+  // Right-click context menu
+  const [ctxMenu, setCtxMenu] = useState(null); // { x, y }
 
   // Preload the tariff bundle once. After this resolves, all HS lookups + calcs
   // are pure in-memory and synchronous.
@@ -935,15 +950,475 @@ export default function AdminCreateInvoice() {
   const addItem = () => {
     setFormData(prev => ({
       ...prev,
-      items: [...prev.items, { productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null }],
+      items: [...prev.items, { productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null, mergedInto: {} }],
     }));
   };
 
+  const importFromExcel = useCallback((file) => {
+    if (!file) return;
+
+    const processFile = async () => {
+      const buffer = await file.arrayBuffer();
+
+      // ── 1. Extract images via ExcelJS (handles both floated and embedded images) ──
+      const imgByRow = {};
+      try {
+        const { Workbook } = await import('exceljs');
+        const exWb = new Workbook();
+        await exWb.xlsx.load(buffer);
+        const exWs = exWb.getWorksheet(1);
+        if (exWs) {
+          for (const img of exWs.getImages()) {
+            const rowIdx = Math.floor(img.range.tl.nativeRow); // 0-based
+            const wbImg = exWb.getImage(img.imageId);
+            if (wbImg?.buffer) {
+              const arr = new Uint8Array(wbImg.buffer);
+              const b64 = btoa(arr.reduce((acc, b) => acc + String.fromCharCode(b), ''));
+              const ext = wbImg.extension || 'png';
+              if (!imgByRow[rowIdx]) imgByRow[rowIdx] = `data:image/${ext};base64,${b64}`;
+            }
+          }
+        }
+      } catch { /* image extraction is best-effort */ }
+
+      // ── 2. Parse cell data via SheetJS ──
+      const wb = XLSX.read(new Uint8Array(buffer), {
+        type: 'array', cellFormula: false, cellStyles: false, raw: false,
+      });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+
+      // Expand merged cells — fill all cells in each merge region with the top-left value
+      const rawRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
+      const merges = ws['!merges'] || [];
+      const grid = rawRows.map(r => [...(r || [])]);
+      for (const m of merges) {
+        const val = grid[m.s.r]?.[m.s.c] ?? null;
+        for (let r = m.s.r; r <= m.e.r; r++) {
+          for (let c = m.s.c; c <= m.e.c; c++) {
+            if (!grid[r]) grid[r] = [];
+            if (r === m.s.r && c === m.s.c) continue;
+            grid[r][c] = val;
+          }
+        }
+      }
+
+      if (grid.length < 2) return;
+
+      const normalise = h => String(h ?? '').toLowerCase()
+        .replace(/[()（）\[\]\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+
+      // ── 3. Auto-detect header row by keyword scoring ──
+      // The real header row contains words like "model", "qty", "price", "no", "type" etc.
+      // Metadata preamble rows (Proforma Invoice, Order Date, Shipper…) score very low.
+      const HEADER_KWS = [
+        'no','no.','model','type','spc','spec','qty','quantity','unit','price','total',
+        'weight','kg','cbm','volume','commission','image','picture','photo','product',
+        'name','description','goods','code','remark','amount','item',
+        '数量','单价','型号','产品','品名','规格','重量','价格','总价','图片','编号','型','号',
+      ];
+      let bestScore = 0;
+      let headerRowIdx = 0;
+      for (let i = 0; i < Math.min(25, grid.length); i++) {
+        const row = grid[i] || [];
+        const score = row.reduce((s, cell) => {
+          const h = normalise(cell);
+          return s + (HEADER_KWS.some(kw => h === kw || h.startsWith(kw + ' ') || h.endsWith(' ' + kw) || h.includes(' ' + kw + ' ')) ? 1 : 0);
+        }, 0);
+        if (score > bestScore) { bestScore = score; headerRowIdx = i; }
+      }
+
+      const headers = (grid[headerRowIdx] || []).map(normalise);
+
+      // findCol: first header containing any keyword
+      // findColX: same but skip headers that also contain any of the excluded terms
+      const findCol = (...kws) => {
+        for (const kw of kws) {
+          const i = headers.findIndex(h => h.includes(kw));
+          if (i !== -1) return i;
+        }
+        return -1;
+      };
+      const findColX = (excl, ...kws) => {
+        for (const kw of kws) {
+          const i = headers.findIndex(h => h.includes(kw) && !excl.some(ex => h.includes(ex)));
+          if (i !== -1) return i;
+        }
+        return -1;
+      };
+
+      // Exclude image/picture columns from text columns, and total column from unit price
+      const EXCL_PIC   = ['picture', 'photo', 'image', 'pic', '图片', '图'];
+      const EXCL_TOTAL = ['total', '总'];
+
+      // Column detection — wide keyword sets to handle many Excel formats
+      const cNo    = findCol('no.','no ','序号','#','sr.no','s.no','item no','编号');
+      // Name-building columns (all concatenated): model → type → spc → desc → name
+      const cModel = findColX(EXCL_PIC, 'model','型号','sku','article no','part no','item code','item no','货号');
+      const cType  = findColX(EXCL_PIC, 'type','类型','category','种类','品类');
+      const cSpc   = findColX(EXCL_PIC, 'spc.','spc','spec','specification','规格','details','variant','配置');
+      const cDesc  = findColX(EXCL_PIC, 'description','desc','详情','描述','说明');
+      // cName: explicitly named product name columns — never picture columns
+      const cName  = findColX(EXCL_PIC, 'product name','item name','goods name','commodity name',
+                              'goods','commodity','品名','商品名','产品名','货物名','物品');
+      const cQty   = findCol('order quantity','quantity pcs','quantity','qty','pcs','件数','数量','count','pieces');
+      const cUnit  = findColX([...EXCL_PIC, ...EXCL_TOTAL, 'price','cost'], 'unit of measure','unit','uom','单位');
+      // Unit price: prefer specific labels; exclude total/gross-total columns
+      const cUP    = findColX(EXCL_TOTAL,
+                              'exw price','unit price','price rmb','price usd','price cny',
+                              'unit cost','单价','出厂价','exw','price','rate','cost','售价');
+      const cKg    = findCol('gross weight','net weight','weight kg','total weight','weight','kg',
+                             '毛重','净重','重量','g.w','n.w','gross','net wt');
+      const cCbm   = findCol('cbm','volume','cubic meter','cubic','m3','m³','体积','立方');
+      const cComm  = findCol('commission %','commission','comm %','comm','佣金');
+
+      // Parse numeric values: handles raw numbers, and strings with any currency symbol
+      const toNum = v => {
+        if (typeof v === 'number') return v;
+        const s = String(v ?? '').replace(/[¥￥$€£₹₩,，\s]/g, '').replace(/[^\d.-]/g, '');
+        return parseFloat(s) || 0;
+      };
+
+      const blankItem = () => ({
+        productName: '', productImage: '', quantity: 1, unit: 'PCS', unitPrice: 0,
+        priceUnit: 'PCS', weight: '', cbm: '', commission: 0,
+        hsCode: '', hsAutoMatched: true, hsConfidence: 'none',
+        dutyOrigin: null, alcoholAbv: null, mergedInto: {},
+      });
+
+      // ── 4. Build items from data rows ──
+      const newItems = [];
+      for (let i = headerRowIdx + 1; i < grid.length; i++) {
+        const row = grid[i] || [];
+        // Skip blank rows and rows that are pure formula artefacts
+        if (row.every(c => c == null || String(c).trim() === '' || String(c).startsWith('='))) continue;
+
+        // Skip footer/note rows: NO. column contains non-numeric text (e.g. "TOTAL", "备注")
+        if (cNo >= 0) {
+          const noVal = String(row[cNo] ?? '').trim();
+          if (noVal && !/^\d+$/.test(noVal)) continue;
+        }
+
+        // Build product name: MODEL → TYPE → SPC → DESC → NAME (all concatenated, deduplicated)
+        // e.g. "C6939" + "Charger" + "US cable" → "C6939 Charger US cable"
+        const seen = new Set();
+        const nameParts = [];
+        for (const ci of [cModel, cType, cSpc, cDesc, cName]) {
+          if (ci < 0) continue;
+          const v = String(row[ci] ?? '').trim();
+          // Skip formula strings (=DISPIMG, =IMAGE, etc.) — those are image embeds, not text
+          if (v && !v.startsWith('=') && !seen.has(v.toLowerCase())) {
+            seen.add(v.toLowerCase()); nameParts.push(v);
+          }
+        }
+        // Last resort: first non-empty text cell that isn't a pure number or formula
+        if (nameParts.length === 0) {
+          const skipCols = new Set([cQty, cUP, cKg, cCbm, cComm].filter(x => x >= 0));
+          for (let j = 0; j < row.length; j++) {
+            if (skipCols.has(j)) continue;
+            const v = String(row[j] ?? '').trim();
+            if (v && !v.startsWith('=') && isNaN(Number(v.replace(/[¥$€£,]/g, '')))) { nameParts.push(v); break; }
+          }
+        }
+        const productName = nameParts.map(p => p.trim()).filter(Boolean).join('  ').trim();
+        if (!productName) continue;
+
+        // Skip footer/note rows by content — summary lines, payment terms, remarks etc.
+        const pnLower = productName.toLowerCase();
+        const FOOTER_KWS = [
+          'total:','total：','total pcs','total qty','合计','小计',
+          '注意事项','注意','remark','remarks','note:','notes:',
+          'payment term','付款','定金','deposit',
+          'balance amount','余额','balance:',
+          'signature','签字','签名',
+          '是否分开','是否过热','封口','保质',
+        ];
+        if (FOOTER_KWS.some(kw => pnLower.startsWith(kw) || pnLower.includes(kw))) continue;
+
+        const qty       = cQty  >= 0 ? (toNum(row[cQty])  || 1) : 1;
+        const unit      = cUnit >= 0 ? (String(row[cUnit] ?? '').trim() || 'PCS') : 'PCS';
+        const unitPrice = cUP   >= 0 ? toNum(row[cUP])  : 0;
+        const rawKg     = cKg   >= 0 ? toNum(row[cKg])  : 0;
+        const rawCbm    = cCbm  >= 0 ? toNum(row[cCbm]) : 0;
+        const weight    = rawKg  > 0 ? String(rawKg)  : '';
+        const cbm       = rawCbm > 0 ? String(rawCbm) : '';
+        const commission = cComm >= 0 ? toNum(row[cComm]) : 0;
+
+        // Image: use ExcelJS-extracted image for this row (0-based index = i)
+        const productImage = imgByRow[i] || '';
+
+        // Auto-match HS code
+        let hsCode = '', hsConfidence = 'none';
+        if (productName && isTariffReady()) {
+          const m = autoMatchHsCode(productName);
+          hsCode = m.code || ''; hsConfidence = m.confidence;
+        }
+
+        newItems.push({ ...blankItem(), productName, productImage, quantity: qty, unit, priceUnit: unit, unitPrice, weight, cbm, commission, hsCode, hsConfidence });
+      }
+
+      if (newItems.length === 0) return;
+
+      setFormData(prev => {
+        const existing = prev.items.filter(it => it.productName || it.productImage || it.weight || it.cbm);
+        return { ...prev, items: existing.length > 0 ? [...existing, ...newItems] : newItems };
+      });
+    };
+
+    processFile().catch(err => console.error('Excel import failed:', err));
+  }, []);
+
+  // ── PDF import ───────────────────────────────────────────────────────────────
+  const importFromPDF = useCallback((file) => {
+    if (!file) return;
+
+    const processFile = async () => {
+      const buffer = await file.arrayBuffer();
+
+      // Lazy-load pdfjs-dist so it doesn't bloat the initial bundle
+      const pdfjsLib = await import('pdfjs-dist');
+      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+        'pdfjs-dist/build/pdf.worker.mjs',
+        import.meta.url,
+      ).href;
+
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+
+      // ── 1. Extract text items with coordinates across all pages ──
+      const allItems = [];
+      for (let p = 1; p <= pdf.numPages; p++) {
+        const page    = await pdf.getPage(p);
+        const vp      = page.getViewport({ scale: 1 });
+        const content = await page.getTextContent();
+        for (const item of content.items) {
+          const str = item.str?.trim();
+          if (!str) continue;
+          // PDF y=0 is bottom-left; flip to top-down
+          allItems.push({ str, x: item.transform[4], y: vp.height - item.transform[5], page: p });
+        }
+      }
+      if (allItems.length === 0) return;
+
+      // ── 2. Cluster text into visual lines (tight ±4 pt tolerance) ──
+      allItems.sort((a, b) => a.y - b.y || a.x - b.x);
+      const LINE_TOL = 4;
+      const lines = [];
+      let cur = [allItems[0]];
+      for (let i = 1; i < allItems.length; i++) {
+        if (Math.abs(allItems[i].y - cur[cur.length - 1].y) <= LINE_TOL) {
+          cur.push(allItems[i]);
+        } else {
+          lines.push([...cur].sort((a, b) => a.x - b.x));
+          cur = [allItems[i]];
+        }
+      }
+      if (cur.length) lines.push([...cur].sort((a, b) => a.x - b.x));
+      if (lines.length < 2) return;
+
+      const normalise = h => String(h ?? '').toLowerCase()
+        .replace(/[()（）\[\]\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+
+      const HEADER_KWS = [
+        'no','no.','model','type','spc','spec','qty','quantity','unit','price','total',
+        'weight','kg','cbm','volume','commission','image','picture','photo','product',
+        'name','description','goods','code','remark','amount','item',
+        '数量','单价','型号','产品','品名','规格','重量','价格','总价','图片','编号','型','号',
+      ];
+      const scoreItems = items => items.reduce((s, it) => {
+        const h = normalise(it.str);
+        return s + (HEADER_KWS.some(kw =>
+          h === kw || h.startsWith(kw + ' ') || h.endsWith(' ' + kw) || h.includes(' ' + kw + ' '),
+        ) ? 1 : 0);
+      }, 0);
+
+      // ── 3. Detect header — try single line and bilingual 2-line pairs ──
+      // Bilingual PDFs (e.g. "编号" on one line, "NO" on the next) score higher as a pair.
+      let bestScore = 0, headerLineIdx = 0, headerLineCount = 1;
+      for (let i = 0; i < Math.min(25, lines.length); i++) {
+        const s1 = scoreItems(lines[i]);
+        if (s1 > bestScore) { bestScore = s1; headerLineIdx = i; headerLineCount = 1; }
+        if (i + 1 < lines.length) {
+          const yGap = lines[i + 1][0].y - lines[i][lines[i].length - 1].y;
+          if (yGap < 22) {
+            const s2 = scoreItems([...lines[i], ...lines[i + 1]]);
+            if (s2 > bestScore) { bestScore = s2; headerLineIdx = i; headerLineCount = 2; }
+          }
+        }
+      }
+
+      // Merge header lines; cluster stacked bilingual text by x-proximity into one column entry
+      const rawHdrItems = [
+        ...lines[headerLineIdx],
+        ...(headerLineCount === 2 ? lines[headerLineIdx + 1] : []),
+      ].sort((a, b) => a.x - b.x);
+      const hCols = [];
+      for (const it of rawHdrItems) {
+        const last = hCols[hCols.length - 1];
+        if (last && Math.abs(it.x - last.x) < 35) {
+          last.text += ' ' + it.str;
+        } else {
+          hCols.push({ x: it.x, text: it.str });
+        }
+      }
+      const headers  = hCols.map(c => normalise(c.text));
+      const headerXs = hCols.map(c => c.x);
+      const colCount = hCols.length;
+
+      const assignCol = x => {
+        let best = 0, bestDist = Infinity;
+        headerXs.forEach((hx, i) => { const d = Math.abs(x - hx); if (d < bestDist) { bestDist = d; best = i; } });
+        return best;
+      };
+
+      const dataStart = headerLineIdx + headerLineCount;
+
+      // ── 4. Column detection ──
+      const findCol = (...kws) => {
+        for (const kw of kws) { const i = headers.findIndex(h => h.includes(kw)); if (i !== -1) return i; }
+        return -1;
+      };
+      const findColX = (excl, ...kws) => {
+        for (const kw of kws) {
+          const i = headers.findIndex(h => h.includes(kw) && !excl.some(ex => h.includes(ex)));
+          if (i !== -1) return i;
+        }
+        return -1;
+      };
+
+      const EXCL_PIC   = ['picture', 'photo', 'image', 'pic', '图片', '图'];
+      const EXCL_TOTAL = ['total', '总'];
+
+      const cNo    = findCol('no.', 'no ', '序号', '编号', '#', 'sr.no', 's.no', 'item no');
+      const cModel = findColX(EXCL_PIC, 'model', '型号', 'sku', 'article no', 'part no', 'item code', 'item no', '货号');
+      const cType  = findColX(EXCL_PIC, 'type', '类型', 'category', '种类', '品类');
+      const cSpc   = findColX(EXCL_PIC, 'spc.', 'spc', 'spec', 'specification', '规格', 'details', 'variant', '配置');
+      const cDesc  = findColX(EXCL_PIC, 'description', 'desc', '详情', '描述', '说明');
+      const cName  = findColX(EXCL_PIC, 'product name', 'item name', 'goods name', 'commodity name',
+                              'goods', 'commodity', '品名', '商品名', '产品名', '货物名', '物品', 'product');
+      const cQty   = findCol('order quantity', 'quantity pcs', 'quantity', 'qty', 'pcs', '件数', '数量', 'count', 'pieces');
+      const cUnit  = findColX([...EXCL_PIC, ...EXCL_TOTAL, 'price', 'cost'], 'unit of measure', 'unit', 'uom', '单位');
+      const cUP    = findColX(EXCL_TOTAL, 'exw price', 'unit price', 'price rmb', 'price usd', 'price cny',
+                              'unit cost', '单价', 'u p', 'u/p', '出厂价', 'exw', 'price', 'rate', 'cost', '售价');
+      const cKg    = findCol('gross weight', 'net weight', 'weight kg', 'total weight', 'weight', 'kg',
+                             '毛重', '净重', '重量', 'g.w', 'n.w', 'gross', 'net wt');
+      const cCbm   = findCol('cbm', 'volume', 'cubic meter', 'cubic', 'm3', 'm³', '体积', '立方');
+      const cComm  = findCol('commission %', 'commission', 'comm %', 'comm', '佣金');
+
+      // ── 5. Merge multi-line table rows using NO column as row boundary ──
+      // PDFs often have multi-line cells (e.g. TIGER / PRIVACY / GLASS / SINGLE
+      // spread over 4 visual lines). A new invoice item starts when the NO column
+      // position contains a sequential integer.
+      const noColX   = cNo >= 0 ? headerXs[cNo] : headerXs[0];
+      const NO_X_TOL = 45; // pt — generous tolerance for slight x offsets
+
+      const tableRowBuckets = [];
+      for (let i = dataStart; i < lines.length; i++) {
+        const line        = lines[i];
+        const noCandidate = line.find(it => Math.abs(it.x - noColX) <= NO_X_TOL);
+        const startsNew   = noCandidate && /^\d+$/.test(noCandidate.str.trim());
+        if (startsNew || tableRowBuckets.length === 0) {
+          tableRowBuckets.push([...line]);
+        } else {
+          tableRowBuckets[tableRowBuckets.length - 1].push(...line);
+        }
+      }
+
+      // Build one aligned cell-array per invoice item row
+      const alignedGrid = tableRowBuckets.map(bucket => {
+        const cells = new Array(colCount).fill(null);
+        for (const it of bucket) {
+          const c = assignCol(it.x);
+          cells[c] = cells[c] ? cells[c] + ' ' + it.str : it.str;
+        }
+        return cells;
+      });
+
+      // ── 6. Build invoice items ──
+      const toNum = v => {
+        if (typeof v === 'number') return v;
+        const s = String(v ?? '').replace(/[¥￥$€£₹₩,，\s]/g, '').replace(/[^\d.-]/g, '');
+        return parseFloat(s) || 0;
+      };
+      const blankItem = () => ({
+        productName: '', productImage: '', quantity: 1, unit: 'PCS', unitPrice: 0,
+        priceUnit: 'PCS', weight: '', cbm: '', commission: 0,
+        hsCode: '', hsAutoMatched: true, hsConfidence: 'none',
+        dutyOrigin: null, alcoholAbv: null, mergedInto: {},
+      });
+      const FOOTER_KWS = [
+        'total:', 'total：', 'total pcs', 'total qty', '合计', '小计',
+        '注意事项', '注意', 'remark', 'remarks', 'note:', 'notes:',
+        'payment term', '付款', '定金', 'deposit',
+        'balance amount', '余额', 'balance:', 'signature', '签字', '签名',
+      ];
+
+      const newItems = [];
+      for (const row of alignedGrid) {
+        if (row.every(c => c == null || String(c).trim() === '')) continue;
+
+        if (cNo >= 0) {
+          const noVal = String(row[cNo] ?? '').trim();
+          if (noVal && !/^\d+$/.test(noVal)) continue;
+        }
+
+        const seen = new Set();
+        const nameParts = [];
+        // Put readable name (cName/product) first, then model/spec details after
+        for (const ci of [cName, cModel, cType, cSpc, cDesc]) {
+          if (ci < 0) continue;
+          const v = String(row[ci] ?? '').trim();
+          if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); nameParts.push(v); }
+        }
+        if (nameParts.length === 0) {
+          const skipCols = new Set([cNo, cQty, cUP, cKg, cCbm, cComm].filter(x => x >= 0));
+          for (let j = 0; j < row.length; j++) {
+            if (skipCols.has(j)) continue;
+            const v = String(row[j] ?? '').trim();
+            if (v && isNaN(Number(v.replace(/[¥$€£,]/g, '')))) { nameParts.push(v); break; }
+          }
+        }
+        // Format: "Product Name - Spec / Description"
+        const cleanParts = nameParts.map(p => p.trim()).filter(Boolean);
+        const productName = cleanParts.length > 1
+          ? `${cleanParts[0]} - ${cleanParts.slice(1).join(' / ')}`
+          : (cleanParts[0] || '');
+        if (!productName) continue;
+
+        const pnLower = productName.toLowerCase();
+        if (FOOTER_KWS.some(kw => pnLower.startsWith(kw) || pnLower.includes(kw))) continue;
+
+        const qty        = cQty  >= 0 ? (toNum(row[cQty])  || 1) : 1;
+        const unit       = cUnit >= 0 ? (String(row[cUnit] ?? '').trim() || 'PCS') : 'PCS';
+        const unitPrice  = cUP   >= 0 ? toNum(row[cUP])  : 0;
+        const rawKg      = cKg   >= 0 ? toNum(row[cKg])  : 0;
+        const rawCbm     = cCbm  >= 0 ? toNum(row[cCbm]) : 0;
+        const weight     = rawKg  > 0 ? String(rawKg)  : '';
+        const cbm        = rawCbm > 0 ? String(rawCbm) : '';
+        const commission = cComm >= 0 ? toNum(row[cComm]) : 0;
+
+        let hsCode = '', hsConfidence = 'none';
+        if (productName && isTariffReady()) {
+          const m = autoMatchHsCode(productName);
+          hsCode = m.code || ''; hsConfidence = m.confidence;
+        }
+        newItems.push({ ...blankItem(), productName, quantity: qty, unit, priceUnit: unit, unitPrice, weight, cbm, commission, hsCode, hsConfidence });
+      }
+
+      if (newItems.length === 0) return;
+
+      setFormData(prev => {
+        const existing = prev.items.filter(it => it.productName || it.productImage || it.weight || it.cbm);
+        return { ...prev, items: existing.length > 0 ? [...existing, ...newItems] : newItems };
+      });
+    };
+
+    processFile().catch(err => console.error('PDF import failed:', err));
+  }, []);
+
   const removeItem = (index) => {
-    setFormData(prev => ({
-      ...prev,
-      items: prev.items.filter((_, i) => i !== index),
-    }));
+    setFormData(prev => {
+      const items = prev.items.filter((_, i) => i !== index);
+      return { ...prev, items };
+    });
   };
 
   const updateItem = (index, field, value) => {
@@ -1532,6 +2007,371 @@ export default function AdminCreateInvoice() {
     });
   };
 
+  // ─── Excel-like helpers ────────────────────────────────────────────────────
+
+  const totalKg = useMemo(
+    () => formData.items.reduce((s, it) => s + (parseFloat(it.weight) || 0), 0),
+    [formData.items],
+  );
+  const totalCbm = useMemo(
+    () => formData.items.reduce((s, it) => s + (parseFloat(it.cbm) || 0), 0),
+    [formData.items],
+  );
+
+  // Data columns in table order — index maps column position for range selection
+  const MERGE_COLS = ['image', 'productName', 'quantity', 'unit', 'unitPrice', 'total', 'commission', 'weight', 'cbm', 'hsCode'];
+
+  // Per-column rowspan: returns 0 if this cell is merged into the one above, otherwise span count.
+  // Orphaned cells (mergedInto=true but at row 0) auto-promote to leader.
+  const getCellRowspan = useCallback((index, colKey) => {
+    const isMerged = formData.items[index]?.mergedInto?.[colKey];
+    if (isMerged && index > 0) return 0; // properly merged → don't render
+    let span = 1;
+    for (let i = index + 1; i < formData.items.length; i++) {
+      if (formData.items[i]?.mergedInto?.[colKey]) span++;
+      else break;
+    }
+    return span;
+  }, [formData.items]);
+
+  // Column order for Enter-key navigation (left → right, wraps to next row)
+  const CELL_COL_ORDER = ['productName', 'quantity', 'unit', 'unitPrice', 'commission', 'weight', 'cbm'];
+
+  const handleCellKeyDown = useCallback((e, rowIndex, colKey) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    // Enter moves DOWN to the same column in the next row (Excel behaviour)
+    const nextRow = rowIndex + 1;
+    const nextCol = colKey;
+    setFocusedCell({ row: nextRow, col: nextCol });
+    setTimeout(() => {
+      const el = document.querySelector(`[data-cell="${nextRow}-${nextCol}"]`);
+      if (!el) return;
+      el.focus();
+      try { const len = el.value?.length ?? 0; el.setSelectionRange(len, len); } catch { /* number inputs */ }
+    }, 0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Apply fill-down when the user releases the mouse after dragging a handle.
+  useEffect(() => {
+    const onMouseUp = () => {
+      if (!fillDrag) return;
+      const { colKey, fromIndex, toIndex } = fillDrag;
+      if (toIndex > fromIndex) {
+        setFormData(prev => {
+          const sourceValue = prev.items[fromIndex]?.[colKey];
+          return {
+            ...prev,
+            items: prev.items.map((it, i) =>
+              i > fromIndex && i <= toIndex ? { ...it, [colKey]: sourceValue } : it,
+            ),
+          };
+        });
+      }
+      setFillDrag(null);
+    };
+    window.addEventListener("mouseup", onMouseUp);
+    return () => window.removeEventListener("mouseup", onMouseUp);
+  }, [fillDrag]);
+
+  // ─── Row selection & context menu ─────────────────────────────────────────
+
+  // Saved state at mousedown — used to detect deselect vs drag in click handler
+  const selRowsAtMouseDownRef = useRef(new Set());
+  const dragOccurredRef = useRef(false);
+
+  // Click on row-number gutter: select/deselect rows; supports Shift and Ctrl/Cmd
+  const handleRowHeaderClick = useCallback((e, index) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setFocusedCell(null);
+    // If this was actually a drag, selection was already handled by mouseenter
+    if (dragOccurredRef.current) {
+      dragOccurredRef.current = false;
+      return;
+    }
+    if (e.shiftKey && lastSelRow !== null) {
+      const lo = Math.min(lastSelRow, index), hi = Math.max(lastSelRow, index);
+      const next = new Set();
+      for (let i = lo; i <= hi; i++) next.add(i);
+      setSelRows(next);
+    } else if (e.ctrlKey || e.metaKey) {
+      // Use pre-mousedown state to correctly toggle
+      const next = new Set(selRowsAtMouseDownRef.current);
+      if (next.has(index)) next.delete(index); else next.add(index);
+      setSelRows(next);
+      setLastSelRow(index);
+    } else {
+      // Plain click: if row was already the sole selection → deselect all
+      if (selRowsAtMouseDownRef.current.size === 1 && selRowsAtMouseDownRef.current.has(index)) {
+        setSelRows(new Set());
+        setLastSelRow(null);
+      }
+      // Otherwise mousedown already selected this row — nothing extra to do
+    }
+  }, [lastSelRow]);
+
+  // Right-click anywhere in a row → select that row (keep existing multi-selection) + show menu
+  const handleRowContextMenu = useCallback((e, index) => {
+    e.preventDefault();
+    // Build the effective row set: gutter selection, or derive from cell-range, or just the clicked row
+    let effectiveRows = new Set(selRows);
+    if (effectiveRows.size === 0 && selRange) {
+      for (let r = selRange.r1; r <= selRange.r2; r++) effectiveRows.add(r);
+    }
+    if (!effectiveRows.has(index)) {
+      effectiveRows = new Set([index]);
+    }
+    setSelRows(effectiveRows);
+    setLastSelRow(index);
+    // Clamp menu so it doesn't overflow viewport
+    const x = Math.min(e.clientX, window.innerWidth  - 220);
+    const y = Math.min(e.clientY, window.innerHeight - 320);
+    setCtxMenu({ x, y });
+  }, [selRows, selRange]);
+
+  // Insert blank row above/below the topmost selected row
+  const ctxInsertRow = useCallback((direction) => {
+    const pivot = direction === 'above'
+      ? Math.min(...selRows)
+      : Math.max(...selRows) + 1;
+    const blank = { productName: '', productImage: '', quantity: 1, unit: 'KG', unitPrice: 0, priceUnit: 'KG', weight: '', cbm: '', commission: 0, hsCode: '', hsAutoMatched: true, hsConfidence: 'none', dutyOrigin: null, alcoholAbv: null, mergedInto: {} };
+    setFormData(prev => {
+      const items = [...prev.items];
+      items.splice(pivot, 0, blank);
+      return { ...prev, items };
+    });
+    setSelRows(new Set([pivot]));
+    setCtxMenu(null);
+  }, [selRows]);
+
+  // Delete selected rows (keep at least 1)
+  const ctxDeleteRows = useCallback(() => {
+    setFormData(prev => {
+      const items = prev.items.filter((_, i) => !selRows.has(i));
+      return { ...prev, items: items.length ? items : [{ productName: '', productImage: '', quantity: 1, unit: 'KG', unitPrice: 0, priceUnit: 'KG', weight: '', cbm: '', commission: 0, hsCode: '', hsAutoMatched: true, hsConfidence: 'none', dutyOrigin: null, alcoholAbv: null, mergedInto: {} }] };
+    });
+    setSelRows(new Set());
+    setCtxMenu(null);
+  }, [selRows]);
+
+  // Clear contents of selected rows (keep row structure)
+  const ctxClearContents = useCallback(() => {
+    setFormData(prev => ({
+      ...prev,
+      items: prev.items.map((it, i) =>
+        selRows.has(i)
+          ? { ...it, productName: '', quantity: 1, unitPrice: 0, weight: '', cbm: '', commission: 0 }
+          : it,
+      ),
+    }));
+    setCtxMenu(null);
+  }, [selRows]);
+
+  // Merge selected cells — works on selRange (specific columns) or full selRows (all columns)
+  const ctxMergeRows = useCallback(() => {
+    if (selRange && selRange.r1 < selRange.r2) {
+      // Cell-range merge: only the selected columns
+      const cols = MERGE_COLS.slice(selRange.c1, selRange.c2 + 1);
+      setFormData(prev => ({
+        ...prev,
+        items: prev.items.map((it, i) => {
+          if (i <= selRange.r1 || i > selRange.r2) return it;
+          const mergedInto = { ...(it.mergedInto || {}) };
+          cols.forEach(k => { mergedInto[k] = true; });
+          return { ...it, mergedInto };
+        }),
+      }));
+    } else if (selRows.size >= 2) {
+      // Full-row merge: all columns
+      const sorted = [...selRows].sort((a, b) => a - b);
+      setFormData(prev => ({
+        ...prev,
+        items: prev.items.map((it, i) => {
+          if (!selRows.has(i) || i === sorted[0]) return it;
+          const mergedInto = Object.fromEntries(MERGE_COLS.map(k => [k, true]));
+          return { ...it, mergedInto };
+        }),
+      }));
+    }
+    setCtxMenu(null);
+  }, [selRows, selRange]);
+
+  // Unmerge selected cells
+  const ctxUnmergeRows = useCallback(() => {
+    if (selRange) {
+      const cols = MERGE_COLS.slice(selRange.c1, selRange.c2 + 1);
+      setFormData(prev => ({
+        ...prev,
+        items: prev.items.map((it, i) => {
+          if (i < selRange.r1 || i > selRange.r2) return it;
+          const mergedInto = { ...(it.mergedInto || {}) };
+          cols.forEach(k => { delete mergedInto[k]; });
+          return { ...it, mergedInto };
+        }),
+      }));
+    } else {
+      setFormData(prev => ({
+        ...prev,
+        items: prev.items.map((it, i) => selRows.has(i) ? { ...it, mergedInto: {} } : it),
+      }));
+    }
+    setCtxMenu(null);
+  }, [selRows, selRange]);
+
+  // Keyboard shortcuts for row/cell selection
+  useEffect(() => {
+    const onKey = (e) => {
+      if (ctxMenu) { if (e.key === 'Escape') setCtxMenu(null); return; }
+      if (selRows.size > 0 && !focusedCell) {
+        if (e.key === 'Delete') { e.preventDefault(); ctxDeleteRows(); }          // Delete = remove rows
+        if (e.key === 'Backspace') { e.preventDefault(); ctxClearContents(); }    // Backspace = clear contents
+        if (e.key === 'Escape') { setSelRows(new Set()); setLastSelRow(null); setSelRange(null); }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selRows, focusedCell, ctxMenu, ctxDeleteRows, ctxClearContents]);
+
+  // Global paste — intercepts Ctrl+V anywhere while a row/cell in the table is active.
+  // If the clipboard contains an image, pastes it into the focused/selected row's image column.
+  useEffect(() => {
+    const onPaste = (e) => {
+      // Find an image in the clipboard
+      let imgFile = null;
+      for (const ci of Array.from(e.clipboardData?.items || [])) {
+        if (ci.type.startsWith('image/')) { imgFile = ci.getAsFile(); break; }
+      }
+      if (!imgFile) return; // no image — let normal paste happen
+
+      // Determine target row: focused cell row first, then first gutter-selected row
+      let targetRow = focusedCell?.row;
+      if (targetRow === undefined || targetRow === null) {
+        if (selRows.size > 0) targetRow = Math.min(...selRows);
+        else if (selRange) targetRow = selRange.r1;
+      }
+      if (targetRow === undefined || targetRow === null) return;
+
+      e.preventDefault();
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setFormData(prev => {
+          if (targetRow >= prev.items.length) return prev;
+          return {
+            ...prev,
+            items: prev.items.map((it, i) =>
+              i === targetRow ? { ...it, productImage: reader.result } : it,
+            ),
+          };
+        });
+      };
+      reader.readAsDataURL(imgFile);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [focusedCell, selRows, selRange]);
+
+  // Click outside context menu → close it
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const close = (e) => {
+      if (!e.target.closest('[data-ctxmenu]')) setCtxMenu(null);
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, [ctxMenu]);
+
+  // ── Drag-to-select rows (like Excel) ─────────────────────────────────────
+  const rowDragRef = useRef({ active: false, startRow: null });
+
+  // Stop drag on global mouseup
+  useEffect(() => {
+    const stop = () => {
+      rowDragRef.current.active = false;
+      cellDragRef.current.active = false;
+    };
+    window.addEventListener('mouseup', stop);
+    return () => window.removeEventListener('mouseup', stop);
+  }, []);
+
+  // Cell-drag ref — drag on data cells to select a rectangle
+  const cellDragRef = useRef({ active: false, startRow: null, startColIdx: null });
+  const excelInputRef = useRef(null);
+  const pdfInputRef   = useRef(null);
+
+  const handleCellMouseDown = useCallback((e, rowIndex, colIdx) => {
+    if (e.button !== 0) return;
+    e.stopPropagation(); // don't trigger row drag
+    cellDragRef.current = { active: true, startRow: rowIndex, startColIdx: colIdx };
+    setSelRange({ r1: rowIndex, c1: colIdx, r2: rowIndex, c2: colIdx });
+    setSelRows(new Set()); // clear row-gutter selection
+  }, []);
+
+  const handleCellMouseEnter = useCallback((rowIndex, colIdx) => {
+    if (!cellDragRef.current.active) return;
+    const { startRow, startColIdx } = cellDragRef.current;
+    setSelRange({
+      r1: Math.min(startRow, rowIndex), c1: Math.min(startColIdx, colIdx),
+      r2: Math.max(startRow, rowIndex), c2: Math.max(startColIdx, colIdx),
+    });
+  }, []);
+
+  const handleRowMouseDown = useCallback((e, index) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    selRowsAtMouseDownRef.current = new Set(selRows);
+    dragOccurredRef.current = false;
+    rowDragRef.current = { active: true, startRow: index };
+    setSelRange(null); // clear cell-range selection when selecting rows
+    setFocusedCell(null);
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      setSelRows(new Set([index]));
+      setLastSelRow(index);
+    }
+  }, [selRows]);
+
+  const handleRowMouseEnter = useCallback((index) => {
+    if (!rowDragRef.current.active) return;
+    if (cellDragRef.current.active) return; // cell drag takes priority
+    if (index !== rowDragRef.current.startRow) dragOccurredRef.current = true;
+    const lo = Math.min(rowDragRef.current.startRow, index);
+    const hi = Math.max(rowDragRef.current.startRow, index);
+    const next = new Set();
+    for (let i = lo; i <= hi; i++) next.add(i);
+    setSelRows(next);
+    setLastSelRow(index);
+  }, []);
+
+  // ── Merge/Unmerge toggle for toolbar ─────────────────────────────────────
+  const selRowsSorted = useMemo(() => [...selRows].sort((a, b) => a - b), [selRows]);
+
+  // canMerge: true when a multi-row selection exists (either gutter rows or cell range spanning rows)
+  const canMerge = selRows.size >= 2 || (selRange && selRange.r1 < selRange.r2);
+
+  const isAlreadyMerged = useMemo(() => {
+    // Check selRange first (cell-range selection)
+    if (selRange && selRange.r1 < selRange.r2) {
+      const cols = MERGE_COLS.slice(selRange.c1, selRange.c2 + 1);
+      for (let i = selRange.r1 + 1; i <= selRange.r2; i++) {
+        if (!cols.every(k => formData.items[i]?.mergedInto?.[k])) return false;
+      }
+      return true;
+    }
+    // Fallback: check full-row gutter selection
+    if (selRows.size >= 2) {
+      return selRowsSorted.slice(1).every(i => {
+        const it = formData.items[i];
+        return MERGE_COLS.every(k => it?.mergedInto?.[k]);
+      });
+    }
+    return false;
+  }, [selRange, selRows, selRowsSorted, formData.items]);
+
+  const handleMergeToggle = useCallback(() => {
+    if (isAlreadyMerged) ctxUnmergeRows(); else ctxMergeRows();
+  }, [isAlreadyMerged, ctxMergeRows, ctxUnmergeRows]);
+
   // Show Step 3 only when checkbox is checked
   const steps = [
     { number: 1, label: "Information" },
@@ -1541,9 +2381,9 @@ export default function AdminCreateInvoice() {
 
   return (
     <AdminPageShell activePage="Invoices" title="Create Invoice" eyebrow="Create a new invoice for your customer">
-      <div className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
+      <div className={`rounded-[2rem] border border-[#E1E3EE] bg-white ${currentStep === 2 ? 'py-6 px-0' : 'p-6'}`}>
         {/* Header with Title and Back Button */}
-        <div className="flex items-center justify-between border-b border-[#EAE8E5] pb-4">
+        <div className={`flex items-center justify-between border-b border-[#EAE8E5] pb-4 ${currentStep === 2 ? 'px-6' : ''}`}>
           <h2 className="text-xl font-semibold text-[#412460]">
             {currentStep === 1 ? "Customer Information" : currentStep === 2 ? "Invoice Items" : "Customs Duty and Transportation"}
           </h2>
@@ -1615,7 +2455,7 @@ export default function AdminCreateInvoice() {
         </div>
 
         {/* Step Progress Indicator with Currency Selector */}
-        <div className="mt-6 flex items-center justify-between gap-4">
+        <div className={`mt-6 flex items-center justify-between gap-4 ${currentStep === 2 ? 'px-6' : ''}`}>
           {/* Left: Step Indicators */}
           <div className="flex items-center gap-4">
             {steps.map((step, index) => (
@@ -1814,228 +2654,642 @@ export default function AdminCreateInvoice() {
         {currentStep === 2 && (
           <form onSubmit={handleSubmit} className="mt-6 space-y-6">
 
-            {/* Invoice Items Table */}
+            {/* Invoice Items Table — full-bleed (card has px-0 on step 2) */}
             <div>
-              <div className="mb-3 flex items-center justify-between">
-                <label className="text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Items</label>
+              {/* Toolbar: Items label | Merge/Unmerge (center) | + Add Item */}
+              <div className="mb-3 grid px-6" style={{ gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 12 }}>
+                {/* Left */}
+                <label className="text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">
+                  Items{selRows.size > 0 && <span className="ml-2 font-normal normal-case text-[#1d6f42]">({selRows.size} row{selRows.size !== 1 ? 's' : ''} selected)</span>}
+                  {selRange && (selRange.r1 !== selRange.r2 || selRange.c1 !== selRange.c2) && <span className="ml-2 font-normal normal-case text-[#1d6f42]">({selRange.r2 - selRange.r1 + 1}×{selRange.c2 - selRange.c1 + 1} selected)</span>}
+                </label>
+
+                {/* Center — Merge / Unmerge toggle */}
                 <button
                   type="button"
-                  onClick={addItem}
-                  className="bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#B99353]"
+                  onClick={handleMergeToggle}
+                  disabled={!canMerge}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6,
+                    padding: '5px 14px',
+                    border: `1px solid ${canMerge ? '#1d6f42' : '#d0d0d0'}`,
+                    background: isAlreadyMerged ? '#1d6f42' : canMerge ? '#e6f4ea' : '#f7f7f7',
+                    color: isAlreadyMerged ? '#fff' : canMerge ? '#1d6f42' : '#aaa',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: canMerge ? 'pointer' : 'not-allowed',
+                    borderRadius: 3,
+                    transition: 'all 0.15s',
+                    whiteSpace: 'nowrap',
+                    userSelect: 'none',
+                  }}
+                  title={!canMerge ? 'Select 2+ rows first, then click Merge' : isAlreadyMerged ? 'Click to unmerge' : 'Click to merge selected cells'}
                 >
-                  + Add Item
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                    {isAlreadyMerged
+                      ? <><line x1="5" y1="12" x2="19" y2="12"/><polyline points="15 8 19 12 15 16"/><polyline points="9 8 5 12 9 16"/></>
+                      : <><rect x="3" y="3" width="8" height="18" rx="1"/><rect x="13" y="3" width="8" height="18" rx="1"/></>
+                    }
+                  </svg>
+                  {isAlreadyMerged ? 'Unmerge' : 'Merge'}
                 </button>
+
+                {/* Right */}
+                <div className="flex items-center justify-end gap-2">
+                  {/* Hidden file inputs */}
+                  <input
+                    ref={excelInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    style={{ display: 'none' }}
+                    onChange={(e) => { importFromExcel(e.target.files?.[0]); e.target.value = ''; }}
+                  />
+                  <input
+                    ref={pdfInputRef}
+                    type="file"
+                    accept=".pdf"
+                    style={{ display: 'none' }}
+                    onChange={(e) => { importFromPDF(e.target.files?.[0]); e.target.value = ''; }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => excelInputRef.current?.click()}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5,
+                      padding: '5px 12px',
+                      border: '1px solid #1d6f42',
+                      background: '#e6f4ea',
+                      color: '#1d6f42',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      borderRadius: 3,
+                      whiteSpace: 'nowrap',
+                      transition: 'all 0.15s',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = '#1d6f42'; e.currentTarget.style.color = '#fff'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = '#e6f4ea'; e.currentTarget.style.color = '#1d6f42'; }}
+                    title="Import items from an Excel or CSV file (.xlsx, .xls, .csv)"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="12" y1="18" x2="12" y2="12"/>
+                      <line x1="9" y1="15" x2="15" y2="15"/>
+                    </svg>
+                    Import Excel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => pdfInputRef.current?.click()}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 5,
+                      padding: '5px 12px',
+                      border: '1px solid #b91c1c',
+                      background: '#fef2f2',
+                      color: '#b91c1c',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                      borderRadius: 3,
+                      whiteSpace: 'nowrap',
+                      transition: 'all 0.15s',
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.background = '#b91c1c'; e.currentTarget.style.color = '#fff'; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = '#fef2f2'; e.currentTarget.style.color = '#b91c1c'; }}
+                    title="Import items from a PDF invoice (.pdf)"
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="12" y1="18" x2="12" y2="12"/>
+                      <line x1="9" y1="15" x2="15" y2="15"/>
+                    </svg>
+                    Import PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={addItem}
+                    className="bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-[#B99353]"
+                  >
+                    + Add Item
+                  </button>
+                </div>
               </div>
 
-              <div className="overflow-x-auto rounded-[1rem] border border-[#E1E3EE]">
-                <table className="w-full min-w-[900px] text-left text-sm">
-                  <thead className="bg-[#F7F6F2] text-[#2D2D2D]/70">
-                    <tr>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Image</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Product Name</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">QTY</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Unit</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">
-                        Unit Price ({getCurrencySymbolFor(currency).trim()}) / {formData.items[0]?.unit || "Unit"}
-                      </th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">
-                        Total Amount ({getCurrencySymbolFor(currency).trim()})
-                      </th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Comm. %</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">Weight</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]">CBM</th>
-                      <th className="px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em]"></th>
+              {/* ── Excel-style spreadsheet grid ── */}
+              <div
+                className="overflow-x-auto border-y border-[#c6c6c6]"
+                style={{ fontFamily: 'Calibri, "Segoe UI", Arial, sans-serif', userSelect: 'none' }}
+                onMouseLeave={() => { if (fillDrag) setFillDrag(prev => prev); }}
+                onClick={(e) => { if (e.target === e.currentTarget) setFocusedCell(null); }}
+              >
+                <table
+                  className="border-collapse"
+                  style={{ fontSize: 13, tableLayout: 'fixed', width: '100%', minWidth: 1900 }}
+                >
+                  {/* ── Column header row (Excel: A B C …) ── */}
+                  <colgroup>
+                    <col style={{ width: 48 }} />  {/* row-number gutter */}
+                    <col style={{ width: 100 }} /> {/* Image */}
+                    <col />                         {/* Product Name — fills remaining */}
+                    <col style={{ width: 100 }} /> {/* QTY */}
+                    <col style={{ width: 110 }} /> {/* Unit */}
+                    <col style={{ width: 190 }} /> {/* Unit Price */}
+                    <col style={{ width: 190 }} /> {/* Total */}
+                    <col style={{ width: 110 }} /> {/* Comm % */}
+                    <col style={{ width: 150 }} /> {/* KG */}
+                    <col style={{ width: 150 }} /> {/* CBM */}
+                    <col style={{ width: 130 }} /> {/* HS Code */}
+                    <col style={{ width: 48 }} />  {/* delete */}
+                  </colgroup>
+
+                  <thead>
+                    {/* Row 1 — column letter labels */}
+                    <tr style={{ height: 24 }}>
+                      {/* Corner */}
+                      <td style={{ background: '#f2f2f2', borderRight: '1px solid #c6c6c6', borderBottom: '1px solid #c6c6c6' }} />
+                      {['A','B','C','D','E','F','G','H','I','J','K'].map((letter, ci) => {
+                        const colKeys = ['','productName','quantity','unit','unitPrice','total','commission','weight','cbm','hsCode',''];
+                        const isColActive = focusedCell && colKeys[ci] && focusedCell.col === colKeys[ci];
+                        const isColFill   = fillDrag    && colKeys[ci] && fillDrag.colKey === colKeys[ci];
+                        return (
+                          <td
+                            key={letter}
+                            className="text-center select-none"
+                            style={{
+                              background: (isColActive || isColFill) ? '#d6e8d4' : '#f2f2f2',
+                              color: (isColActive || isColFill) ? '#1d6f42' : '#444',
+                              fontWeight: (isColActive || isColFill) ? 700 : 400,
+                              fontSize: 12,
+                              borderRight: '1px solid #c6c6c6',
+                              borderBottom: '2px solid ' + ((isColActive || isColFill) ? '#1d6f42' : '#c6c6c6'),
+                            }}
+                          >
+                            {letter}
+                          </td>
+                        );
+                      })}
+                      <td style={{ background: '#f2f2f2', borderBottom: '1px solid #c6c6c6' }} />
+                    </tr>
+
+                    {/* Row 2 — column name labels (bold, gray) */}
+                    <tr style={{ height: 28, background: '#f7f7f7' }}>
+                      <td style={{ borderRight: '1px solid #d0d0d0', borderBottom: '1px solid #d0d0d0', background: '#f2f2f2' }} />
+                      {[
+                        'Image',
+                        'Product Name',
+                        'QTY',
+                        'Unit',
+                        `Unit Price (${getCurrencySymbolFor(currency).trim()})`,
+                        `Total (${getCurrencySymbolFor(currency).trim()})`,
+                        'Comm. %',
+                        'KG',
+                        'CBM',
+                        'HS Code',
+                        '',
+                      ].map((label, ci) => (
+                        <td
+                          key={ci}
+                          className="text-center select-none"
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 700,
+                            color: '#444',
+                            background: '#f7f7f7',
+                            borderRight: '1px solid #d0d0d0',
+                            borderBottom: '2px solid #c0c0c0',
+                            padding: '0 6px',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {label}
+                        </td>
+                      ))}
                     </tr>
                   </thead>
+
+                  {/* ── Data rows ── */}
                   <tbody>
-                    {formData.items.map((item, index) => (
-                      <tr key={index} className="border-t border-[#EAE8E5]">
-                        <td className="px-4 py-3">
-                          {item.productImage ? (
-                            <div className="relative">
-                              <img
-                                src={item.productImage}
-                                alt="Product"
-                                onClick={() => setPreviewImage(item.productImage)}
-                                className="h-14 w-14 rounded-lg object-cover cursor-pointer hover:opacity-80 transition-opacity"
-                                title="Click to preview"
+                    {formData.items.map((item, index) => {
+                      // Per-column rowspan: 0 = merged (skip td), >0 = render with rowspan
+                      const spans = Object.fromEntries(MERGE_COLS.map(k => [k, getCellRowspan(index, k)]));
+
+                      const isRowActive   = focusedCell?.row === index;
+                      const isRowFill     = fillDrag && index >= fillDrag.fromIndex && index <= fillDrag.toIndex;
+                      const isRowSel      = selRows.has(index); // row-header gutter selected
+
+                      // Cell is highlighted if inside a multi-cell selRange rectangle (skip single-click flash)
+                      const isCellInRange = (colIdx) =>
+                        selRange && (selRange.r1 !== selRange.r2 || selRange.c1 !== selRange.c2) &&
+                        index >= selRange.r1 && index <= selRange.r2 &&
+                        colIdx >= selRange.c1 && colIdx <= selRange.c2;
+
+                      const cellSel = (colKey) => {
+                        const active = focusedCell?.row === index && focusedCell?.col === colKey;
+                        const inFill = fillDrag?.colKey === colKey && index >= fillDrag.fromIndex && index <= fillDrag.toIndex;
+                        return { active, inFill };
+                      };
+
+                      const cellStyle = (colKey, extra = {}) => {
+                        const colIdx = MERGE_COLS.indexOf(colKey);
+                        const { active, inFill } = cellSel(colKey);
+                        const inRange = isCellInRange(colIdx);
+                        return {
+                          position: 'relative',
+                          borderRight: '1px solid #d0d0d0',
+                          borderBottom: '1px solid #d0d0d0',
+                          background: active ? '#fff' : inFill ? '#e6f4ea' : inRange ? '#cce5ff' : isRowSel ? '#e8f0ff' : '#fff',
+                          outline: active ? '2px solid #1d6f42' : (inFill || inRange) ? '1px solid #1d6f42' : 'none',
+                          outlineOffset: active ? -2 : -1,
+                          zIndex: active ? 5 : inFill ? 3 : 'auto',
+                          padding: 0,
+                          ...extra,
+                        };
+                      };
+
+                      // Mouse handlers for cell-range selection drag
+                      const cellMD = (colIdx) => (e) => handleCellMouseDown(e, index, colIdx);
+                      const cellME = (colIdx) => () => handleCellMouseEnter(index, colIdx);
+
+                      // Click a cell → set React focus state AND give the input DOM focus
+                      // e is optional — when user clicks directly on the input the browser
+                      // already placed the cursor; only override position when clicking the TD padding.
+                      const focusAndActivate = (col, e) => {
+                        setFocusedCell({ row: index, col });
+                        const clickedInput = e && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT');
+                        if (clickedInput) return; // let browser keep cursor where user clicked
+                        setTimeout(() => {
+                          const el = document.querySelector(`[data-cell="${index}-${col}"]`);
+                          if (!el) return;
+                          el.focus();
+                          // Move cursor to end only when we programmatically focused (TD padding click)
+                          try {
+                            const len = el.value?.length ?? 0;
+                            el.setSelectionRange(len, len);
+                          } catch { /* number inputs don't support setSelectionRange */ }
+                        }, 0);
+                      };
+
+                      // Inline fill handle (only on the focused cell)
+                      const fillHandle = (colKey) => {
+                        const { active } = cellSel(colKey);
+                        if (!active) return null;
+                        return (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              bottom: -4,
+                              right: -4,
+                              width: 8,
+                              height: 8,
+                              background: '#1d6f42',
+                              border: '1.5px solid #fff',
+                              cursor: 'crosshair',
+                              zIndex: 20,
+                            }}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setFillDrag({ colKey, fromIndex: index, toIndex: index });
+                            }}
+                            title="Drag to fill down"
+                          />
+                        );
+                      };
+
+                      // Shared input style — transparent, full-cell
+                      const inputStyle = {
+                        display: 'block',
+                        width: '100%',
+                        height: '100%',
+                        padding: '4px 8px',
+                        background: 'transparent',
+                        border: 'none',
+                        outline: 'none',
+                        fontSize: 15,
+                        color: '#1f1f1f',
+                        fontFamily: 'inherit',
+                        lineHeight: '28px',
+                        minHeight: 30,
+                        boxSizing: 'border-box',
+                      };
+
+
+
+                      return (
+                        <tr
+                          key={index}
+                          style={{ height: 34 }}
+                          onMouseEnter={() => {
+                            if (fillDrag) setFillDrag(prev => prev ? { ...prev, toIndex: Math.max(prev.fromIndex, index) } : null);
+                            handleRowMouseEnter(index);
+                          }}
+                          onContextMenu={(e) => handleRowContextMenu(e, index)}
+                          onDragOver={(e) => {
+                            if (!e.dataTransfer.types.includes('Files')) return;
+                            e.preventDefault();
+                            setImgDragOver(index);
+                          }}
+                          onDragLeave={(e) => {
+                            if (!e.currentTarget.contains(e.relatedTarget)) setImgDragOver(null);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            setImgDragOver(null);
+                            const file = e.dataTransfer.files?.[0];
+                            if (!file?.type.startsWith('image/')) return;
+                            const r = new FileReader();
+                            r.onloadend = () => updateItem(index, 'productImage', r.result);
+                            r.readAsDataURL(file);
+                          }}
+                        >
+                          {/* Row number gutter — mousedown+drag to select row(s) */}
+                          <td
+                            className="text-center select-none"
+                            style={{
+                              fontSize: 11,
+                              color: isRowSel ? '#fff' : isRowActive ? '#1d6f42' : '#888',
+                              fontWeight: (isRowSel || isRowActive) ? 700 : 400,
+                              background: isRowSel ? '#1d6f42' : (isRowActive || isRowFill) ? '#d6e8d4' : '#f2f2f2',
+                              borderRight: '2px solid ' + (isRowSel ? '#155a30' : (isRowActive || isRowFill) ? '#1d6f42' : '#c6c6c6'),
+                              borderBottom: '1px solid #d0d0d0',
+                              cursor: 'row-resize',
+                            }}
+                            onMouseDown={(e) => handleRowMouseDown(e, index)}
+                            onClick={(e) => handleRowHeaderClick(e, index)}
+                            title="Click or drag to select rows"
+                          >
+                            {index + 1}
+                          </td>
+
+                          {/* ── A: Image ── */}
+                          {spans.image > 0 && (() => {
+                            const isDragOver = imgDragOver === index;
+                            const applyImg = (file) => {
+                              if (!file?.type.startsWith('image/')) return;
+                              const r = new FileReader();
+                              r.onloadend = () => updateItem(index, 'productImage', r.result);
+                              r.readAsDataURL(file);
+                            };
+                            const dndProps = {
+                              onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); setImgDragOver(index); },
+                              onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setImgDragOver(null); },
+                              onDrop: (e) => { e.preventDefault(); e.stopPropagation(); setImgDragOver(null); applyImg(e.dataTransfer.files?.[0]); },
+                              onPaste: (e) => {
+                                for (const ci of Array.from(e.clipboardData?.items || [])) {
+                                  if (ci.type.startsWith('image/')) { applyImg(ci.getAsFile()); e.preventDefault(); break; }
+                                }
+                              },
+                            };
+                            return (
+                              <td rowSpan={spans.image} onMouseDown={cellMD(0)} onMouseEnter={cellME(0)}
+                                style={{ borderRight: '1px solid #d0d0d0', borderBottom: '1px solid #d0d0d0', padding: 4, background: isCellInRange(0) ? '#cce5ff' : '#fff', verticalAlign: 'top' }}>
+                                {item.productImage ? (
+                                  <div tabIndex={0} {...dndProps}
+                                    style={{ position: 'relative', display: 'inline-block', outline: 'none', borderRadius: 2 }}>
+                                    <img
+                                      src={item.productImage}
+                                      alt=""
+                                      onClick={() => setPreviewImage(item.productImage)}
+                                      style={{ width: 72, height: 72, objectFit: 'cover', cursor: 'pointer', display: 'block', border: isDragOver ? '2px dashed #1d6f42' : '1px solid #d0d0d0', borderRadius: 2 }}
+                                    />
+                                    {isDragOver && (
+                                      <div style={{ position: 'absolute', inset: 0, background: 'rgba(29,111,66,0.18)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, color: '#1d6f42', fontWeight: 700, borderRadius: 2, pointerEvents: 'none' }}>Replace</div>
+                                    )}
+                                    <button type="button" onClick={() => updateItem(index, 'productImage', '')}
+                                      style={{ position: 'absolute', top: -5, right: -5, width: 16, height: 16, borderRadius: '50%', background: '#e05353', color: '#fff', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1.5px solid #fff', cursor: 'pointer' }}>✕</button>
+                                  </div>
+                                ) : (
+                                  <label tabIndex={0} {...dndProps}
+                                    style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: 72, height: 72, border: isDragOver ? '2px dashed #1d6f42' : '1px dashed #c0c0c0', cursor: 'pointer', background: isDragOver ? '#e6f4ea' : '#fafafa', color: isDragOver ? '#1d6f42' : '#aaa', fontSize: 9, borderRadius: 2, transition: 'all 0.12s', gap: 2 }}>
+                                    <svg style={{ width: 18, height: 18 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                      <polyline points="17 8 12 3 7 8" />
+                                      <line x1="12" y1="3" x2="12" y2="15" />
+                                    </svg>
+                                    <span style={{ fontSize: 8 }}>{isDragOver ? 'Drop!' : 'Click / Drop'}</span>
+                                    <span style={{ fontSize: 7, opacity: 0.7 }}>{isDragOver ? '' : 'or Paste'}</span>
+                                    <input type="file" accept="image/*" style={{ display: 'none' }}
+                                      onChange={(e) => applyImg(e.target.files?.[0])} />
+                                  </label>
+                                )}
+                              </td>
+                            );
+                          })()}
+
+                          {/* ── B: Product Name ── */}
+                          {spans.productName > 0 && <td
+                            rowSpan={spans.productName}
+                            style={cellStyle('productName', { verticalAlign: 'top' })}
+                            onMouseDown={cellMD(1)} onMouseEnter={cellME(1)}
+                            onClick={(e) => focusAndActivate('productName', e)}
+                          >
+                            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                              <input
+                                type="text"
+                                data-cell={`${index}-productName`}
+                                value={item.productName || ""}
+                                onChange={(e) => updateItem(index, "productName", e.target.value)}
+                                onFocus={() => setFocusedCell({ row: index, col: 'productName' })}
+                                onKeyDown={(e) => handleCellKeyDown(e, index, 'productName')}
+                                placeholder="Product name…"
+                                style={{ ...inputStyle, paddingRight: 22 }}
                               />
+                              {/* HS dot */}
                               <button
                                 type="button"
-                                onClick={() => updateItem(index, "productImage", "")}
-                                className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-[#FFECEC] text-[#E05353] transition-colors hover:bg-[#E05353] hover:text-white"
-                                title="Remove image"
-                              >
-                                <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                  <path d="M18 6L6 18M6 6l12 12" />
-                                </svg>
-                              </button>
-                            </div>
-                          ) : (
-                            <label className="flex h-14 w-14 cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-[#E1E3EE] bg-[#F7F6F2] transition-colors hover:border-[#412460] hover:bg-[#412460]/5">
-                              <svg className="h-5 w-5 text-[#2D2D2D]/40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                <polyline points="17 8 12 3 7 8" />
-                                <line x1="12" y1="3" x2="12" y2="15" />
-                              </svg>
-                              <input
-                                type="file"
-                                accept="image/*"
-                                className="hidden"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => {
-                                      updateItem(index, "productImage", reader.result);
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }
+                                onClick={(e) => { e.stopPropagation(); setHsDrawerIndex(index); }}
+                                disabled={!tariffReady}
+                                title={item.hsCode ? `HS ${item.hsCode} (${item.hsConfidence})` : "No HS match"}
+                                style={{
+                                  position: 'absolute', right: 4, top: '50%', transform: 'translateY(-50%)',
+                                  width: 14, height: 14, borderRadius: '50%', border: 'none', cursor: 'pointer',
+                                  background: !tariffReady ? '#ccc' : item.hsConfidence === 'high' ? '#22c55e' : item.hsConfidence === 'medium' ? '#f59e0b' : item.hsConfidence === 'low' ? '#fbbf24' : '#d1d5db',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 7, color: '#fff', fontWeight: 700,
+                                  flexShrink: 0,
                                 }}
-                              />
-                            </label>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="relative">
+                              >HS</button>
+                            </div>
+                            {fillHandle('productName')}
+                          </td>}
+
+                          {/* ── C: QTY ── */}
+                          {spans.quantity > 0 && <td rowSpan={spans.quantity} onMouseDown={cellMD(2)} onMouseEnter={cellME(2)} style={cellStyle('quantity', { textAlign: 'center', verticalAlign: 'top' })} onClick={(e) => focusAndActivate('quantity', e)}>
                             <input
-                              type="text"
-                              value={item.productName || ""}
-                              onChange={(e) => updateItem(index, "productName", e.target.value)}
-                              placeholder="Enter product name"
-                              className="w-full min-w-[180px] rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 pr-9 text-sm focus:border-[#412460] focus:outline-none"
+                              type="number"
+                              min="1"
+                              data-cell={`${index}-quantity`}
+                              value={item.quantity === 0 ? "" : item.quantity}
+                              onChange={(e) => { const v = e.target.value; updateItem(index, "quantity", v === "" ? "" : parseInt(v) || 0); }}
+                              onFocus={() => setFocusedCell({ row: index, col: 'quantity' })}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, 'quantity')}
+                              style={{ ...inputStyle, textAlign: 'center' }}
                             />
-                            {/* HS confidence dot — opens the drawer when clicked.
-                                Color: green=high, amber=medium, gray=low/none. */}
-                            <button
-                              type="button"
-                              onClick={() => setHsDrawerIndex(index)}
-                              disabled={!tariffReady}
-                              title={
-                                !tariffReady
-                                  ? "Loading tariff…"
-                                  : item.hsCode
-                                    ? `HS ${item.hsCode} (${item.hsConfidence || "—"} confidence) — click to view/edit`
-                                    : "No HS match yet — click to search"
-                              }
-                              className={`absolute right-2 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-full transition-transform hover:scale-110 disabled:opacity-30 ${
-                                !tariffReady
-                                  ? "bg-gray-200"
-                                  : item.hsConfidence === "high"
-                                    ? "bg-green-500"
-                                    : item.hsConfidence === "medium"
-                                      ? "bg-amber-400"
-                                      : item.hsConfidence === "low"
-                                        ? "bg-amber-300"
-                                        : "bg-gray-300"
-                              }`}
-                              aria-label="View HS code details"
+                            {fillHandle('quantity')}
+                          </td>}
+
+                          {/* ── D: Unit ── */}
+                          {spans.unit > 0 && <td rowSpan={spans.unit} onMouseDown={cellMD(3)} onMouseEnter={cellME(3)} style={cellStyle('unit', { textAlign: 'center', verticalAlign: 'top' })} onClick={(e) => focusAndActivate('unit', e)}>
+                            <select
+                              data-cell={`${index}-unit`}
+                              value={item.unit}
+                              onChange={(e) => { const u = e.target.value; updateItem(index, "unit", u); updateItem(index, "priceUnit", u); }}
+                              onFocus={() => setFocusedCell({ row: index, col: 'unit' })}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, 'unit')}
+                              style={{ ...inputStyle, textAlign: 'center', cursor: 'pointer', appearance: 'auto' }}
                             >
-                              <span className="text-[9px] font-bold text-white">HS</span>
-                            </button>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <input
-                            type="number"
-                            min="1"
-                            value={item.quantity === 0 ? "" : item.quantity}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              updateItem(index, "quantity", val === "" ? "" : parseInt(val) || 0);
-                            }}
-                            className="w-20 rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm text-center focus:border-[#412460] focus:outline-none"
-                          />
-                        </td>
-                        <td className="px-4 py-3">
-                          <select
-                            value={item.unit}
-                            onChange={(e) => {
-                              const newUnit = e.target.value;
-                              updateItem(index, "unit", newUnit);
-                              updateItem(index, "priceUnit", newUnit);
-                            }}
-                            className="w-24 rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm focus:border-[#412460] focus:outline-none"
+                              <option value="KG">KG</option>
+                              <option value="Litre">Litre</option>
+                              <option value="Unit">Unit</option>
+                              <option value="Box">Box</option>
+                              <option value="Pallet">Pallet</option>
+                              <option value="Carton">Carton</option>
+                            </select>
+                            {fillHandle('unit')}
+                          </td>}
+
+                          {/* ── E: Unit Price ── */}
+                          {spans.unitPrice > 0 && <td rowSpan={spans.unitPrice} onMouseDown={cellMD(4)} onMouseEnter={cellME(4)} style={cellStyle('unitPrice', { textAlign: 'right', verticalAlign: 'top' })} onClick={(e) => focusAndActivate('unitPrice', e)}>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              data-cell={`${index}-unitPrice`}
+                              value={toDisplay(item.unitPrice) || ""}
+                              onChange={(e) => updateItem(index, "unitPrice", e.target.value === "" ? 0 : toStored(parseFloat(e.target.value)))}
+                              onFocus={() => setFocusedCell({ row: index, col: 'unitPrice' })}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, 'unitPrice')}
+                              style={{ ...inputStyle, textAlign: 'right' }}
+                            />
+                            {fillHandle('unitPrice')}
+                          </td>}
+
+                          {/* ── F: Total (computed) ── */}
+                          {spans.total > 0 && <td rowSpan={spans.total} onMouseDown={cellMD(5)} onMouseEnter={cellME(5)} style={{ borderRight: '1px solid #d0d0d0', borderBottom: '1px solid #d0d0d0', textAlign: 'right', padding: '3px 8px', background: isCellInRange(5) ? '#cce5ff' : '#fafafa', color: '#1d6f42', fontWeight: 700, fontSize: 15, verticalAlign: 'top', cursor: 'default' }}>
+                            {getCurrencySymbolFor(currency)}{convertCurrency(parseFloat(calculateItemTotal(item)), origCurr, currency).toFixed(2)}
+                          </td>}
+
+                          {/* ── G: Commission % ── */}
+                          {spans.commission > 0 && <td rowSpan={spans.commission} onMouseDown={cellMD(6)} onMouseEnter={cellME(6)} style={cellStyle('commission', { textAlign: 'center', verticalAlign: 'top' })} onClick={(e) => focusAndActivate('commission', e)}>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              step="0.01"
+                              data-cell={`${index}-commission`}
+                              value={item.commission || ""}
+                              onChange={(e) => updateItem(index, "commission", e.target.value === "" ? 0 : parseFloat(e.target.value))}
+                              onFocus={() => setFocusedCell({ row: index, col: 'commission' })}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, 'commission')}
+                              placeholder="%"
+                              style={{ ...inputStyle, textAlign: 'center' }}
+                            />
+                            {fillHandle('commission')}
+                          </td>}
+
+                          {/* ── H: KG ── */}
+                          {spans.weight > 0 && <td rowSpan={spans.weight} onMouseDown={cellMD(7)} onMouseEnter={cellME(7)} style={cellStyle('weight', { textAlign: 'right', verticalAlign: 'top' })} onClick={(e) => focusAndActivate('weight', e)}>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.001"
+                              value={item.weight}
+                              data-cell={`${index}-weight`}
+                              onChange={(e) => updateItem(index, "weight", e.target.value)}
+                              onFocus={() => setFocusedCell({ row: index, col: 'weight' })}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, 'weight')}
+                              placeholder="0"
+                              style={{ ...inputStyle, textAlign: 'right' }}
+                            />
+                            {fillHandle('weight')}
+                          </td>}
+
+                          {/* ── I: CBM ── */}
+                          {spans.cbm > 0 && <td rowSpan={spans.cbm} onMouseDown={cellMD(8)} onMouseEnter={cellME(8)} style={cellStyle('cbm', { textAlign: 'right', verticalAlign: 'top' })} onClick={(e) => focusAndActivate('cbm', e)}>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.001"
+                              data-cell={`${index}-cbm`}
+                              value={item.cbm}
+                              onChange={(e) => updateItem(index, "cbm", e.target.value)}
+                              onFocus={() => setFocusedCell({ row: index, col: 'cbm' })}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, 'cbm')}
+                              placeholder="0"
+                              style={{ ...inputStyle, textAlign: 'right' }}
+                            />
+                            {fillHandle('cbm')}
+                          </td>}
+
+                          {/* ── J: HS Code ── */}
+                          {spans.hsCode > 0 && <td
+                            rowSpan={spans.hsCode}
+                            onMouseDown={cellMD(9)} onMouseEnter={cellME(9)}
+                            onClick={() => setHsDrawerIndex(index)}
+                            title={item.hsCode ? `HS ${item.hsCode} · ${item.hsConfidence} confidence — click to edit` : 'Click to assign HS code'}
+                            style={{ ...cellStyle('hsCode', { padding: '0 8px', verticalAlign: 'middle', cursor: 'pointer' }), background: isCellInRange(9) ? '#cce5ff' : '#fafffe' }}
                           >
-                            <option value="KG">KG</option>
-                            <option value="Litre">Litre</option>
-                            <option value="Unit">Unit</option>
-                            <option value="Box">Box</option>
-                            <option value="Pallet">Pallet</option>
-                            <option value="Carton">Carton</option>
-                          </select>
-                        </td>
-                        <td className="px-4 py-3">
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={toDisplay(item.unitPrice) || ""}
-                            onChange={(e) => updateItem(index, "unitPrice", e.target.value === "" ? 0 : toStored(parseFloat(e.target.value)))}
-                            className="w-28 rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm focus:border-[#412460] focus:outline-none"
-                          />
-                        </td>
-                        <td className="px-4 py-3 font-semibold text-[#412460]">
-                          {getCurrencySymbolFor(currency)}{convertCurrency(parseFloat(calculateItemTotal(item)), origCurr, currency).toFixed(2)}
-                        </td>
-                        <td className="px-4 py-3">
-                          <input
-                            type="number"
-                            min="0"
-                            max="100"
-                            step="0.01"
-                            value={item.commission || ""}
-                            onChange={(e) => updateItem(index, "commission", e.target.value === "" ? 0 : parseFloat(e.target.value))}
-                            placeholder="%"
-                            className="w-20 rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm text-center focus:border-[#412460] focus:outline-none"
-                          />
-                        </td>
-                        <td className="px-4 py-3">
-                          <input
-                            type="text"
-                            value={item.weight}
-                            onChange={(e) => updateItem(index, "weight", e.target.value)}
-                            placeholder="e.g. 10kg"
-                            className="w-24 rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm focus:border-[#412460] focus:outline-none"
-                          />
-                        </td>
-                        <td className="px-4 py-3">
-                          <input
-                            type="text"
-                            value={item.cbm}
-                            onChange={(e) => updateItem(index, "cbm", e.target.value)}
-                            placeholder="e.g. 2.5"
-                            className="w-24 rounded-lg border border-[#E1E3EE] bg-white px-3 py-2 text-sm focus:border-[#412460] focus:outline-none"
-                          />
-                        </td>
-                        <td className="px-4 py-3">
-                          {formData.items.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => removeItem(index)}
-                              className="flex h-8 w-8 items-center justify-center rounded-full bg-[#FFECEC] text-[#E05353] transition-colors hover:bg-[#E05353] hover:text-white"
-                            >
-                              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M18 6L6 18M6 6l12 12" />
-                              </svg>
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
+                            {item.hsCode ? (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                <span style={{
+                                  width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                                  background: item.hsConfidence === 'high' ? '#22c55e' : item.hsConfidence === 'medium' ? '#f59e0b' : item.hsConfidence === 'low' ? '#fbbf24' : '#d1d5db',
+                                }} />
+                                <span style={{ fontSize: 13, fontFamily: 'monospace', color: '#1f1f1f', letterSpacing: '0.03em' }}>{item.hsCode}</span>
+                              </div>
+                            ) : (
+                              <span style={{ fontSize: 11, color: '#bbb', fontStyle: 'italic' }}>—</span>
+                            )}
+                          </td>}
+
+                          {/* ── Delete ── */}
+                          <td style={{ borderRight: '1px solid #d0d0d0', borderBottom: '1px solid #d0d0d0', textAlign: 'center', background: '#fafafa' }}>
+                            {formData.items.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => removeItem(index)}
+                                style={{ width: 20, height: 20, borderRadius: '50%', background: '#ffecec', color: '#e05353', border: 'none', cursor: 'pointer', fontSize: 11, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                                title="Delete row"
+                              >✕</button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
+
+                  {/* ── Total footer row ── */}
+                  <tfoot>
+                    <tr style={{ height: 32, background: '#f2f2f2' }}>
+                      <td style={{ borderTop: '2px solid #1d6f42', borderRight: '2px solid #c6c6c6', background: '#f2f2f2' }} />
+                      <td colSpan={7} style={{ borderTop: '2px solid #1d6f42', borderRight: '1px solid #d0d0d0', textAlign: 'right', padding: '0 10px', fontSize: 12, fontWeight: 700, color: '#444', letterSpacing: '0.05em' }}>
+                        TOTAL
+                      </td>
+                      <td style={{ borderTop: '2px solid #1d6f42', borderRight: '1px solid #d0d0d0', textAlign: 'right', padding: '0 10px', fontWeight: 700, color: '#1d6f42', fontSize: 14 }}>
+                        {totalKg > 0 ? `${Number.isInteger(totalKg) ? totalKg : totalKg.toFixed(3)} kg` : '—'}
+                      </td>
+                      <td style={{ borderTop: '2px solid #1d6f42', borderRight: '1px solid #d0d0d0', textAlign: 'right', padding: '0 10px', fontWeight: 700, color: '#1d6f42', fontSize: 14 }}>
+                        {totalCbm > 0 ? `${Number.isInteger(totalCbm) ? totalCbm : totalCbm.toFixed(3)} m³` : '—'}
+                      </td>
+                      <td style={{ borderTop: '2px solid #1d6f42', borderRight: '1px solid #d0d0d0', background: '#f2f2f2' }} />
+                      <td style={{ borderTop: '2px solid #1d6f42', background: '#f2f2f2' }} />
+                    </tr>
+                  </tfoot>
                 </table>
               </div>
             </div>
 
             {/* Grand Total Display */}
-            <div className="flex items-center justify-end gap-4 border-t border-[#EAE8E5] pt-4">
+            <div className="flex items-center justify-end gap-4 border-t border-[#EAE8E5] px-6 pt-4">
               <span className="text-sm text-[#2D2D2D]/60">Grand Total:</span>
               <span className="text-3xl font-bold text-[#412460]">{getCurrencySymbolFor(currency)}{calculateGrandTotalDisplay().toFixed(2)}</span>
             </div>
 
             {/* Submit Buttons with Checkbox on Left */}
-            <div className="flex items-center justify-between pt-4">
+            <div className="flex items-center justify-between px-6 pt-4">
               {/* Left Side: Checkbox */}
               <div className="flex items-center gap-3">
                 <div className={`flex items-center gap-3 rounded-lg border px-4 py-3 ${hasAnyMeasurements() ? 'border-[#412460]/30 bg-[#FDFCFB]' : 'border-[#E1E3EE] bg-[#F7F6F2]'}`}>
@@ -2651,6 +3905,61 @@ export default function AdminCreateInvoice() {
         onClose={() => setHsModalOpen(false)}
         onOpenItem={(idx) => setHsDrawerIndex(idx)}
       />
+
+      {/* ── Excel right-click context menu ── */}
+      {ctxMenu && (() => {
+        const rowCount = selRows.size;
+        const plural = rowCount !== 1 ? 's' : '';
+        const canMergeCtx = rowCount >= 2 || (selRange && selRange.r1 < selRange.r2);
+
+        const menuBtn = (label, icon, action, color, hint) => (
+          <button key={label} type="button"
+            onClick={action}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '6px 14px', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', color: color || '#1f1f1f' }}
+            onMouseEnter={e => e.currentTarget.style.background = '#e8f0fd'}
+            onMouseLeave={e => e.currentTarget.style.background = 'none'}
+          >
+            <span style={{ fontSize: 14, width: 18, textAlign: 'center', flexShrink: 0 }}>{icon}</span>
+            <span style={{ flex: 1 }}>{label}</span>
+            {hint && <span style={{ fontSize: 10, color: '#aaa', marginLeft: 8 }}>{hint}</span>}
+          </button>
+        );
+
+        return (
+          <div
+            data-ctxmenu
+            style={{
+              position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 99999,
+              background: '#fff', border: '1px solid #c0c0c0',
+              boxShadow: '4px 4px 14px rgba(0,0,0,0.20)',
+              minWidth: 220, fontFamily: 'Segoe UI, Calibri, Arial, sans-serif',
+              fontSize: 13, borderRadius: 3, paddingTop: 4, paddingBottom: 4,
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+          >
+            {/* Header */}
+            <div style={{ padding: '4px 14px 6px', fontSize: 11, color: '#888', borderBottom: '1px solid #e8e8e8', marginBottom: 2 }}>
+              {rowCount} row{plural} selected
+            </div>
+
+            {menuBtn('Insert Row Above',    '↑', () => ctxInsertRow('above'), null)}
+            {menuBtn('Insert Row Below',    '↓', () => ctxInsertRow('below'), null)}
+
+            <div style={{ borderTop: '1px solid #e8e8e8', margin: '3px 0' }} />
+
+            {menuBtn(`Delete Row${plural}`, '🗑', ctxDeleteRows,   '#c0392b', 'Del')}
+            {menuBtn('Clear Contents',      '⌫', ctxClearContents, null,      'Backspace')}
+
+            {canMergeCtx && (
+              <>
+                <div style={{ borderTop: '1px solid #e8e8e8', margin: '3px 0' }} />
+                {menuBtn('Merge Cells',   '⊞', ctxMergeRows,   '#1d6f42')}
+                {menuBtn('Unmerge Cells', '⊟', ctxUnmergeRows, '#1d6f42')}
+              </>
+            )}
+          </div>
+        );
+      })()}
     </AdminPageShell>
   );
 }

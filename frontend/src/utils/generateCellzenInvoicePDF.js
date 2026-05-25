@@ -82,7 +82,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
 
   // ── Create PDF ──────────────────────────────────────────────────────────────
   const doc = new jsPDF({
-    orientation: 'portrait',
+    orientation: 'landscape',
     unit: 'mm',
     format: 'a4',
   });
@@ -158,9 +158,21 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   }
   y += 10;
 
-  // ── Table Header ───────────────────────────────────────────────────────────
-  const headers = ['S.No', 'Product Image', 'Product Name', 'Qty', 'Unit', `Unit Price (${sym})`, 'Total Amount', 'Package Wgt', 'Size (CBM)'];
-  const columnWidths = [10, 25, 35, 10, 12, 30, 28, 22, 22];
+  // ── Table columns — hide Weight / CBM columns when no item uses them ────────
+  const hasWeight = items.some(it => it.weight && parseFloat(it.weight) > 0);
+  const hasCbm    = items.some(it => it.cbm    && parseFloat(it.cbm)    > 0);
+
+  // Landscape A4 = 297 mm wide; usable width ≈ 277 mm (10 mm margins each side).
+  // Base total (7 cols): 12+32+75+15+18+38+34 = 224 mm
+  // With both optional cols: 224+26+26 = 276 mm — fills the page nicely.
+  const headers      = ['S.No', 'Product Image', 'Product Name', 'Qty', 'Unit', `Unit Price (${sym})`, 'Total Amount'];
+  const columnWidths = [12,      32,               75,             15,    18,     38,                    34];
+  // Columns 7-8: optional; freed space goes to Product Name (index 2)
+  if (hasWeight) { headers.push('Package Wgt'); columnWidths.push(26); }
+  else           { columnWidths[2] += 13; }
+  if (hasCbm)    { headers.push('Size (CBM)');  columnWidths.push(26); }
+  else           { columnWidths[2] += 13; }
+
   const totalWidth = columnWidths.reduce((a, b) => a + b, 0);
   const startX = (pageWidth - totalWidth) / 2;
 
@@ -179,10 +191,22 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   y += 10;
 
   // ── Item rows ───────────────────────────────────────────────────────────────
+  const LINE_H = 8 * 0.353 * 1.45; // ~4.1 mm per line (8pt font with leading)
+  const ROW_PAD = 5; // vertical padding (top + bottom combined) in mm
+
   items.forEach((it, idx) => {
     const base  = (it.quantity || 0) * (it.unitPrice || 0);
     const total = base + base * ((it.commission || 0) / 100);
-    const rowHeight = it.productImage ? 22 : 12;
+
+    // Pre-calculate product name line-wrap so row height accommodates the text.
+    doc.setFontSize(8);
+    const nameLines = doc.splitTextToSize(it.productName || '', columnWidths[2] - 3);
+    const nameBlockH = nameLines.length * LINE_H;
+
+    // Row height = tallest of: image slot, text block + padding, minimum
+    const imgSlot = it.productImage ? 26 : 0;
+    const textSlot = nameBlockH + ROW_PAD;
+    const rowHeight = Math.max(it.productImage ? imgSlot : 14, textSlot);
 
     // Check if new page needed
     if (y > pageHeight - 40) {
@@ -198,18 +222,22 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
     doc.setFontSize(8);
     doc.setTextColor(...C.dark);
 
+    // Vertical center baseline for single-line cells.
+    // jsPDF text Y is the baseline; shift up by ~1mm to visually center cap-height glyphs.
+    const midY = y + rowHeight / 2 + 1;
+
     x = startX;
     const rowData = [
       (idx + 1).toString(),
       '', // Product Image placeholder
-      it.productName || '',
+      '', // Product Name drawn separately (multi-line)
       (it.quantity || 0).toString(),
       it.unit || 'KG',
       `${sym} ${parseFloat(it.unitPrice || 0).toFixed(2)}`,
       `${sym} ${total.toFixed(2)}`,
-      it.weight ? `${it.weight} kg` : '',
-      it.cbm ? `${it.cbm} CBM` : '',
     ];
+    if (hasWeight) rowData.push(it.weight ? `${it.weight} kg` : '');
+    if (hasCbm)    rowData.push(it.cbm    ? `${it.cbm} CBM`  : '');
 
     rowData.forEach((cell, i) => {
       if (i === 6) {
@@ -219,14 +247,28 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
         doc.setTextColor(...C.dark);
         doc.setFont('helvetica', 'normal');
       }
-      doc.text(cell, x + columnWidths[i] / 2, y + rowHeight / 2 + 2, { align: 'center' });
+      // Column 2 is drawn below; skip the placeholder here.
+      if (i !== 2) {
+        doc.text(cell, x + columnWidths[i] / 2, midY, { align: 'center' });
+      }
       x += columnWidths[i];
+    });
+
+    // Product Name — multi-line, vertically centered block.
+    doc.setFont('helvetica', idx === 0 ? 'bold' : 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(...C.dark);
+    const nameX = startX + columnWidths[0] + columnWidths[1] + columnWidths[2] / 2;
+    // Top of text block so the whole block is centered in the row.
+    const nameStartY = y + (rowHeight - nameBlockH) / 2 + LINE_H * 0.75;
+    nameLines.forEach((line, li) => {
+      doc.text(line, nameX, nameStartY + li * LINE_H, { align: 'center' });
     });
 
     if (it.productImage) {
       try {
         const imageFormat = getImageFormat(it.productImage);
-        const imageSize = 18;
+        const imageSize = Math.min(rowHeight - 4, 22);
         const imageX = startX + columnWidths[0] + (columnWidths[1] - imageSize) / 2;
         const imageY = y + (rowHeight - imageSize) / 2;
         doc.addImage(it.productImage, imageFormat, imageX, imageY, imageSize, imageSize);
@@ -234,9 +276,27 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(7);
         doc.setTextColor(...C.grey);
-        doc.text('[img]', startX + columnWidths[0] + columnWidths[1] / 2, y + rowHeight / 2 + 2, { align: 'center' });
+        doc.text('[img]', startX + columnWidths[0] + columnWidths[1] / 2, midY, { align: 'center' });
       }
     }
+
+    // Per-column row separator — skip the segment for any column that is
+    // merged into the next row (i.e. nextItem.mergedInto[colKey] === true).
+    const nextMerged = (items[idx + 1]?.mergedInto) || {};
+    // Map each column index to its mergedInto key (empty string = never merged)
+    const colMergeKeys = ['', 'image', 'productName', 'quantity', 'unit', 'unitPrice', 'total'];
+    if (hasWeight) colMergeKeys.push('weight');
+    if (hasCbm)    colMergeKeys.push('cbm');
+
+    doc.setDrawColor(155, 155, 155);
+    doc.setLineWidth(0.3);
+    let segX = startX;
+    colMergeKeys.forEach((key, i) => {
+      if (!key || !nextMerged[key]) {
+        doc.line(segX, y + rowHeight, segX + columnWidths[i], y + rowHeight);
+      }
+      segX += columnWidths[i];
+    });
 
     y += rowHeight;
   });
@@ -244,8 +304,8 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   // ── Empty rows (if less than 5 items) ───────────────────────────────────────
   for (let i = items.length; i < 5; i++) {
     doc.setFillColor(...C.white);
-    doc.rect(startX, y, totalWidth, 10, 'F');
-    y += 10;
+    doc.rect(startX, y, totalWidth, 14, 'F');
+    y += 14;
   }
 
   // ── Summary rows ────────────────────────────────────────────────────────────
@@ -317,7 +377,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   ];
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
+  doc.setFontSize(9);
   doc.setTextColor(...C.black);
 
   TERMS.forEach((term) => {
