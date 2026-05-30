@@ -107,7 +107,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
 
   // ── Invoice Number & Date (top-right) ──────────────────────────────────────
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
+  doc.setFontSize(11);
   doc.setTextColor(...C.dark);
   const hdrText = `Invoice Number: ${invoice.id || ''}\nInvoice Date: ${invoice.date || raw.invoiceDate || ''}`;
   doc.text(hdrText, pageWidth - margin, y + 5, { align: 'right' });
@@ -122,7 +122,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
 
   // ── Buyer label ────────────────────────────────────────────────────────────
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
+  doc.setFontSize(12);
   doc.setTextColor(...C.dark);
   doc.text('Buyer', pageWidth - margin, y, { align: 'right' });
   y += 5;
@@ -132,27 +132,27 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
     ? 'By ' + raw.modeOfDelivery.charAt(0).toUpperCase() + raw.modeOfDelivery.slice(1)
     : '';
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
+  doc.setFontSize(11);
   doc.setTextColor(...C.grey);
   doc.text(`Mode of Shipment: ${modeStr}`, margin, y);
 
   // Buyer: customer name on this line, phone or email on the next line.
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
+  doc.setFontSize(12);
   doc.setTextColor(...C.dark);
   doc.text(invoice.customer || raw.customerName || '', pageWidth - margin, y, { align: 'right' });
   y += 6;
 
   // ── Export Country (left) + Buyer contact (right) ──────────────────────────
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
+  doc.setFontSize(11);
   doc.setTextColor(...C.grey);
   doc.text(`Export Country: ${raw.exportCountry || ''}`, margin, y);
 
   const buyerContact = (raw.customerPhone || raw.customerEmail || '').toString().trim();
   if (buyerContact) {
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(9);
+    doc.setFontSize(11);
     doc.setTextColor(...C.grey);
     doc.text(buyerContact, pageWidth - margin, y, { align: 'right' });
   }
@@ -168,7 +168,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   const headers      = ['S.No', 'Product Image', 'Product Name', 'Qty', 'Unit', `Unit Price (${sym})`, 'Total Amount'];
   const columnWidths = [12,      32,               75,             15,    18,     38,                    34];
   // Columns 7-8: optional; freed space goes to Product Name (index 2)
-  if (hasWeight) { headers.push('Package Wgt'); columnWidths.push(26); }
+  if (hasWeight) { headers.push('Weight'); columnWidths.push(26); }
   else           { columnWidths[2] += 13; }
   if (hasCbm)    { headers.push('Size (CBM)');  columnWidths.push(26); }
   else           { columnWidths[2] += 13; }
@@ -180,7 +180,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   doc.setFillColor(...C.purple);
   doc.rect(startX, y, totalWidth, 10, 'F');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9);
+  doc.setFontSize(10);
   doc.setTextColor(...C.white);
 
   let x = startX;
@@ -191,22 +191,44 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   y += 10;
 
   // ── Item rows ───────────────────────────────────────────────────────────────
-  const LINE_H = 8 * 0.353 * 1.45; // ~4.1 mm per line (8pt font with leading)
+  const ROW_FONT = 10; // item-row body font (pt)
+  const LINE_H = ROW_FONT * 0.353 * 1.45; // ~5.1 mm per line (10pt font with leading)
   const ROW_PAD = 5; // vertical padding (top + bottom combined) in mm
+
+  // Resolve the image each row displays. When the image column is merged, the
+  // child rows (mergedInto.image) inherit the merge leader's image — so a group
+  // merged across rows 1-3 shows that SAME image repeated, aligned to each row.
+  const effectiveImages = [];
+  let leaderImg = '';
+  items.forEach((it) => {
+    if (it.mergedInto?.image === true) {
+      effectiveImages.push(leaderImg);
+    } else {
+      leaderImg = it.productImage || '';
+      effectiveImages.push(leaderImg);
+    }
+  });
+
+  // Pre-pass: wrap product names and compute each row's height up front, so the
+  // row is tall enough for its (possibly inherited) image and wrapped name.
+  const nameLinesArr = [];
+  const rowHeights = [];
+  items.forEach((it, idx) => {
+    doc.setFontSize(ROW_FONT);
+    let nameLines = doc.splitTextToSize(it.productName || '', columnWidths[2] - 4);
+    if (nameLines.length > 3) nameLines = nameLines.slice(0, 3);
+    const textSlot = nameLines.length * LINE_H + ROW_PAD;
+    rowHeights.push(Math.max(effectiveImages[idx] ? 26 : 14, textSlot));
+    nameLinesArr.push(nameLines);
+  });
 
   items.forEach((it, idx) => {
     const base  = (it.quantity || 0) * (it.unitPrice || 0);
     const total = base + base * ((it.commission || 0) / 100);
 
-    // Pre-calculate product name line-wrap so row height accommodates the text.
-    doc.setFontSize(8);
-    const nameLines = doc.splitTextToSize(it.productName || '', columnWidths[2] - 3);
+    const nameLines  = nameLinesArr[idx];
     const nameBlockH = nameLines.length * LINE_H;
-
-    // Row height = tallest of: image slot, text block + padding, minimum
-    const imgSlot = it.productImage ? 26 : 0;
-    const textSlot = nameBlockH + ROW_PAD;
-    const rowHeight = Math.max(it.productImage ? imgSlot : 14, textSlot);
+    const rowHeight  = rowHeights[idx];
 
     // Check if new page needed
     if (y > pageHeight - 40) {
@@ -218,8 +240,8 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
     doc.setFillColor(...C.white);
     doc.rect(startX, y, totalWidth, rowHeight, 'F');
 
-    doc.setFont('helvetica', idx === 0 ? 'bold' : 'normal');
-    doc.setFontSize(8);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(ROW_FONT);
     doc.setTextColor(...C.dark);
 
     // Vertical center baseline for single-line cells.
@@ -254,30 +276,31 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
       x += columnWidths[i];
     });
 
-    // Product Name — multi-line, vertically centered block.
-    doc.setFont('helvetica', idx === 0 ? 'bold' : 'normal');
-    doc.setFontSize(8);
+    // Product Name — left-aligned, up to 3 lines, normal weight (never bold),
+    // same size for every row, vertically centered block.
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(ROW_FONT);
     doc.setTextColor(...C.dark);
-    const nameX = startX + columnWidths[0] + columnWidths[1] + columnWidths[2] / 2;
+    const nameX = startX + columnWidths[0] + columnWidths[1] + 2; // 2 mm left padding
     // Top of text block so the whole block is centered in the row.
     const nameStartY = y + (rowHeight - nameBlockH) / 2 + LINE_H * 0.75;
     nameLines.forEach((line, li) => {
-      doc.text(line, nameX, nameStartY + li * LINE_H, { align: 'center' });
+      doc.text(line, nameX, nameStartY + li * LINE_H, { align: 'left' });
     });
 
-    if (it.productImage) {
+    // ── Product image ───────────────────────────────────────────────────────
+    // Draw the row's resolved image (its own, or the merge leader's when the
+    // image column is merged), vertically centered within its own row — so a
+    // group merged across rows 1-3 shows the same image once per row, each
+    // aligned beside its S.No, instead of one image floating in the centre.
+    const rowImg = effectiveImages[idx];
+    if (rowImg) {
       try {
-        const imageFormat = getImageFormat(it.productImage);
         const imageSize = Math.min(rowHeight - 4, 22);
         const imageX = startX + columnWidths[0] + (columnWidths[1] - imageSize) / 2;
         const imageY = y + (rowHeight - imageSize) / 2;
-        doc.addImage(it.productImage, imageFormat, imageX, imageY, imageSize, imageSize);
-      } catch (_) {
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(7);
-        doc.setTextColor(...C.grey);
-        doc.text('[img]', startX + columnWidths[0] + columnWidths[1] / 2, midY, { align: 'center' });
-      }
+        doc.addImage(rowImg, getImageFormat(rowImg), imageX, imageY, imageSize, imageSize);
+      } catch (_) { /* skip unreadable image */ }
     }
 
     // Per-column row separator — skip the segment for any column that is
@@ -309,12 +332,28 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   }
 
   // ── Summary rows ────────────────────────────────────────────────────────────
+  // Keep the whole summary block (rows + In Words [+ Note]) together: if it
+  // would overflow the bottom of the current page, push it onto a fresh page
+  // so values like Grand Total / In Words are never clipped at the page break.
+  const summaryRowCount = 2 // Total Amount + Grand Total (always rendered)
+    + (docCharges    > 0 ? 1 : 0)
+    + (otherCharges  > 0 ? 1 : 0)
+    + (transportCost > 0 ? 1 : 0)
+    + (customsDuty   > 0 ? 1 : 0);
+  const summaryBlockH = summaryRowCount * 8 // each summary row is 8 mm
+    + 3 + 12                                // gap + In Words row
+    + (raw.notes && raw.notes.trim() ? 12 : 0);
+  if (y + summaryBlockH > pageHeight - margin) {
+    doc.addPage();
+    y = margin;
+  }
+
   const addSummaryRow = (label, amount, isBold = false, isPurple = false) => {
     doc.setFillColor(...C.light);
     doc.rect(startX, y, totalWidth, 8, 'F');
 
     doc.setFont('helvetica', isBold ? 'bold' : 'normal');
-    doc.setFontSize(isBold ? 11 : 10);
+    doc.setFontSize(isBold ? 13 : 12);
     doc.setTextColor(...(isPurple ? C.purple : C.dark));
 
     // Label (left aligned)
@@ -340,27 +379,45 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   doc.setFillColor(...C.light);
   doc.rect(startX, y, totalWidth, 10, 'F');
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(10);
+  doc.setFontSize(12);
   doc.setTextColor(...C.dark);
   doc.text(`In Words: ${sym} ${numberToWords(grandTotal)}`, pageWidth / 2, y + 6, { align: 'center' });
   y += 12;
 
-  // ── Note (if exists) ───────────────────────────────────────────────────────
+  // ── Note (if exists) — wraps across as many lines as needed ─────────────────
   if (raw.notes && raw.notes.trim()) {
-    doc.setFillColor(...C.light);
-    doc.rect(startX, y, totalWidth, 10, 'F');
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
+    doc.setFontSize(11);
+    const noteText  = `Note: ${raw.notes.trim()}`;
+    const noteLines = doc.splitTextToSize(noteText, totalWidth - 8); // 4 mm padding each side
+    const noteLineH = 5.5; // mm per line
+    const noteBoxH  = noteLines.length * noteLineH + 4;
+
+    // Keep the note box on one page.
+    if (y + noteBoxH > pageHeight - margin) {
+      doc.addPage();
+      y = margin;
+    }
+
+    doc.setFillColor(...C.light);
+    doc.rect(startX, y, totalWidth, noteBoxH, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
     doc.setTextColor(...C.purple);
-    doc.text(`Note: ${raw.notes}`, pageWidth / 2, y + 6, { align: 'center' });
-    y += 12;
+    // Center the whole text block vertically, each line centered horizontally.
+    let noteY = y + (noteBoxH - noteLines.length * noteLineH) / 2 + noteLineH * 0.75;
+    noteLines.forEach((line) => {
+      doc.text(line, pageWidth / 2, noteY, { align: 'center' });
+      noteY += noteLineH;
+    });
+    y += noteBoxH + 2;
   }
 
   y += 5;
 
   // ── Terms and Conditions ───────────────────────────────────────────────────
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
+  doc.setFontSize(13);
   doc.setTextColor(...C.black);
   doc.text('Terms and Conditions:', margin, y);
   y += 6;
@@ -377,7 +434,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   ];
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
+  doc.setFontSize(11);
   doc.setTextColor(...C.black);
 
   TERMS.forEach((term) => {
@@ -387,7 +444,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
     }
     const splitText = doc.splitTextToSize(term, pageWidth - 2 * margin);
     doc.text(splitText, margin, y);
-    y += splitText.length * 4 + 2;
+    y += splitText.length * 5 + 2;
   });
 
   y += 5;

@@ -1287,13 +1287,19 @@ export default function AdminCreateInvoice() {
       const EXCL_PIC   = ['picture', 'photo', 'image', 'pic', '图片', '图'];
       const EXCL_TOTAL = ['total', '总'];
 
-      const cNo    = findCol('no.', 'no ', '序号', '编号', '#', 'sr.no', 's.no', 'item no');
-      const cModel = findColX(EXCL_PIC, 'model', '型号', 'sku', 'article no', 'part no', 'item code', 'item no', '货号');
-      const cType  = findColX(EXCL_PIC, 'type', '类型', 'category', '种类', '品类');
-      const cSpc   = findColX(EXCL_PIC, 'spc.', 'spc', 'spec', 'specification', '规格', 'details', 'variant', '配置');
-      const cDesc  = findColX(EXCL_PIC, 'description', 'desc', '详情', '描述', '说明');
-      const cName  = findColX(EXCL_PIC, 'product name', 'item name', 'goods name', 'commodity name',
-                              'goods', 'commodity', '品名', '商品名', '产品名', '货物名', '物品', 'product');
+      // Exclude SN/NO-like terms from name/spec columns so a header like
+      // "Product SN" or "Item Sr." can't accidentally be picked as the product
+      // name column.
+      const EXCL_NO = ['sn', 's/n', 's.n', 'serial', 'sr.', 'sr ', 'srno', 'sr no', 'no.', 'no ', '#', '序号', '编号'];
+
+      const cNo    = findCol('sn', 's/n', 's.n', 'serial no', 'serial', 'sr.no', 'sr no', 'srno', 's.no', 'sr.', 'no.', 'no ', 'item no', '#', '序号', '编号');
+      const cModel = findColX([...EXCL_PIC, ...EXCL_NO], 'model', '型号', 'sku', 'article no', 'part no', 'item code', 'item no', '货号');
+      const cType  = findColX([...EXCL_PIC, ...EXCL_NO], 'type', '类型', 'category', '种类', '品类');
+      const cSpc   = findColX([...EXCL_PIC, ...EXCL_NO], 'spc.', 'spc', 'spec', 'specification', '规格', 'details', 'variant', '配置');
+      const cDesc  = findColX([...EXCL_PIC, ...EXCL_NO], 'description', 'desc', '详情', '描述', '说明');
+      const cName  = findColX([...EXCL_PIC, ...EXCL_NO], 'product name', 'item name', 'goods name', 'commodity name',
+                              'product description', 'item description',
+                              'goods', 'commodity', '品名', '商品名', '产品名', '货物名', '物品');
       const cQty   = findCol('order quantity', 'quantity pcs', 'quantity', 'qty', 'pcs', '件数', '数量', 'count', 'pieces');
       const cUnit  = findColX([...EXCL_PIC, ...EXCL_TOTAL, 'price', 'cost'], 'unit of measure', 'unit', 'uom', '单位');
       const cUP    = findColX(EXCL_TOTAL, 'exw price', 'unit price', 'price rmb', 'price usd', 'price cny',
@@ -1306,28 +1312,142 @@ export default function AdminCreateInvoice() {
       // ── 5. Merge multi-line table rows using NO column as row boundary ──
       // PDFs often have multi-line cells (e.g. TIGER / PRIVACY / GLASS / SINGLE
       // spread over 4 visual lines). A new invoice item starts when the NO column
-      // position contains a sequential integer.
-      const noColX   = cNo >= 0 ? headerXs[cNo] : headerXs[0];
+      // position contains a sequential integer (1, 2, 3...).
+      //
+      // If the SN/NO header wasn't matched by keyword, auto-infer it: pick the
+      // column whose data rows are dominated by sequential small integers.
+      let noColIdx = cNo;
+      if (noColIdx < 0) {
+        let bestCol = -1, bestScore = 0;
+        for (let c = 0; c < colCount; c++) {
+          let intCount = 0, total = 0;
+          for (let i = dataStart; i < Math.min(dataStart + 30, lines.length); i++) {
+            const it = lines[i].find(t => Math.abs(t.x - headerXs[c]) <= 35);
+            if (!it) continue;
+            total++;
+            if (/^\d{1,3}$/.test(it.str.trim())) intCount++;
+          }
+          if (total >= 2 && intCount / total >= 0.7 && intCount > bestScore) {
+            bestScore = intCount; bestCol = c;
+          }
+        }
+        if (bestCol >= 0) noColIdx = bestCol;
+      }
+
+      const noColX   = noColIdx >= 0 ? headerXs[noColIdx] : headerXs[0];
       const NO_X_TOL = 45; // pt — generous tolerance for slight x offsets
 
-      const tableRowBuckets = [];
+      // ── Anchor-based bucketing ──
+      // Each SN integer (e.g. "28", "29", "30") is an anchor for one invoice
+      // row. Anchors are vertically POSITIONED IN THE MIDDLE of a multi-line
+      // cell, so text both above AND below the SN may belong to that row.
+      // We assign every line to its nearest anchor by y-distance, which
+      // handles PDFs where product names wrap across 2–3 lines around the
+      // SN (e.g. "IPHONE PRO" on one line, "30" on the SN line, "MAX" below).
+      const candidates = [];
       for (let i = dataStart; i < lines.length; i++) {
         const line        = lines[i];
         const noCandidate = line.find(it => Math.abs(it.x - noColX) <= NO_X_TOL);
-        const startsNew   = noCandidate && /^\d+$/.test(noCandidate.str.trim());
-        if (startsNew || tableRowBuckets.length === 0) {
-          tableRowBuckets.push([...line]);
-        } else {
-          tableRowBuckets[tableRowBuckets.length - 1].push(...line);
+        const noText      = noCandidate ? noCandidate.str.trim() : '';
+        if (/^\d{1,4}$/.test(noText)) {
+          candidates.push({ lineIdx: i, sn: parseInt(noText, 10), y: line[0].y });
         }
       }
 
-      // Build one aligned cell-array per invoice item row
-      const alignedGrid = tableRowBuckets.map(bucket => {
-        const cells = new Array(colCount).fill(null);
-        for (const it of bucket) {
-          const c = assignCol(it.x);
-          cells[c] = cells[c] ? cells[c] + ' ' + it.str : it.str;
+      // Coalesce anchors that sit within 8pt of each other (a single tall row
+      // shouldn't get two anchors). Keep the first one we saw.
+      const MIN_ROW_HEIGHT = 8;
+      const anchors = [];
+      for (const c of candidates) {
+        if (anchors.length === 0 || (c.y - anchors[anchors.length - 1].y) >= MIN_ROW_HEIGHT) {
+          anchors.push(c);
+        }
+      }
+
+      // Compute the typical row height from the median gap between anchors.
+      // We use this to bound how far a line can be from its nearest anchor —
+      // footer/totals lines below the last SN must not be sucked into the
+      // last row's bucket (which is what made qty "50" become "501900").
+      const anchorGaps = [];
+      for (let a = 1; a < anchors.length; a++) {
+        anchorGaps.push(anchors[a].y - anchors[a - 1].y);
+      }
+      anchorGaps.sort((a, b) => a - b);
+      const medianGap = anchorGaps[Math.floor(anchorGaps.length / 2)] || 20;
+      const MAX_LINE_DIST = medianGap * 0.7; // ~70% of one row's height
+
+      let tableRowBuckets;
+      const bucketAnchorY = []; // y of each bucket's anchor (or null in fallback mode)
+      if (anchors.length > 0) {
+        // Each line → nearest anchor by y-distance, bounded by MAX_LINE_DIST.
+        // Lines further than MAX_LINE_DIST from any anchor are dropped
+        // (header preamble above first SN, footer/totals below last SN).
+        tableRowBuckets = anchors.map(() => []);
+        for (const a of anchors) bucketAnchorY.push(a.y);
+        for (let i = dataStart; i < lines.length; i++) {
+          const line  = lines[i];
+          const lineY = line[0].y;
+          let bestAnchor = -1, bestDist = Infinity;
+          for (let a = 0; a < anchors.length; a++) {
+            const d = Math.abs(lineY - anchors[a].y);
+            if (d < bestDist) { bestDist = d; bestAnchor = a; }
+          }
+          if (bestAnchor >= 0 && bestDist <= MAX_LINE_DIST) {
+            tableRowBuckets[bestAnchor].push(...line);
+          }
+        }
+      } else {
+        // No SN integers found — treat every line as its own row.
+        tableRowBuckets = [];
+        for (let i = dataStart; i < lines.length; i++) {
+          tableRowBuckets.push([...lines[i]]);
+          bucketAnchorY.push(null);
+        }
+      }
+
+      // Numeric columns must NEVER be concatenated. If a row's bucket contains
+      // multiple fragments at the qty/price/weight x-position (e.g. from a
+      // continuation line), pick the one closest to the SN anchor's y — that's
+      // the value on the actual data line, not a stray number from a wrapped
+      // name above or a partial total below.
+      const NUMERIC_COLS = new Set([cQty, cUP, cKg, cCbm, cComm].filter(x => x >= 0));
+
+      // Build one aligned cell-array per invoice item row.
+      // Text cells: sort fragments top-to-bottom, dedup tail repeats, dedup
+      // repeated phrases ("IPH 14 PRO IPH 14 PRO" → "IPH 14 PRO").
+      // Numeric cells: single closest-to-anchor value, never concatenated.
+      const alignedGrid = tableRowBuckets.map((bucket, bIdx) => {
+        const anchorY = bucketAnchorY[bIdx];
+        const cells   = new Array(colCount).fill(null);
+        const byCol   = new Array(colCount).fill(null).map(() => []);
+        for (const it of bucket) byCol[assignCol(it.x)].push(it);
+        for (let c = 0; c < colCount; c++) {
+          const frags = byCol[c];
+          if (frags.length === 0) continue;
+
+          if (NUMERIC_COLS.has(c)) {
+            // Pick the fragment nearest the SN anchor (the data row's own line).
+            let best = frags[0], bestDist = Infinity;
+            for (const it of frags) {
+              const d = anchorY != null ? Math.abs(it.y - anchorY) : 0;
+              if (d < bestDist) { bestDist = d; best = it; }
+            }
+            cells[c] = best.str.trim() || null;
+            continue;
+          }
+
+          const sorted = frags.slice().sort((a, b) => a.y - b.y || a.x - b.x);
+          let txt = '';
+          for (const it of sorted) {
+            const s = it.str.trim();
+            if (!s) continue;
+            if (!txt) { txt = s; continue; }
+            if (txt.toLowerCase().endsWith(s.toLowerCase())) continue;
+            txt += ' ' + s;
+          }
+          const repeat = txt.match(/^(.+?)(?:\s+\1)+$/);
+          if (repeat) txt = repeat[1].trim();
+          cells[c] = txt || null;
         }
         return cells;
       });
@@ -1355,32 +1475,59 @@ export default function AdminCreateInvoice() {
       for (const row of alignedGrid) {
         if (row.every(c => c == null || String(c).trim() === '')) continue;
 
-        if (cNo >= 0) {
-          const noVal = String(row[cNo] ?? '').trim();
-          if (noVal && !/^\d+$/.test(noVal)) continue;
+        // With anchor-based bucketing the SN cell may contain "28 some text"
+        // (the SN plus adjacent fragments), so only skip rows where the SN
+        // cell DOESN'T start with a digit (a footer/note row like "TOTAL:").
+        if (noColIdx >= 0) {
+          const noVal = String(row[noColIdx] ?? '').trim();
+          if (noVal && !/^\d/.test(noVal)) continue;
         }
 
-        const seen = new Set();
-        const nameParts = [];
-        // Put readable name (cName/product) first, then model/spec details after
+        // Collect candidate name fragments in priority order (most readable first).
+        const candidateParts = [];
         for (const ci of [cName, cModel, cType, cSpc, cDesc]) {
           if (ci < 0) continue;
           const v = String(row[ci] ?? '').trim();
-          if (v && !seen.has(v.toLowerCase())) { seen.add(v.toLowerCase()); nameParts.push(v); }
+          if (v) candidateParts.push(v);
         }
+
+        // Cross-column dedup: if one fragment is a substring of another (case-
+        // insensitive), keep the longer one. This prevents names like
+        // "IPH 14 PRO IPH 14 PRO" when cName and cModel hold the same text,
+        // and collapses "IPH 15/16 IPH 15" → "IPH 15/16".
+        const nameParts = [];
+        for (const p of candidateParts) {
+          const pLower = p.toLowerCase();
+          const idx = nameParts.findIndex(np => {
+            const nLower = np.toLowerCase();
+            return nLower.includes(pLower) || pLower.includes(nLower);
+          });
+          if (idx >= 0) {
+            if (p.length > nameParts[idx].length) nameParts[idx] = p;
+          } else {
+            nameParts.push(p);
+          }
+        }
+
         if (nameParts.length === 0) {
-          const skipCols = new Set([cNo, cQty, cUP, cKg, cCbm, cComm].filter(x => x >= 0));
+          // Skip SN/qty/price/measurement columns. Use noColIdx so we exclude
+          // the SN column even when it was auto-inferred (not matched by header
+          // keyword), preventing serial numbers from being picked as the name.
+          const skipCols = new Set([noColIdx, cNo, cQty, cUP, cKg, cCbm, cComm].filter(x => x >= 0));
           for (let j = 0; j < row.length; j++) {
             if (skipCols.has(j)) continue;
             const v = String(row[j] ?? '').trim();
-            if (v && isNaN(Number(v.replace(/[¥$€£,]/g, '')))) { nameParts.push(v); break; }
+            // Skip pure short integers (likely a stray SN) and anything that
+            // parses cleanly as a number.
+            if (!v) continue;
+            if (/^\d{1,4}$/.test(v)) continue;
+            if (!isNaN(Number(v.replace(/[¥$€£,]/g, '')))) continue;
+            nameParts.push(v); break;
           }
         }
-        // Format: "Product Name - Spec / Description"
-        const cleanParts = nameParts.map(p => p.trim()).filter(Boolean);
-        const productName = cleanParts.length > 1
-          ? `${cleanParts[0]} - ${cleanParts.slice(1).join(' / ')}`
-          : (cleanParts[0] || '');
+        // Join with single space (natural product-name format, no separators
+        // like " - / " that the user has to clean up afterwards).
+        const productName = nameParts.join(' ').replace(/\s+/g, ' ').trim();
         if (!productName) continue;
 
         const pnLower = productName.toLowerCase();
@@ -1403,15 +1550,22 @@ export default function AdminCreateInvoice() {
         newItems.push({ ...blankItem(), productName, quantity: qty, unit, priceUnit: unit, unitPrice, weight, cbm, commission, hsCode, hsConfidence });
       }
 
-      if (newItems.length === 0) return;
+      if (newItems.length === 0) {
+        setSuccessModal({ show: true, message: "No products found in this PDF. The table layout may not be recognized.", type: "error" });
+        return;
+      }
 
       setFormData(prev => {
         const existing = prev.items.filter(it => it.productName || it.productImage || it.weight || it.cbm);
         return { ...prev, items: existing.length > 0 ? [...existing, ...newItems] : newItems };
       });
+      setSuccessModal({ show: true, message: `Imported ${newItems.length} product${newItems.length === 1 ? "" : "s"} from PDF`, type: "info" });
     };
 
-    processFile().catch(err => console.error('PDF import failed:', err));
+    processFile().catch(err => {
+      console.error('PDF import failed:', err);
+      setSuccessModal({ show: true, message: "PDF import failed. The file may be image-based or corrupted.", type: "error" });
+    });
   }, []);
 
   const removeItem = (index) => {
@@ -3822,8 +3976,9 @@ export default function AdminCreateInvoice() {
                 <button
                   type="button"
                   onClick={() => {
+                    const wasType = successModal.type;
                     setSuccessModal({ show: false, message: "", type: "" });
-                    if (successModal.type !== "error") {
+                    if (wasType !== "error" && wasType !== "info") {
                       navigate("/admin-invoices");
                     }
                   }}
