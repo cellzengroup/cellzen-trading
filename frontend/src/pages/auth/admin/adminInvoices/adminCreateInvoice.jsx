@@ -1814,8 +1814,12 @@ export default function AdminCreateInvoice() {
       const kgCost  = kgRate  ? totalWeight * kgRate  : 0;
       const cbmCost = cbmRate ? totalCBM    * cbmRate : 0;
       const leg1 = (kgCost > 0 && cbmCost > 0) ? Math.max(kgCost, cbmCost) : (kgCost || cbmCost);
-      // Leg 2 (Border → Nepal): always CBM × borderRate
-      const leg2 = totalCBM * borderRate;
+      // Leg 2 (Border → Nepal / Kerung → Nepal): charged per CBM. When no CBM
+      // is provided, convert weight to chargeable CBM (200 kg = 1 CBM) so the
+      // leg is still priced off the weight instead of coming out as zero.
+      const KG_PER_CBM = 200;
+      const leg2CBM = totalCBM > 0 ? totalCBM : totalWeight / KG_PER_CBM;
+      const leg2 = leg2CBM * borderRate;
       return leg1 + leg2;
     }
 
