@@ -2,8 +2,11 @@ const express = require('express');
 const { Op } = require('sequelize');
 const { Invoice } = require('../models');
 const { authenticate } = require('../middleware/auth');
+const { sendInvoiceEmail } = require('../../services/emailService');
 
 const router = express.Router();
+
+const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const requireAdmin = (req, res, next) => {
   const role = String(req.user?.role || '').toLowerCase();
@@ -49,10 +52,15 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-// GET /next-number - Compute the next sequential invoice number for the
-// current month from the database. Format: CZN-MM-NNNN (4-digit, starts at
-// 0001 each month). The DB is the source of truth so all admins / devices
-// agree, regardless of localStorage state.
+// GET /next-number - Compute the next invoice number. Format: CZN-MM-NNNN.
+//
+// The sequence (NNNN) is a SINGLE GLOBAL running counter across all months —
+// the month segment (MM) is just a label for the current month. Consequences:
+//   • A new month does NOT reset the counter — e.g. CZN-05-0010 → CZN-06-0011.
+//   • Deleting the latest invoice frees its number for reuse, because the next
+//     number is always (highest existing sequence + 1).
+// The DB is the source of truth so all admins / devices agree, regardless of
+// localStorage state.
 router.get('/next-number', authenticate, requireAdmin, async (req, res) => {
   try {
     if (!Invoice) {
@@ -62,15 +70,17 @@ router.get('/next-number', authenticate, requireAdmin, async (req, res) => {
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const prefix = `CZN-${month}-`;
 
+    // Scan ALL CZN invoices (every month) — the counter is global, not per-month.
     const rows = await Invoice.findAll({
-      where: { invoice_number: { [Op.like]: `${prefix}%` } },
+      where: { invoice_number: { [Op.like]: 'CZN-%' } },
       attributes: ['invoice_number'],
     });
 
     let maxSeq = 0;
     for (const row of rows) {
-      const tail = String(row.invoice_number || '').slice(prefix.length);
-      const n = parseInt(tail, 10);
+      // Sequence is the trailing segment of CZN-MM-NNNN, regardless of month.
+      const parts = String(row.invoice_number || '').split('-');
+      const n = parseInt(parts[parts.length - 1], 10);
       if (!isNaN(n) && n > maxSeq) maxSeq = n;
     }
 
@@ -213,6 +223,71 @@ router.delete('/:invoiceNumber', authenticate, requireAdmin, async (req, res) =>
   } catch (error) {
     console.error('Delete invoice error:', error);
     res.status(500).json({ success: false, message: 'Unable to delete invoice' });
+  }
+});
+
+// POST /:invoiceNumber/send-email (admin only) — email the invoice PDF to the
+// customer. The admin authors the subject/body in the dashboard; the PDF is
+// generated client-side and sent here as base64. On success we mark the
+// invoice "Sent" and stamp an audit trail into invoice_data (no migration).
+router.post('/:invoiceNumber/send-email', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!Invoice) {
+      return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
+    }
+
+    const { invoiceNumber } = req.params;
+    const { to, subject, message, pdfBase64, filename, copyToSelf } = req.body || {};
+
+    const recipient = String(to || '').trim();
+    if (!EMAIL_RX.test(recipient)) {
+      return res.status(400).json({ success: false, message: 'A valid recipient email is required' });
+    }
+    if (!pdfBase64) {
+      return res.status(400).json({ success: false, message: 'Invoice PDF attachment is missing' });
+    }
+
+    const invoice = await Invoice.findOne({ where: { invoice_number: invoiceNumber } });
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: 'Invoice not found' });
+    }
+
+    const cc = copyToSelf ? (process.env.EMAIL_TO || process.env.SMTP_FROM || undefined) : undefined;
+
+    // Fire-and-forget: the Gmail SMTP handshake can take ~100s on restricted
+    // networks (it's near-instant in production). Don't block the admin's
+    // request on it — kick off the send in the background and respond now.
+    // Failures are logged server-side; the admin can re-send if needed.
+    sendInvoiceEmail({
+      to: recipient,
+      cc,
+      subject: subject || `Invoice ${invoiceNumber} from Cellzen Trading`,
+      message: message || '',
+      customerName: invoice.customer_name,
+      invoiceNumber,
+      pdfBase64,
+      filename: filename || `${invoiceNumber}.pdf`,
+    })
+      .then(() => console.log(`✅ Invoice email sent: ${invoiceNumber} -> ${recipient}`))
+      .catch((err) => console.error(`❌ Invoice email failed: ${invoiceNumber} -> ${recipient}:`, err.message));
+
+    // Record the send immediately (optimistic). invoice_data is JSONB —
+    // Sequelize won't detect an in-place mutation, so assign a fresh object.
+    const sentAt = new Date().toISOString();
+    invoice.status = 'Sent';
+    invoice.invoice_data = {
+      ...(invoice.invoice_data || {}),
+      status: 'Sent',
+      emailLog: { sentAt, sentTo: recipient, sentBy: req.user?.email || null },
+    };
+    invoice.changed('invoice_data', true);
+    await invoice.save();
+
+    // Respond right away — the email delivers in the background.
+    res.json({ success: true, message: 'Invoice email is being sent', data: { sentAt } });
+  } catch (error) {
+    console.error('Send invoice email error:', error);
+    res.status(error.statusCode || 500).json({ success: false, message: error.message || 'Unable to send invoice email' });
   }
 });
 

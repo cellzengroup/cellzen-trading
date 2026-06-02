@@ -10,6 +10,28 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Invoice emails use the SAME SMTP path as the working verification-code email
+// (see backend/routes/customerAuth.js): host + port 587 STARTTLS. On some
+// networks the implicit-TLS port 465 (what `service: 'gmail'` uses) gets
+// TLS-reset while 587 connects fine — just slowly — so the timeouts are
+// generous. Falls back to the Gmail service transporter if SMTP_* isn't set.
+const invoiceTransporter = (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)
+  ? nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT || 587),
+      secure: String(process.env.SMTP_PORT) === '465',
+      auth: {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS,
+      },
+      connectionTimeout: 120000,
+      greetingTimeout: 120000,
+      socketTimeout: 150000,
+    })
+  : transporter;
+
+const invoiceFrom = process.env.SMTP_FROM || `"Cellzen Trading" <${process.env.EMAIL_USER}>`;
+
 /**
  * Generate a sequential inquiry number (CZN-DDYYMM-0001, CZN-DDYYMM-0002, ...)
  */
@@ -150,4 +172,78 @@ async function sendNewsletterEmail({ email }) {
   return transporter.sendMail(mailOptions);
 }
 
-module.exports = { sendContactEmail, sendNewsletterEmail };
+/**
+ * Send a generated invoice to the customer with the PDF attached. The admin
+ * writes the message in the dashboard; this wraps it in a branded shell and
+ * sends it via Gmail SMTP (Nodemailer), the same transporter as the contact form.
+ *
+ * @param {object} opts
+ * @param {string} opts.to            - recipient (customer) email
+ * @param {string} [opts.cc]          - optional cc (e.g. a copy to our inbox)
+ * @param {string} opts.subject
+ * @param {string} opts.message       - admin-authored body (plain text)
+ * @param {string} [opts.customerName]
+ * @param {string} [opts.invoiceNumber]
+ * @param {string} opts.pdfBase64     - the invoice PDF as base64 (no data: prefix)
+ * @param {string} [opts.filename]
+ */
+async function sendInvoiceEmail({ to, cc, subject, message, customerName, invoiceNumber, pdfBase64, filename }) {
+  const date = formatDate(new Date());
+  const bodyHtml = String(message || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>');
+  const attachmentName = filename || `${invoiceNumber || 'invoice'}.pdf`;
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; overflow: hidden;">
+      <div style="background-color: #412460; padding: 20px 28px;">
+        <h1 style="color: #E5E1DA; margin: 0; font-size: 22px; letter-spacing: 0.5px;">Cellzen Trading</h1>
+      </div>
+      <div style="background-color: #E5E1DA; padding: 24px 28px;">
+        <p style="margin: 0 0 14px; font-size: 12px; color: #2D2D2D;">Invoice
+          <span style="color: #412460; font-weight: 600;">${invoiceNumber || ''}</span>
+          &middot; ${date}
+        </p>
+        <div style="background: #ffffff; border-radius: 8px; padding: 20px; color: #2D2D2D; font-size: 15px; line-height: 1.6;">
+          ${bodyHtml}
+        </div>
+        <p style="margin: 18px 0 0; font-size: 13px; color: #2D2D2D;">📎 Your invoice <strong>${attachmentName}</strong> is attached as a PDF.</p>
+      </div>
+      <div style="background-color: #2D2D2D; padding: 16px; text-align: center;">
+        <p style="color: #E5E1DA; margin: 0; font-size: 12px;">This email was sent by Cellzen Trading regarding your invoice.</p>
+      </div>
+    </div>
+  `;
+
+  const text = message || '';
+
+  // Send via the 587 SMTP transporter (same as the verification-code email).
+  const sendPromise = invoiceTransporter.sendMail({
+    from: invoiceFrom,
+    to,
+    ...(cc ? { cc } : {}),
+    replyTo: process.env.EMAIL_USER,
+    subject,
+    text,
+    html,
+    attachments: pdfBase64 ? [{ filename: attachmentName, content: pdfBase64, encoding: 'base64' }] : [],
+  });
+
+  // Hard cap so a truly stuck socket can't hang forever. Set above the SMTP
+  // socket timeout (the handshake can take ~100s on restricted networks).
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const e = new Error('The email server did not respond in time. Please try again.');
+      e.statusCode = 504;
+      reject(e);
+    }, 160000);
+    if (timer.unref) timer.unref();
+  });
+
+  try {
+    return await Promise.race([sendPromise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+module.exports = { sendContactEmail, sendNewsletterEmail, sendInvoiceEmail };

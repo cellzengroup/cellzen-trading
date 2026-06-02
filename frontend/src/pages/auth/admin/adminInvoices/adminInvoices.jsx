@@ -1,30 +1,39 @@
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import AdminPageShell from "../AdminPageShell";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { generateInvoiceExcel } from "../../../../utils/generateCellzenInvoice.js";
 import { generateInvoicePDF } from "../../../../utils/generateCellzenInvoicePDF.js";
 import { loadInvoices, deleteInvoice as deleteInvoiceRemote, readLocalDrafts } from "../../../../utils/invoiceSync.js";
+import { authJson } from "../../../../utils/apiBase.js";
 
-// Convert an amount between currencies using the rates cached in localStorage
-// (the CurrencyContext writes them there). Defined at module scope so the
-// useState initializer can call it without depending on component-only refs.
-function convertCurrency(amount, fromCurrency, toCurrency) {
+// Convert an amount between currencies. Prefers the explicit `rates` map (the
+// live CurrencyContext rates / DB source of truth); only falls back to the
+// localStorage cache when no map is supplied (e.g. the synchronous useState
+// initializer before the context is read). This keeps every part of the page
+// — list, message total, PDF — on the SAME saved exchange rate.
+function convertCurrency(amount, fromCurrency, toCurrency, ratesOverride) {
   if (!amount || isNaN(amount)) return 0;
   if (fromCurrency === toCurrency) return parseFloat(amount);
-  const rates = { USD: 1, CNY: 7.24, NPR: 135.50 };
-  try {
-    const saved = localStorage.getItem('cellzen_exchange_rates');
-    if (saved) Object.assign(rates, JSON.parse(saved));
-  } catch { /* ignore */ }
-  const amountInUSD = parseFloat(amount) / rates[fromCurrency];
-  return amountInUSD * rates[toCurrency];
+  let rates = ratesOverride;
+  if (!rates) {
+    rates = { USD: 1, CNY: 7.24, NPR: 135.50 };
+    try {
+      const saved = localStorage.getItem('cellzen_exchange_rates');
+      if (saved) Object.assign(rates, JSON.parse(saved));
+    } catch { /* ignore */ }
+  }
+  const from = rates[fromCurrency];
+  const to = rates[toCurrency];
+  if (!from || !to) return parseFloat(amount);
+  const amountInUSD = parseFloat(amount) / from;
+  return amountInUSD * to;
 }
 
 // Convert raw drafts (from localStorage or backend) into the row shape the
 // dashboard table expects. Lifted out so the useState initializer can run it
-// synchronously for instant first paint.
-function mapDrafts(drafts, currency) {
+// synchronously for instant first paint. `rates` is the live context rate map.
+function mapDrafts(drafts, currency, rates) {
   return (drafts || []).map((draft) => {
     const itemsTotal = draft.items?.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0) || 0;
     const commissionTotal = draft.items?.reduce((sum, item) => {
@@ -39,7 +48,7 @@ function mapDrafts(drafts, currency) {
     const grandTotal = itemsTotal + commissionTotal + customsDuty + documentationCharges + otherCharges + transportCost;
 
     const originalCurrency = draft.currency || draft.originalCurrency || "USD";
-    const convertedAmount = convertCurrency(grandTotal, originalCurrency, currency);
+    const convertedAmount = convertCurrency(grandTotal, originalCurrency, currency, rates);
 
     return {
       id: draft.invoiceNumber || draft.id,
@@ -72,11 +81,20 @@ export default function AdminInvoices() {
   // Seed from the localStorage cache synchronously so a freshly-saved invoice
   // shows up the instant the user lands on this page — no waiting for the
   // backend round-trip.
-  const [invoices, setInvoices] = useState(() => mapDrafts(readLocalDrafts(), currency));
+  const [invoices, setInvoices] = useState(() => mapDrafts(readLocalDrafts(), currency, exchangeRates));
   const [deleteModal, setDeleteModal] = useState({ show: false, invoiceId: null });
   // Download modal also tracks the chosen target currency. Defaults to the
   // dashboard's display currency but the user can switch per download.
   const [downloadModal, setDownloadModal] = useState({ show: false, invoice: null, currency: "USD" });
+  // Send-email compose modal. Only reachable for invoices that have a customer
+  // email (the button is hidden otherwise).
+  const [emailModal, setEmailModal] = useState({ show: false, invoice: null });
+  const [emailForm, setEmailForm] = useState({ to: "", subject: "", message: "", sendCopy: false, currency: "CNY" });
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailStatus, setEmailStatus] = useState(null); // { type: 'success' | 'error', text }
+  // Tracks the last auto-generated message so we only regenerate it on a
+  // currency switch when the admin hasn't hand-edited the text.
+  const autoMsgRef = useRef("");
 
   const [syncSource, setSyncSource] = useState("local");
   const [syncing, setSyncing] = useState(true);
@@ -90,11 +108,11 @@ export default function AdminInvoices() {
     loadInvoices().then((result) => {
       if (!alive) return;
       setSyncSource(result.source);
-      setInvoices(mapDrafts(result.invoices || [], currency));
+      setInvoices(mapDrafts(result.invoices || [], currency, exchangeRates));
       setSyncing(false);
     });
     return () => { alive = false; };
-  }, [currency]);
+  }, [currency, exchangeRates]);
 
 
   const filteredInvoices = useMemo(() => {
@@ -119,6 +137,7 @@ export default function AdminInvoices() {
       case "Paid": return "bg-[#E9F8ED] text-[#1C9B55]";
       case "Pending": return "bg-[#FFF5E8] text-[#B99353]";
       case "Overdue": return "bg-[#FFECEC] text-[#E05353]";
+      case "Sent": return "bg-[#F3EEF8] text-[#412460]";
       default: return "bg-[#ECEBFF] text-[#6B5BD6]";
     }
   };
@@ -153,6 +172,135 @@ export default function AdminInvoices() {
     const target = targetCurrency || downloadModal.currency || currency;
     setDownloadModal({ show: false, invoice: null, currency: target });
     await generateInvoiceExcel(invoice, target, exchangeRates);
+  };
+
+  // ── Send invoice email ──────────────────────────────────────────────────────
+  // Format the invoice grand total in a specific currency (USD/NPR/CNY),
+  // converting from the invoice's original currency at today's rates.
+  const formatAmountIn = (invoice, code) => {
+    const orig = invoice.rawData?.originalCurrency || invoice.rawData?.currency || "USD";
+    const base = invoice.rawData?.grandTotal ?? invoice.amount ?? 0;
+    // Use the live context rates (same source as the PDF) so the message total
+    // and the attached PDF always agree and reflect the saved exchange rate.
+    const val = convertCurrency(base, orig, code, exchangeRates);
+    const sym = currencySymbols?.[code] || code;
+    return `${sym} ${Number(val).toFixed(2)}`;
+  };
+
+  const buildEmailMessage = (invoice, code) => {
+    // Spell the month out — e.g. "2026-03-22" -> "March 22, 2026".
+    const parsed = invoice.date ? new Date(invoice.date) : null;
+    const dateInWords = parsed && !isNaN(parsed)
+      ? parsed.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+      : invoice.date || "";
+    return (
+      `Dear ${invoice.customer || "Customer"},\n\n` +
+      `Please find attached invoice ${invoice.id} dated ${dateInWords} ` +
+      `for the total value of ${formatAmountIn(invoice, code)}.\n\n` +
+      `If you have any question, please feel free to reply.\n\n` +
+      `Thank you for your cooperation.\n\n` +
+      `Best Regards,\n` +
+      `Cellzen Trading\n` +
+      `WhatsApp: +9779849956242, +8613073017734\n` +
+      `Phone number: +8613073040201\n` +
+      `WeChat: subodhpokhrel`
+    );
+  };
+
+  const openEmailModal = (invoice) => {
+    const raw = invoice.rawData || {};
+    const defaultCode = "CNY"; // Default the attached PDF + message total to Yuan (RMB)
+    const msg = buildEmailMessage(invoice, defaultCode);
+    autoMsgRef.current = msg;
+    setEmailForm({
+      to: raw.customerEmail || "",
+      subject: `Invoice ${invoice.id} from Cellzen Trading`,
+      message: msg,
+      sendCopy: false,
+      currency: defaultCode,
+    });
+    setEmailStatus(null);
+    setEmailModal({ show: true, invoice });
+  };
+
+  // Switch the PDF/total currency. Regenerate the message's total only if the
+  // admin hasn't manually edited the text (so we never wipe their wording).
+  // NOTE: compute + update the ref OUTSIDE setEmailForm — the updater must stay
+  // pure (React StrictMode invokes it twice, which would corrupt the ref).
+  const setEmailCurrency = (code) => {
+    const invoice = emailModal.invoice;
+    const untouched = emailForm.message === autoMsgRef.current;
+    if (untouched) {
+      const newMsg = buildEmailMessage(invoice, code);
+      autoMsgRef.current = newMsg;
+      setEmailForm((prev) => ({ ...prev, currency: code, message: newMsg }));
+    } else {
+      setEmailForm((prev) => ({ ...prev, currency: code }));
+    }
+  };
+
+  const handleSendEmail = async () => {
+    const invoice = emailModal.invoice;
+    if (!invoice) return;
+
+    const to = emailForm.to.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      setEmailStatus({ type: "error", text: "Please enter a valid recipient email address." });
+      return;
+    }
+
+    setEmailSending(true);
+    setEmailStatus(null);
+    try {
+      // Generate the PDF in the currency the admin selected, as base64.
+      const target = emailForm.currency || invoice.rawData?.originalCurrency || currency;
+      const { base64, filename } = await generateInvoicePDF(invoice, target, exchangeRates, { output: "base64" });
+
+      // The server sends the email in the background and responds immediately,
+      // so this should return in well under a second. Abort if it somehow
+      // stalls so the button can't spin forever.
+      const controller = new AbortController();
+      const abortTimer = setTimeout(() => controller.abort(), 30000);
+      let res, data;
+      try {
+        ({ res, data } = await authJson(
+          `/inventory/invoices/${encodeURIComponent(invoice.id)}/send-email`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({
+              to,
+              subject: emailForm.subject,
+              message: emailForm.message,
+              copyToSelf: emailForm.sendCopy,
+              pdfBase64: base64,
+              filename,
+            }),
+          }
+        ));
+      } catch (abortErr) {
+        if (abortErr.name === "AbortError") {
+          throw new Error("Timed out waiting for the email server. From this network Gmail SMTP may be unreachable.");
+        }
+        throw abortErr;
+      } finally {
+        clearTimeout(abortTimer);
+      }
+
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || "Failed to send the email.");
+      }
+
+      // Reflect the new "Sent" status in the list immediately.
+      setInvoices((prev) => prev.map((inv) => (inv.id === invoice.id ? { ...inv, status: "Sent" } : inv)));
+      setEmailStatus({ type: "success", text: `Invoice is being sent to ${to}. It may take a moment to arrive.` });
+      setTimeout(() => setEmailModal({ show: false, invoice: null }), 1500);
+    } catch (err) {
+      setEmailStatus({ type: "error", text: err.message || "Could not send the email." });
+    } finally {
+      setEmailSending(false);
+    }
   };
 
   return (
@@ -306,6 +454,15 @@ export default function AdminInvoices() {
                       >
                         Download
                       </button>
+                      {invoice.rawData?.customerEmail && (
+                        <button
+                          onClick={() => openEmailModal(invoice)}
+                          className="border border-[#B99353] px-3 py-1.5 text-xs font-semibold text-[#B99353] transition-colors hover:bg-[#B99353] hover:text-white whitespace-nowrap"
+                          title="Send Email"
+                        >
+                          Send Email
+                        </button>
+                      )}
                       <button
                         onClick={() => setDeleteModal({ show: true, invoiceId: invoice.id })}
                         className="bg-[#FFECEC] px-3 py-1.5 text-xs font-semibold text-[#E05353] transition-colors hover:bg-[#E05353] hover:text-white whitespace-nowrap"
@@ -388,10 +545,10 @@ export default function AdminInvoices() {
                               <td className="px-3 py-2">{item.productName || "-"}</td>
                               <td className="px-3 py-2 text-center">{item.quantity}</td>
                               <td className="px-3 py-2 text-right">
-                                {displayCurrency(convertCurrency(item.unitPrice, originalCurrency, currency))}
+                                {displayCurrency(convertCurrency(item.unitPrice, originalCurrency, currency, exchangeRates))}
                               </td>
                               <td className="px-3 py-2 text-right font-semibold">
-                                {displayCurrency(convertCurrency(item.quantity * item.unitPrice, originalCurrency, currency))}
+                                {displayCurrency(convertCurrency(item.quantity * item.unitPrice, originalCurrency, currency, exchangeRates))}
                               </td>
                             </tr>
                           ));
@@ -420,36 +577,36 @@ export default function AdminInvoices() {
                   <div className="mt-4 space-y-2 border-t border-[#EAE8E5] pt-4">
                     <div className="flex justify-between text-sm">
                       <span className="text-[#2D2D2D]/60">Items Total</span>
-                      <span>{displayCurrency(convertCurrency(itemsTotal, originalCurrency, currency))}</span>
+                      <span>{displayCurrency(convertCurrency(itemsTotal, originalCurrency, currency, exchangeRates))}</span>
                     </div>
                     {commissionTotal > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-[#2D2D2D]/60">Commission</span>
-                        <span>{displayCurrency(convertCurrency(commissionTotal, originalCurrency, currency))}</span>
+                        <span>{displayCurrency(convertCurrency(commissionTotal, originalCurrency, currency, exchangeRates))}</span>
                       </div>
                     )}
                     {customsDuty > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-[#2D2D2D]/60">Customs Duty</span>
-                        <span>{displayCurrency(convertCurrency(customsDuty, originalCurrency, currency))}</span>
+                        <span>{displayCurrency(convertCurrency(customsDuty, originalCurrency, currency, exchangeRates))}</span>
                       </div>
                     )}
                     {docCharges > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-[#2D2D2D]/60">Documentation Charges</span>
-                        <span>{displayCurrency(convertCurrency(docCharges, originalCurrency, currency))}</span>
+                        <span>{displayCurrency(convertCurrency(docCharges, originalCurrency, currency, exchangeRates))}</span>
                       </div>
                     )}
                     {transportCost > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-[#2D2D2D]/60">Freight Cost</span>
-                        <span>{displayCurrency(convertCurrency(transportCost, originalCurrency, currency))}</span>
+                        <span>{displayCurrency(convertCurrency(transportCost, originalCurrency, currency, exchangeRates))}</span>
                       </div>
                     )}
                     {otherCharges > 0 && (
                       <div className="flex justify-between text-sm">
                         <span className="text-[#2D2D2D]/60">Other Charges</span>
-                        <span>{displayCurrency(convertCurrency(otherCharges, originalCurrency, currency))}</span>
+                        <span>{displayCurrency(convertCurrency(otherCharges, originalCurrency, currency, exchangeRates))}</span>
                       </div>
                     )}
                     <div className="flex justify-between border-t border-[#EAE8E5] pt-2">
@@ -578,6 +735,135 @@ export default function AdminInvoices() {
                   Download as PDF
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Send Email Modal */}
+      {emailModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto">
+          <div className="w-full max-w-lg rounded-[2rem] border border-[#E1E3EE] bg-white p-6 shadow-2xl my-8">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-[#412460]">Send Invoice Email</h2>
+              <button
+                onClick={() => !emailSending && setEmailModal({ show: false, invoice: null })}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-[#F4F2EF] text-[#2D2D2D]/60 transition-colors hover:bg-[#FFECEC] hover:text-[#E05353]"
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <p className="mt-1 text-sm text-[#2D2D2D]/60">
+              Invoice <span className="font-semibold text-[#412460]">{emailModal.invoice?.id}</span> · the PDF is attached automatically.
+            </p>
+
+            <div className="mt-5 space-y-4">
+              <div>
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">To</label>
+                <input
+                  type="email"
+                  value={emailForm.to}
+                  onChange={(e) => setEmailForm((p) => ({ ...p, to: e.target.value }))}
+                  placeholder="customer@email.com"
+                  className="w-full rounded-lg border border-[#E1E3EE] px-3 py-2.5 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Subject</label>
+                <input
+                  type="text"
+                  value={emailForm.subject}
+                  onChange={(e) => setEmailForm((p) => ({ ...p, subject: e.target.value }))}
+                  className="w-full rounded-lg border border-[#E1E3EE] px-3 py-2.5 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Message</label>
+                <textarea
+                  rows={8}
+                  value={emailForm.message}
+                  onChange={(e) => setEmailForm((p) => ({ ...p, message: e.target.value }))}
+                  className="w-full resize-y rounded-lg border border-[#E1E3EE] px-3 py-2.5 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none"
+                />
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="flex items-center gap-2 text-sm text-[#2D2D2D]/80">
+                  <input
+                    type="checkbox"
+                    checked={emailForm.sendCopy}
+                    onChange={(e) => setEmailForm((p) => ({ ...p, sendCopy: e.target.checked }))}
+                    className="h-4 w-4 accent-[#412460]"
+                  />
+                  Send a copy to our inbox
+                </label>
+
+                {/* Currency for the attached PDF + message total */}
+                <div className="flex items-center gap-1.5">
+                  <span className="mr-1 text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/50">PDF in</span>
+                  {["USD", "NPR", "CNY"].map((code) => {
+                    const active = emailForm.currency === code;
+                    return (
+                      <button
+                        key={code}
+                        type="button"
+                        onClick={() => setEmailCurrency(code)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                          active
+                            ? "border-[#412460] bg-[#412460] text-white"
+                            : "border-[#E1E3EE] bg-white text-[#2D2D2D] hover:border-[#412460]"
+                        }`}
+                      >
+                        {code === "CNY" ? "RMB" : code}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {emailSending && (
+                <div className="rounded-lg bg-[#F4F2EF] px-3 py-2 text-sm text-[#2D2D2D]/70">
+                  Preparing the PDF and queuing the email…
+                </div>
+              )}
+
+              {emailStatus && (
+                <div
+                  className={`rounded-lg px-3 py-2 text-sm ${
+                    emailStatus.type === "success" ? "bg-[#E9F8ED] text-[#1C9B55]" : "bg-[#FFECEC] text-[#E05353]"
+                  }`}
+                >
+                  {emailStatus.text}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => setEmailModal({ show: false, invoice: null })}
+                disabled={emailSending}
+                className="flex-1 rounded-lg border border-[#E1E3EE] px-4 py-3 text-sm font-semibold text-[#2D2D2D] transition-colors hover:bg-[#F4F2EF] disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSendEmail}
+                disabled={emailSending}
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-[#412460] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B99353] disabled:opacity-60"
+              >
+                {emailSending ? (
+                  <>
+                    <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Sending…
+                  </>
+                ) : (
+                  "Send Email"
+                )}
+              </button>
             </div>
           </div>
         </div>

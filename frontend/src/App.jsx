@@ -69,7 +69,7 @@ import { useLocation } from 'react-router-dom';
 // Hides MANAS on specific pages where it clutters the UI
 function ManasBubbleGuard() {
   const { pathname } = useLocation();
-  if (pathname.startsWith('/admin-invoices/create') || pathname.startsWith('/admin-invoices/edit')) return null;
+  if (pathname.startsWith('/admin-invoices')) return null;
   return <ManasBubble />;
 }
 

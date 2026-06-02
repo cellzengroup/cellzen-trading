@@ -571,6 +571,11 @@ export default function AdminCreateInvoice() {
   const [successModal, setSuccessModal] = useState({ show: false, message: "", type: "" });
   const [isEditMode, setIsEditMode] = useState(false);
   const [editInvoiceId, setEditInvoiceId] = useState(null);
+  // Set synchronously the moment we detect edit data, BEFORE sessionStorage is
+  // cleared, so the next-number effect can reliably skip auto-numbering when
+  // editing. Using a ref (not state) avoids the cross-effect race that was
+  // silently bumping an edited invoice's number (e.g. 006 → 007 → duplicate).
+  const editModeRef = useRef(false);
 
   // Data from backend
   const [customers, setCustomers] = useState([]);
@@ -593,6 +598,8 @@ export default function AdminCreateInvoice() {
   useEffect(() => {
     const editData = sessionStorage.getItem("edit_invoice_data");
     if (editData) {
+      // Mark edit mode synchronously so the next-number effect skips numbering.
+      editModeRef.current = true;
       const parsedData = JSON.parse(editData);
       setIsEditMode(true);
       setEditInvoiceId(parsedData.invoiceNumber || parsedData.id);
@@ -637,24 +644,54 @@ export default function AdminCreateInvoice() {
     }
   }, []);
 
-  // Auto-generate the next invoice number from the backend on mount. Skipped
-  // when editing an existing invoice so we don't overwrite its number.
+  // Auto-generate the next invoice number on mount. Skipped when editing an
+  // existing invoice so we don't overwrite its number.
+  //
+  // The sequence is ONE global running counter across all months (the month
+  // segment is just a label), so a new month continues from the previous max
+  // (…0017 → CZN-06-0018) instead of resetting to 0001. We take the higher of
+  // the backend value and the locally-cached invoices, so the number is correct
+  // even if the backend hasn't synced those invoices yet.
   useEffect(() => {
-    // If sessionStorage still has edit data, the edit-mode effect will populate
-    // the number. Bail so we don't race that.
-    if (sessionStorage.getItem("edit_invoice_data")) return;
+    // If we're editing an existing invoice, keep its number — never auto-bump.
+    // editModeRef is set synchronously by the edit-mode effect (which also
+    // clears sessionStorage), so checking the ref is race-free; the
+    // sessionStorage check remains as a belt-and-suspenders fallback.
+    if (editModeRef.current || sessionStorage.getItem("edit_invoice_data")) return;
+
+    const month = String(new Date().getMonth() + 1).padStart(2, "0");
+
+    // Highest trailing sequence already present in the local cache, across all
+    // months (CZN-MM-NNNN → NNNN). 0 when none.
+    const localMaxSeq = () => {
+      try {
+        const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
+        return drafts.reduce((max, d) => {
+          const parts = String(d.invoiceNumber || d.id || "").split("-");
+          const n = parseInt(parts[parts.length - 1], 10);
+          return !isNaN(n) && n > max ? n : max;
+        }, 0);
+      } catch {
+        return 0;
+      }
+    };
 
     let cancelled = false;
     (async () => {
+      // Start from what we know locally so a new month never resets to 0001.
+      let seq = localMaxSeq() + 1;
       try {
         const res = await authFetch("/inventory/invoices/next-number");
         const data = await res.json().catch(() => ({}));
-        if (cancelled || !res.ok || !data?.success || !data.data?.invoiceNumber) return;
-        setFormData((prev) => ({ ...prev, invoiceNumber: data.data.invoiceNumber }));
+        if (res.ok && data?.success && data.data?.sequence) {
+          seq = Math.max(seq, data.data.sequence);
+        }
       } catch {
-        // Network error — keep the default CZN-MM-0001 placeholder so the
-        // user can still type and submit.
+        // Network error — fall back to the local-derived sequence.
       }
+      if (cancelled) return;
+      const next = `CZN-${month}-${String(seq).padStart(4, "0")}`;
+      setFormData((prev) => ({ ...prev, invoiceNumber: next }));
     })();
     return () => { cancelled = true; };
   }, []);
@@ -698,6 +735,7 @@ export default function AdminCreateInvoice() {
     trackingNumber: "",
     customsNotes: "",
     includeCustomsTransport: false, // Radio button state for adding customs/transport
+    includeHsCode: false, // When true, the HS Code column is rendered in the downloaded PDF/Excel
     defaultDutyOrigin: "CN", // Origin country used for HS-based duty calc unless an item overrides (China is the most common origin for Cellzen)
     customsDutyAutoFilled: true, // True until the user manually edits the customs duty input — keeps the HS-derived value in sync
   });
@@ -3300,6 +3338,7 @@ export default function AdminCreateInvoice() {
                               style={{ ...inputStyle, textAlign: 'center', cursor: 'pointer', appearance: 'auto' }}
                             >
                               <option value="KG">KG</option>
+                              <option value="PCS">PCS</option>
                               <option value="Litre">Litre</option>
                               <option value="Unit">Unit</option>
                               <option value="Box">Box</option>
@@ -3466,6 +3505,25 @@ export default function AdminCreateInvoice() {
                     Add Transportation and Customs
                   </label>
                 </div>
+
+                {/* Add HS Code in PDF/Excel — adds an HS Code column to the downloaded invoice */}
+                <div className={`flex items-center gap-3 rounded-lg border px-4 py-3 ${formData.includeHsCode ? 'border-[#412460]/30 bg-[#FDFCFB]' : 'border-[#E1E3EE] bg-[#F7F6F2]'}`}>
+                  <input
+                    type="checkbox"
+                    id="includeHsCode"
+                    checked={formData.includeHsCode}
+                    onChange={(e) => setFormData(prev => ({ ...prev, includeHsCode: e.target.checked }))}
+                    className="h-5 w-5 cursor-pointer accent-[#412460]"
+                  />
+                  <label
+                    htmlFor="includeHsCode"
+                    className="cursor-pointer text-sm font-medium whitespace-nowrap text-[#412460]"
+                    title="When enabled, an HS Code column is added to the downloaded Proforma Invoice PDF and Excel"
+                  >
+                    Add HS Code in PDF/Excel
+                  </label>
+                </div>
+
                 {!hasAnyMeasurements() && (
                   <span className="text-xs text-[#E05353]">
                     * Enter Weight or CBM to enable

@@ -62,6 +62,12 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   const items = raw.items       || [];
   const sym   = symOf(currency);
 
+  // HS Code column is opt-in via the "Add HS Code in PDF/Excel" checkbox on the
+  // create-invoice screen. When on (and any item has a code) it becomes column J,
+  // making column 10 the last column; otherwise the sheet stays 9 columns wide.
+  const showHs = !!raw.includeHsCode && items.some(it => it.hsCode && String(it.hsCode).trim());
+  const LAST   = showHs ? 10 : 9;
+
   // ── Totals ──────────────────────────────────────────────────────────────────
   const itemsTotal    = items.reduce((s, it) => {
     const base = (it.quantity || 0) * (it.unitPrice || 0);
@@ -87,13 +93,14 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   ws.columns = [
     { width: 6  },   // A  S.No
     { width: 14 },   // B  Product Image
-    { width: 28 },   // C  Product Name
+    { width: showHs ? 24 : 28 },   // C  Product Name (slightly narrower when HS column is shown)
     { width: 7  },   // D  Qty
     { width: 7  },   // E  Unit
     { width: 20 },   // F  Unit Price
     { width: 20 },   // G  Total Amount   ← wider for spacing
     { width: 16 },   // H  Package Wgt    ← wider for spacing
     { width: 16 },   // I  Size (CBM)     ← wider for spacing
+    ...(showHs ? [{ width: 16 }] : []),   // J  HS Code (only when enabled)
   ];
 
   const row = (n)            => ws.getRow(n);
@@ -114,7 +121,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
     }
   } catch (_) { /* skip */ }
 
-  mg(1, 7, 1, 9);
+  mg(1, 7, 1, LAST);
   const invHdr = cel(1, 7);
   invHdr.value = `Invoice Number: ${invoice.id || ''}\nInvoice Date: ${invoice.date || raw.invoiceDate || ''}`;
   fnt(invHdr, { size: 9, color: C.dark });
@@ -129,7 +136,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   // ROW 3  –  "Performa Invoice" title
   // ===========================================================================
   row(3).height = 38;
-  mg(3, 1, 3, 9);
+  mg(3, 1, 3, LAST);
   const title = cel(3, 1);
   title.value = 'Performa Invoice';
   fnt(title, { size: 22, bold: true, color: C.purple });
@@ -139,7 +146,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   // ROW 4  –  "Buyer" label right-aligned only
   // ===========================================================================
   row(4).height = 18;
-  mg(4, 7, 4, 9);
+  mg(4, 7, 4, LAST);
   const buyerLbl = cel(4, 7);
   buyerLbl.value = 'Buyer';
   fnt(buyerLbl, { bold: true, size: 10, color: C.dark });
@@ -158,7 +165,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   fnt(modeCell, { size: 9, color: C.grey });
   aln(modeCell, 'left', 'middle');
 
-  mg(5, 7, 5, 9);
+  mg(5, 7, 5, LAST);
   const buyerVal = cel(5, 7);
   buyerVal.value = invoice.customer || raw.customerName || '';
   fnt(buyerVal, { bold: true, size: 10, color: C.dark });
@@ -177,7 +184,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   // Buyer contact line — phone preferred, otherwise email.
   const buyerContact = (raw.customerPhone || raw.customerEmail || '').toString().trim();
   if (buyerContact) {
-    mg(6, 7, 6, 9);
+    mg(6, 7, 6, LAST);
     const contactCell = cel(6, 7);
     contactCell.value = buyerContact;
     fnt(contactCell, { size: 9, color: C.grey });
@@ -204,6 +211,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
     { col: 7, label: 'Total Amount'             },
     { col: 8, label: 'Package Wgt'              },   // renamed
     { col: 9, label: 'Size (CBM)'               },   // renamed
+    ...(showHs ? [{ col: 10, label: 'HS Code' }] : []),
   ];
 
   HEADERS.forEach(({ col, label }) => {
@@ -258,6 +266,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
     sc(7, `${sym} ${total.toFixed(2)}`,                                 { bold: true, color: C.purple });
     sc(8, it.weight ? `${it.weight} kg` : '');
     sc(9, it.cbm    ? `${it.cbm} CBM`  : '');
+    if (showHs) sc(10, it.hsCode ? String(it.hsCode) : '');
 
     // Col B: image cell — centred, image placed in centre of cell
     const imgCell = cel(curRow, 2);
@@ -288,7 +297,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   // ── Empty filler rows – NO S.No numbers, just blank cells ─────────────────
   for (let i = items.length; i < 5; i++) {
     row(curRow).height = TEXT_H;
-    for (let col = 1; col <= 9; col++) {
+    for (let col = 1; col <= LAST; col++) {
       const c = cel(curRow, col);
       c.value = '';          // no S.No numbers in filler rows
       fill(c, C.white);
@@ -321,9 +330,10 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
     aln(val, 'center', 'middle');
     fill(val, C.light);
 
-    // Cols H & I — empty, same background
+    // Cols H & I (and J when shown) — empty, same background
     fill(cel(curRow, 8), C.light);
     fill(cel(curRow, 9), C.light);
+    if (showHs) fill(cel(curRow, 10), C.light);
 
     curRow++;
   };
@@ -344,7 +354,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   // Format: "In Words:   Rs. Two Thousand..."  (one cell, all in one line)
   // ===========================================================================
   row(curRow).height = 26;
-  mg(curRow, 1, curRow, 9);
+  mg(curRow, 1, curRow, LAST);
   const inWordsCell = cel(curRow, 1);
   inWordsCell.value = `In Words:   ${sym} ${numberToWords(grandTotal)}`;
   fnt(inWordsCell, { bold: false, size: 10, color: C.dark });
@@ -357,7 +367,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   // ===========================================================================
   if (raw.notes && raw.notes.trim()) {
     row(curRow).height = 22;
-    mg(curRow, 1, curRow, 9);
+    mg(curRow, 1, curRow, LAST);
     const noteCell = cel(curRow, 1);
     noteCell.value = `Note: ${raw.notes}`;
     fnt(noteCell, { bold: true, size: 10, color: C.purple });
@@ -376,7 +386,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   // Terms and Conditions header  (light bg, black bold)
   // ===========================================================================
   row(curRow).height = 22;
-  mg(curRow, 1, curRow, 9);
+  mg(curRow, 1, curRow, LAST);
   const tcHdr = cel(curRow, 1);
   tcHdr.value = 'Terms and Conditions:';
   fnt(tcHdr, { bold: true, size: 11, color: C.black });
@@ -405,7 +415,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
     aln(numCell, 'center', 'middle');
     fill(numCell, C.white);
 
-    mg(curRow, 2, curRow, 9);
+    mg(curRow, 2, curRow, LAST);
     const termCell = cel(curRow, 2);
     termCell.value = text;
     fnt(termCell, { size: 9, color: C.black });
@@ -425,7 +435,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   // Footer  –  purple bar, Arial Bold
   // ===========================================================================
   row(curRow).height = 42;
-  mg(curRow, 1, curRow, 9);
+  mg(curRow, 1, curRow, LAST);
   const footer = cel(curRow, 1);
   footer.value = '"Connecting Global Markets"\nContact: +8613073017734, +977 9849956242   Email: cellzengroup@gmail.com.';
   fnt(footer, { bold: true, size: 13, color: C.white });

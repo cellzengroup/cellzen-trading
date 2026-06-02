@@ -13,6 +13,16 @@ export default defineConfig({
     host: '127.0.0.1',
     strictPort: true,
     hmr: true,
+    // Proxy API calls to the backend so the browser talks to the dev server
+    // same-origin (no CORS, no cross-origin failures). Use 127.0.0.1 (not
+    // "localhost") so Windows doesn't try IPv6 ::1 first and fail with EACCES —
+    // the backend listens on IPv4. Override with VITE_DEV_API_TARGET if needed.
+    proxy: {
+      '/api': {
+        target: process.env.VITE_DEV_API_TARGET || 'http://127.0.0.1:5300',
+        changeOrigin: true,
+      },
+    },
     allowedHosts: [
       'cellzen-trading.onrender.com',
       '.onrender.com',

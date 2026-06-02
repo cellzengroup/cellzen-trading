@@ -30,6 +30,38 @@ export function writeLocalDrafts(drafts) {
   }
 }
 
+// Timestamp (ms) used to decide which copy of an invoice is "newer". Falls back
+// through the fields that may carry a time, returning 0 when none parse.
+function invoiceTimestamp(inv) {
+  const v = inv?.updatedAt || inv?.generatedAt || inv?._serverUpdatedAt || inv?.invoiceDate;
+  const n = v ? new Date(v).getTime() : 0;
+  return Number.isNaN(n) ? 0 : n;
+}
+
+// Reconcile the server list with the local cache WITHOUT letting a stale server
+// response clobber a fresher local edit. The backend save happens in the
+// background after the user hits Update, so a list refresh that races ahead of
+// that POST would otherwise momentarily revert/“disappear” the just-edited
+// invoice. Rules, keyed by invoiceNumber:
+//   • Server defines the baseline set (so peer creates show up).
+//   • A local copy that is strictly newer than the server's wins (no revert).
+//   • A local-only invoice not yet on the server is kept (it shouldn't vanish
+//     before its sync lands).
+function mergeRemoteWithLocal(remote, local) {
+  const byNumber = new Map();
+  for (const r of remote) {
+    if (r?.invoiceNumber) byNumber.set(r.invoiceNumber, r);
+  }
+  for (const l of local) {
+    if (!l?.invoiceNumber) continue;
+    const existing = byNumber.get(l.invoiceNumber);
+    if (!existing || invoiceTimestamp(l) > invoiceTimestamp(existing)) {
+      byNumber.set(l.invoiceNumber, l);
+    }
+  }
+  return Array.from(byNumber.values());
+}
+
 // Convert a backend Invoice row into the shape the frontend pages expect
 function unwrapServerInvoice(row) {
   const data = row.invoice_data || {};
@@ -82,7 +114,8 @@ export async function loadInvoices() {
           if (res2.ok) {
             const json2 = await res2.json();
             if (json2?.success) {
-              const merged = (json2.data || []).map(unwrapServerInvoice);
+              const remote2 = (json2.data || []).map(unwrapServerInvoice);
+              const merged = mergeRemoteWithLocal(remote2, readLocalDrafts());
               writeLocalDrafts(merged);
               return { source: "remote", invoices: merged };
             }
@@ -91,8 +124,11 @@ export async function loadInvoices() {
       }
     }
 
-    writeLocalDrafts(remote);
-    return { source: "remote", invoices: remote };
+    // Merge so a freshly-saved local edit isn't reverted by a server response
+    // that raced ahead of the background save (prevents the update flicker).
+    const merged = mergeRemoteWithLocal(remote, readLocalDrafts());
+    writeLocalDrafts(merged);
+    return { source: "remote", invoices: merged };
   } catch (err) {
     return { source: "local", invoices: readLocalDrafts(), error: err?.message };
   }

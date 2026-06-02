@@ -178,10 +178,14 @@ export default function AdminSettings() {
     });
   };
 
-  // Local state for editing rates (initialized from context)
+  // Local state for editing rates (initialized from context).
+  // `cnyNpr` is the direct "1 CNY = X NPR" rate the business actually quotes;
+  // it's the source of truth for the NPR-per-USD value stored on save, so the
+  // CNY→NPR conversion is exact (no USD round-trip rounding).
   const [editRates, setEditRates] = useState({
     cny: exchangeRates.CNY.toString(),
     npr: exchangeRates.NPR.toString(),
+    cnyNpr: (exchangeRates.NPR / exchangeRates.CNY).toFixed(2),
   });
 
   // Saved transport rates — seeded from localStorage cache so the list shows
@@ -291,6 +295,7 @@ export default function AdminSettings() {
       setEditRates({
         cny: exchangeRates.CNY.toString(),
         npr: exchangeRates.NPR.toString(),
+        cnyNpr: (exchangeRates.NPR / exchangeRates.CNY).toFixed(2),
       });
     }
   };
@@ -354,9 +359,14 @@ export default function AdminSettings() {
 
   const saveExchangeRates = async () => {
     try {
+      const cny = parseFloat(editRates.cny);
+      const cnyNpr = parseFloat(editRates.cnyNpr);
+      // Store NPR-per-USD derived from the direct CNY→NPR rate so the
+      // conversion is exactly "1 CNY = cnyNpr NPR" (no rounding drift).
+      const npr = !isNaN(cny) && !isNaN(cnyNpr) ? cny * cnyNpr : parseFloat(editRates.npr);
       await updateExchangeRates({
-        CNY: parseFloat(editRates.cny),
-        NPR: parseFloat(editRates.npr),
+        CNY: cny,
+        NPR: npr,
       });
       closeModal();
     } catch (err) {
@@ -794,7 +804,13 @@ export default function AdminSettings() {
                       type="number"
                       step="0.01"
                       value={editRates.cny}
-                      onChange={(e) => setEditRates((prev) => ({ ...prev, cny: e.target.value }))}
+                      onChange={(e) => setEditRates((prev) => {
+                        const cny = e.target.value;
+                        const cnyNpr = parseFloat(prev.cnyNpr);
+                        // Keep the direct CNY→NPR rate fixed; re-derive NPR-per-USD.
+                        const npr = !isNaN(parseFloat(cny)) && !isNaN(cnyNpr) ? (parseFloat(cny) * cnyNpr).toString() : prev.npr;
+                        return { ...prev, cny, npr };
+                      })}
                       className="w-20 p-2 rounded-lg border border-[#E1E3EE] bg-white text-center font-semibold text-[#412460] focus:outline-none focus:border-[#412460]"
                     />
                     <span className="text-sm font-medium text-gray-600">CNY</span>
@@ -802,7 +818,12 @@ export default function AdminSettings() {
                       type="number"
                       step="0.01"
                       value={editRates.npr}
-                      onChange={(e) => setEditRates((prev) => ({ ...prev, npr: e.target.value }))}
+                      onChange={(e) => setEditRates((prev) => {
+                        const npr = e.target.value;
+                        const cny = parseFloat(prev.cny);
+                        const cnyNpr = !isNaN(parseFloat(npr)) && cny ? (parseFloat(npr) / cny).toFixed(2) : prev.cnyNpr;
+                        return { ...prev, npr, cnyNpr };
+                      })}
                       className="w-24 p-2 rounded-lg border border-[#E1E3EE] bg-white text-center font-semibold text-[#412460] focus:outline-none focus:border-[#412460]"
                     />
                     <span className="text-sm font-medium text-gray-600">NPR</span>
@@ -825,9 +846,14 @@ export default function AdminSettings() {
                     <input
                       type="number"
                       step="0.01"
-                      value={(parseFloat(editRates.npr || 135.50) / parseFloat(editRates.cny || 7.24)).toFixed(2)}
-                      readOnly
-                      className="w-24 p-2 rounded-lg border border-[#E1E3EE] bg-gray-100 text-center font-semibold text-[#412460]"
+                      value={editRates.cnyNpr}
+                      onChange={(e) => setEditRates((prev) => {
+                        const cnyNpr = e.target.value;
+                        const cny = parseFloat(prev.cny);
+                        const npr = !isNaN(parseFloat(cnyNpr)) && !isNaN(cny) ? (cny * parseFloat(cnyNpr)).toString() : prev.npr;
+                        return { ...prev, cnyNpr, npr };
+                      })}
+                      className="w-24 p-2 rounded-lg border border-[#412460]/40 bg-white text-center font-semibold text-[#412460] focus:outline-none focus:border-[#412460]"
                     />
                     <span className="text-sm font-medium text-gray-600">NPR</span>
                   </div>

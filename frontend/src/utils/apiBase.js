@@ -13,9 +13,14 @@ const KNOWN_PROD_BASES = [
 
 const explicitBase = import.meta.env.VITE_API_URL;
 
+// In the browser, always talk same-origin (`<origin>/api`). In production the
+// backend serves the SPA from the same origin; in dev the Vite proxy forwards
+// `/api` to the backend. This avoids cross-origin/CORS failures that silently
+// fell back to the dev server and produced 404s. Only non-browser contexts
+// (SSR/scripts) fall back to the explicit localhost backend.
 export const PRIMARY_API_BASE =
   explicitBase ||
-  (typeof window !== "undefined" && import.meta.env.PROD
+  (typeof window !== "undefined"
     ? `${window.location.origin}/api`
     : "http://localhost:5300/api");
 
