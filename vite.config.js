@@ -54,8 +54,30 @@ export default defineConfig({
     include: ['exceljs'],
   },
   build: {
-    sourcemap: true,
-    outDir: '../dist'
+    // Source maps are disabled in production: generating them for the large
+    // three.js / pdfjs / tesseract bundles pushed the build past the memory
+    // limit on Render's build container, aborting with SIGABRT (exit 134).
+    // They also expose full source publicly, which we don't want in prod.
+    sourcemap: false,
+    outDir: '../dist',
+    emptyOutDir: true,
+    // Raise the warning threshold and split the heaviest third-party libs into
+    // their own chunks. Smaller chunks lower peak memory during minification
+    // (rollup works chunk-by-chunk) and improve browser caching / load.
+    chunkSizeWarningLimit: 2000,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('three') || id.includes('@react-three')) return 'vendor-three';
+          if (id.includes('pdfjs-dist')) return 'vendor-pdfjs';
+          if (id.includes('tesseract')) return 'vendor-tesseract';
+          if (id.includes('exceljs') || id.includes('xlsx')) return 'vendor-spreadsheet';
+          if (id.includes('jspdf') || id.includes('html2canvas')) return 'vendor-pdf';
+          return undefined;
+        }
+      }
+    }
   }
 });
 
