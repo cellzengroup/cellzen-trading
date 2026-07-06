@@ -111,6 +111,21 @@ export default function TrackingLogin({ initialMode = "signin" }) {
     return countries.find((country) => country.countryCode === phonePrefix) ?? null;
   }, [phonePrefix, selectedCountry]);
 
+  // Store the session under the right keys and send the user to the right
+  // portal. Warehouse staff (role "staff") use the same /login page but go to
+  // the staff portal with the separate staff_token; everyone else is a customer.
+  const routeAuthenticatedUser = (user, token) => {
+    if (String(user?.role || "").toLowerCase() === "staff") {
+      localStorage.setItem("staff_token", token);
+      sessionStorage.setItem("staff_user", JSON.stringify(user));
+      navigate("/staff-dashboard", { replace: true });
+      return;
+    }
+    localStorage.setItem("customer_token", token);
+    sessionStorage.setItem("customer_user", JSON.stringify(user));
+    navigate(getDashboardPath(user?.accountType));
+  };
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     setSubmitted(false);
@@ -139,8 +154,11 @@ export default function TrackingLogin({ initialMode = "signin" }) {
       if (!res.ok) {
         // Server returned an error response — handle the special cases first
         if (data?.requiresEmailVerification) {
+          // Move straight to the code-entry screen (the email is being sent in
+          // the background). No red error — this is an expected first-login step.
           setPendingVerificationEmail(data.email || form.email);
           setVerificationCode("");
+          return;
         } else if (data?.requiresAdminApproval) {
           setRegistrationResult({ type: "approval", user: data.user });
           return;
@@ -167,10 +185,8 @@ export default function TrackingLogin({ initialMode = "signin" }) {
         return;
       }
 
-      localStorage.setItem("customer_token", data.token);
-      sessionStorage.setItem("customer_user", JSON.stringify(data.user));
       setSubmitted(true);
-      navigate(getDashboardPath(data.user?.accountType));
+      routeAuthenticatedUser(data.user, data.token);
     } catch (authError) {
       // Network/CORS failure — every API base host failed
       const tried = getApiBaseCandidates().join(", ");
@@ -205,6 +221,14 @@ export default function TrackingLogin({ initialMode = "signin" }) {
         setPendingVerificationEmail("");
         setVerificationCode("");
         setRegistrationResult({ type: "approval", user: data.user });
+        return;
+      }
+
+      // Staff finishing their first-login verification → straight to the portal.
+      if (String(data.user?.role || "").toLowerCase() === "staff") {
+        setPendingVerificationEmail("");
+        setVerificationCode("");
+        routeAuthenticatedUser(data.user, data.token);
         return;
       }
 

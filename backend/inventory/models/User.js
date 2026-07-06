@@ -69,6 +69,17 @@ const User = sequelize
         allowNull: false,
         defaultValue: 'approved',
       },
+      // Ownership stamp: the staff user who created/enrolled this customer.
+      // NULL = created by admin (or self-registered). Staff Management lists
+      // only the customers where this equals the staff's own id.
+      created_by_user_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+      created_by_name: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
     }, {
       tableName: 'users',
       timestamps: true,
@@ -77,6 +88,7 @@ const User = sequelize
         { fields: ['accountType'] },
         { fields: ['accountApprovalStatus'] },
         { fields: ['role', 'accountApprovalStatus'] },
+        { fields: ['created_by_user_id'] },
       ],
     })
   : null;

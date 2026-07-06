@@ -32,6 +32,21 @@ import AdminNotifications from './pages/auth/admin/adminnotifications';
 import AdminSettings from './pages/auth/admin/adminSettings/adminSettings';
 import AdminInvoices from './pages/auth/admin/adminInvoices/adminInvoices';
 import AdminCreateInvoice from './pages/auth/admin/adminInvoices/adminCreateInvoice';
+// Staff portal — mirrors the admin portal (copied into pages/auth/staff/) but
+// scoped per-staff and limited to 6 sections.
+import StaffLogin from './pages/auth/staff/StaffLogin';
+import StaffPortal from './pages/auth/staff/staffPortal';
+import StaffDashboard from './pages/auth/staff/staffDashboard';
+import StaffManagements from './pages/auth/staff/staffmanagements';
+import StaffTools from './pages/auth/staff/StaffTools/StaffTools';
+import StaffProductGallery from './pages/auth/staff/StaffTools/productGallery';
+import StaffAddProductGallery from './pages/auth/staff/StaffTools/addProductGallery';
+import StaffReports from './pages/auth/staff/staffreports';
+import StaffSettings from './pages/auth/staff/staffSettings/staffSettings';
+import StaffInvoices from './pages/auth/staff/staffInvoices/staffInvoices';
+import StaffCreateInvoice from './pages/auth/staff/staffInvoices/staffCreateInvoice';
+import StaffPackingList from './pages/auth/staff/staffPacking/staffPackingList';
+import StaffPackingEditor from './pages/auth/staff/staffPacking/staffPackingEditor';
 import CostumersDashboard from './pages/tracking/trackingpage/costumers/costumersdashboard';
 import CostumersGoodsTracking from './pages/tracking/trackingpage/costumers/CostumersGoodsTracking';
 import CostumersInvoices from './pages/tracking/trackingpage/costumers/costumerInvoice/costumerInvoices.jsx';
@@ -116,8 +131,9 @@ function App() {
       // Only redirect if the current path looks like it requires auth
       const path = window.location.pathname;
       const needsAdmin = path.startsWith('/admin-');
+      const needsStaff = path.startsWith('/staff-');
       const needsCustomer = path.startsWith('/tracking/trackingpage');
-      if ((kind === 'admin' && needsAdmin) || (kind === 'customer' && needsCustomer)) {
+      if ((kind === 'admin' && needsAdmin) || (kind === 'staff' && needsStaff) || (kind === 'customer' && needsCustomer)) {
         window.location.href = target;
       }
     };
@@ -175,6 +191,30 @@ function App() {
         <Route path="/admin-reports" element={<AdminReports />} />
         <Route path="/admin-notifications" element={<AdminNotifications />} />
         <Route path="/admin-settings" element={<AdminSettings />} />
+
+        {/* Staff portal routes — same structure as admin, scoped per-staff */}
+        <Route path="/staff-login" element={<StaffLogin />} />
+        <Route
+          path="/staff-dashboard"
+          element={
+            <StaffPortal activePage="Home" title="Welcome to Staff Dashboard" eyebrow="Create invoices, manage your customers, and use operational tools">
+              <StaffDashboard />
+            </StaffPortal>
+          }
+        />
+        <Route path="/staff-invoices" element={<StaffInvoices />} />
+        <Route path="/staff-invoices/create" element={<StaffCreateInvoice />} />
+        <Route path="/staff-invoices/edit" element={<StaffCreateInvoice />} />
+        <Route path="/staff-packing" element={<StaffPackingList />} />
+        <Route path="/staff-packing/create" element={<StaffPackingEditor />} />
+        <Route path="/staff-packing/edit" element={<StaffPackingEditor />} />
+        <Route path="/staff-managements" element={<StaffManagements />} />
+        <Route path="/staff-tools" element={<StaffTools />} />
+        <Route path="/staff-tools/product-gallery" element={<StaffProductGallery />} />
+        <Route path="/staff-tools/product-gallery/add" element={<StaffAddProductGallery />} />
+        <Route path="/staff-tools/product-gallery/edit/:productId" element={<StaffAddProductGallery />} />
+        <Route path="/staff-reports" element={<StaffReports />} />
+        <Route path="/staff-settings" element={<StaffSettings />} />
 
         <Route path="/login" element={<TrackingLogin initialMode="signin" />} />
         <Route path="/reset" element={<ResetPassword />} />

@@ -89,8 +89,26 @@ export async function resilientFetch(path, init = {}) {
 // Token kinds — different parts of the app store under different keys
 export const TOKENS = {
   admin: "inv_token",
+  staff: "staff_token",
   customer: "customer_token",
 };
+
+// The Staff portal reuses the Admin portal's page code (copied into pages/auth/
+// staff/) but must authenticate with a SEPARATE token so a staff and an admin
+// session in the same browser never collide. Staff pages all live under the
+// /staff* path prefix, so we resolve the "admin" token kind to the staff token
+// whenever the current location is a staff page. This keeps the copied pages
+// working unchanged (they still call authFetch with the default kind).
+function isStaffContext() {
+  return typeof window !== "undefined" && window.location.pathname.startsWith("/staff");
+}
+
+// Resolve the active inventory-portal token (admin vs staff) by current path.
+// Used by helpers that read the token directly (e.g. invoiceSync).
+export function activeInvToken() {
+  const key = isStaffContext() ? TOKENS.staff : TOKENS.admin;
+  return localStorage.getItem(key) || "";
+}
 
 function buildAuthHeaders(tokenKind) {
   const key = TOKENS[tokenKind] || tokenKind;
@@ -103,14 +121,17 @@ function buildAuthHeaders(tokenKind) {
 // matching token (so the next mount/redirect knows the session is gone), and
 // dispatches a window event so a global listener can route to the login page.
 export async function authFetch(path, { tokenKind = "admin", headers = {}, ...init } = {}) {
-  const auth = buildAuthHeaders(tokenKind);
+  // On staff pages the default "admin" kind is transparently upgraded to "staff"
+  // so the copied admin pages use the staff token + route to the staff login.
+  const effectiveKind = tokenKind === "admin" && isStaffContext() ? "staff" : tokenKind;
+  const auth = buildAuthHeaders(effectiveKind);
   const finalHeaders = { ...headers, ...auth };
   const res = await resilientFetch(path, { ...init, headers: finalHeaders });
   if (res.status === 401) {
-    const key = TOKENS[tokenKind] || tokenKind;
+    const key = TOKENS[effectiveKind] || effectiveKind;
     if (key) localStorage.removeItem(key);
     if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent("auth:expired", { detail: { tokenKind } }));
+      window.dispatchEvent(new CustomEvent("auth:expired", { detail: { tokenKind: effectiveKind } }));
     }
   }
   return res;

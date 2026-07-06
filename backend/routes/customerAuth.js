@@ -15,15 +15,23 @@ const EMAIL_PROVIDER = String(process.env.EMAIL_PROVIDER || 'resend').trim().toL
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const resendFrom = process.env.RESEND_FROM || process.env.RESEND_FROM_EMAIL || 'Cellzen Trading <onboarding@resend.dev>';
 const smtpFrom = process.env.SMTP_FROM || process.env.SMTP_USER;
+const smtpPort = Number(process.env.SMTP_PORT || 587);
 const smtpTransporter = EMAIL_PROVIDER === 'smtp'
   ? nodemailer.createTransport({
       host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: String(process.env.SMTP_PORT) === '465',
+      port: smtpPort,
+      secure: smtpPort === 465,
+      requireTLS: smtpPort === 587,
       auth: {
         user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
+        // Strip whitespace — a Gmail App Password pasted with its display spaces
+        // ("abcd efgh ijkl mnop") otherwise fails authentication.
+        pass: String(process.env.SMTP_PASS || '').replace(/\s+/g, ''),
       },
+      connectionTimeout: 60000,
+      greetingTimeout: 30000,
+      socketTimeout: 90000,
+      tls: { rejectUnauthorized: false },
     })
   : null;
 
@@ -144,11 +152,14 @@ const createAndSendVerificationCode = async (user) => {
   user.emailVerificationExpiresAt = getVerificationExpiry();
   await user.save();
 
-  await sendVerificationEmail({
-    email: user.email,
-    code,
-    firstName: user.firstName,
-  });
+  // Fire-and-forget the email. The Gmail SMTP handshake can take many seconds
+  // (or stall on networks that throttle SMTP), so we must NOT block the HTTP
+  // response on it — otherwise the login button hangs on "Please wait..." and
+  // the code-entry screen never appears. Return as soon as the code is saved;
+  // the email is delivered in the background and the user can hit "Resend".
+  sendVerificationEmail({ email: user.email, code, firstName: user.firstName })
+    .then(() => console.log(`✅ Verification code emailed to ${user.email}`))
+    .catch((e) => console.error(`❌ Verification email failed for ${user.email}:`, e.message));
 };
 
 router.post('/register', async (req, res) => {
@@ -289,9 +300,9 @@ router.post('/verify-email', async (req, res) => {
       return res.status(400).json({ success: false, message: 'A valid email and 6-digit code are required' });
     }
 
-    const user = await User.findOne({ where: { email, role: 'customer' } });
+    const user = await User.findOne({ where: { email, role: { [Op.in]: ['customer', 'staff'] } } });
     if (!user) {
-      return res.status(404).json({ success: false, message: 'Customer account not found' });
+      return res.status(404).json({ success: false, message: 'Account not found' });
     }
 
     if (user.emailVerified) {
@@ -364,9 +375,9 @@ router.post('/resend-verification', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email is required' });
     }
 
-    const user = await User.findOne({ where: { email, role: 'customer' } });
+    const user = await User.findOne({ where: { email, role: { [Op.in]: ['customer', 'staff'] } } });
     if (!user) {
-      return res.status(404).json({ success: false, message: 'Customer account not found' });
+      return res.status(404).json({ success: false, message: 'Account not found' });
     }
 
     if (user.emailVerified) {
@@ -407,7 +418,8 @@ router.post('/login', async (req, res) => {
         ],
       },
     });
-    if (!user || user.role !== 'customer') {
+    // Both customers AND warehouse staff sign in through this page.
+    if (!user || !['customer', 'staff'].includes(user.role)) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
@@ -417,10 +429,15 @@ router.post('/login', async (req, res) => {
     }
 
     if (user.emailVerified === false) {
-      // If we can actually send a verification email, ask the user to verify.
-      // Otherwise auto-verify here so they're not locked out by a missing
-      // email service in this deploy.
+      // First-time sign in (or an unverified account): email a one-time code and
+      // ask the user to verify. If no email service is configured, auto-verify so
+      // nobody is locked out by a missing email deploy.
       if (isEmailServiceAvailable()) {
+        try {
+          await createAndSendVerificationCode(user);
+        } catch (codeErr) {
+          console.warn('Verification code send failed:', codeErr.message);
+        }
         return res.status(403).json({
           success: false,
           requiresEmailVerification: true,

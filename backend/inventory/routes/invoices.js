@@ -16,6 +16,19 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+// True when the authenticated user is a warehouse staff account (not an admin).
+const isStaff = (req) => String(req.user?.role || '').toLowerCase() === 'staff';
+
+// Allow admins AND staff. Staff are then scoped to invoices they own
+// (created_by_user_id = their id) inside each handler.
+const requireStaffOrAdmin = (req, res, next) => {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role === 'admin' || role === 'superadmin' || role === 'staff' || req.user?.accountType === 'Admin') {
+    return next();
+  }
+  return res.status(403).json({ success: false, message: 'Staff or admin access is required' });
+};
+
 const calculateInvoiceAmount = (invoiceData) => {
   const itemsTotal = (invoiceData.items || []).reduce((sum, item) => {
     const baseTotal = (Number(item.quantity) || 0) * (Number(item.unitPrice) || 0);
@@ -32,12 +45,14 @@ const calculateInvoiceAmount = (invoiceData) => {
 
 // GET / - List ALL invoices (admin only). Used by the admin invoices page so
 // every admin sees the same data on every device.
-router.get('/', authenticate, requireAdmin, async (req, res) => {
+router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
     }
+    const where = isStaff(req) ? { created_by_user_id: req.user.id } : undefined;
     const invoices = await Invoice.findAll({
+      where,
       order: [['updatedAt', 'DESC']],
       limit: 1000,
     });
@@ -61,7 +76,7 @@ router.get('/', authenticate, requireAdmin, async (req, res) => {
 //     number is always (highest existing sequence + 1).
 // The DB is the source of truth so all admins / devices agree, regardless of
 // localStorage state.
-router.get('/next-number', authenticate, requireAdmin, async (req, res) => {
+router.get('/next-number', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
@@ -98,7 +113,7 @@ router.get('/next-number', authenticate, requireAdmin, async (req, res) => {
 //
 // Uses Postgres UPSERT (INSERT ... ON CONFLICT DO UPDATE) — one round-trip,
 // versus the old findOrCreate + update which needed 2-3.
-router.post('/', authenticate, requireAdmin, async (req, res) => {
+router.post('/', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
@@ -106,6 +121,13 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
     const invoice = req.body?.invoice || req.body;
     if (!invoice?.invoiceNumber) {
       return res.status(400).json({ success: false, message: 'Invoice number is required' });
+    }
+
+    // Ownership check: a staff member may only create new invoices or edit their
+    // own. Editing another user's (or admin's) invoice is forbidden.
+    const existing = await Invoice.findOne({ where: { invoice_number: invoice.invoiceNumber } });
+    if (isStaff(req) && existing && existing.created_by_user_id && existing.created_by_user_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'You can only edit invoices you created' });
     }
 
     const amount = calculateInvoiceAmount(invoice);
@@ -119,6 +141,13 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
       invoice_date: invoice.invoiceDate || null,
       invoice_data: invoice,
     };
+
+    // Stamp the owner on first creation (or backfill a legacy row missing one).
+    // On a later edit we omit these fields so the original owner is preserved.
+    if (!existing || !existing.created_by_user_id) {
+      payload.created_by_user_id = req.user.id;
+      payload.created_by_name = req.user.name || null;
+    }
 
     // Caller may explicitly include sharedUserId — even null/empty to unshare.
     // If they don't include the field at all, leave whatever's already on the row.
@@ -139,7 +168,7 @@ router.post('/', authenticate, requireAdmin, async (req, res) => {
 // Single UPSERT round-trip; no User lookup (caller already validated the
 // recipient client-side, and the shared_user_id column is just a UUID stored
 // for the /shared lookup — we don't need to JOIN on User here).
-router.post('/share', authenticate, requireAdmin, async (req, res) => {
+router.post('/share', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
@@ -152,8 +181,16 @@ router.post('/share', authenticate, requireAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invoice number is required' });
     }
 
+    // Staff may only share/unshare their own invoices.
+    const existingShare = await Invoice.findOne({ where: { invoice_number: invoiceNumber } });
+    if (isStaff(req) && existingShare && existingShare.created_by_user_id && existingShare.created_by_user_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'You can only share invoices you created' });
+    }
+
     if (!sharedUserId) {
-      await Invoice.destroy({ where: { invoice_number: invoiceNumber } });
+      const destroyWhere = { invoice_number: invoiceNumber };
+      if (isStaff(req)) destroyWhere.created_by_user_id = req.user.id;
+      await Invoice.destroy({ where: destroyWhere });
       return res.json({ success: true, message: 'Invoice sharing removed' });
     }
 
@@ -170,6 +207,12 @@ router.post('/share', authenticate, requireAdmin, async (req, res) => {
       invoice_date: invoice.invoiceDate || null,
       invoice_data: invoice,
     };
+
+    // Preserve/stamp ownership so a shared invoice still belongs to its creator.
+    if (!existingShare || !existingShare.created_by_user_id) {
+      invoicePayload.created_by_user_id = req.user.id;
+      invoicePayload.created_by_name = req.user.name || null;
+    }
 
     const [savedInvoice] = await Invoice.upsert(invoicePayload, { returning: true });
 
@@ -212,13 +255,15 @@ router.get('/shared', authenticate, async (req, res) => {
   }
 });
 
-// DELETE /:invoiceNumber (admin only)
-router.delete('/:invoiceNumber', authenticate, requireAdmin, async (req, res) => {
+// DELETE /:invoiceNumber — admins delete any; staff only their own.
+router.delete('/:invoiceNumber', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
     }
-    const removed = await Invoice.destroy({ where: { invoice_number: req.params.invoiceNumber } });
+    const where = { invoice_number: req.params.invoiceNumber };
+    if (isStaff(req)) where.created_by_user_id = req.user.id;
+    const removed = await Invoice.destroy({ where });
     res.json({ success: true, removed });
   } catch (error) {
     console.error('Delete invoice error:', error);
@@ -230,7 +275,7 @@ router.delete('/:invoiceNumber', authenticate, requireAdmin, async (req, res) =>
 // customer. The admin authors the subject/body in the dashboard; the PDF is
 // generated client-side and sent here as base64. On success we mark the
 // invoice "Sent" and stamp an audit trail into invoice_data (no migration).
-router.post('/:invoiceNumber/send-email', authenticate, requireAdmin, async (req, res) => {
+router.post('/:invoiceNumber/send-email', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
@@ -247,7 +292,9 @@ router.post('/:invoiceNumber/send-email', authenticate, requireAdmin, async (req
       return res.status(400).json({ success: false, message: 'Invoice PDF attachment is missing' });
     }
 
-    const invoice = await Invoice.findOne({ where: { invoice_number: invoiceNumber } });
+    const emailWhere = { invoice_number: invoiceNumber };
+    if (isStaff(req)) emailWhere.created_by_user_id = req.user.id;
+    const invoice = await Invoice.findOne({ where: emailWhere });
     if (!invoice) {
       return res.status(404).json({ success: false, message: 'Invoice not found' });
     }
@@ -291,13 +338,45 @@ router.post('/:invoiceNumber/send-email', authenticate, requireAdmin, async (req
   }
 });
 
-// GET /:invoiceNumber (admin only) — fetch one invoice for the editor
-router.get('/:invoiceNumber', authenticate, requireAdmin, async (req, res) => {
+// GET /:invoiceNumber/items — line items only (name/image/quantity), used by the
+// Packing List "Load PI". NOT owner-scoped: any staff/admin can read the product
+// list of a company PI for packing, even one they didn't create. Exposes ONLY
+// product name/image/quantity/weight/cbm — no pricing, customer, or full data.
+// Case-insensitive number match. Declared before GET /:invoiceNumber (distinct path).
+router.get('/:invoiceNumber/items', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
     }
-    const invoice = await Invoice.findOne({ where: { invoice_number: req.params.invoiceNumber } });
+    const invoice = await Invoice.findOne({
+      where: { invoice_number: { [Op.iLike]: String(req.params.invoiceNumber).trim() } },
+    });
+    if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
+    const rawItems = Array.isArray(invoice.invoice_data?.items) ? invoice.invoice_data.items : [];
+    const data = rawItems.map((it) => ({
+      productName: it.productName || it.product || '',
+      productImage: it.productImage || it.image || '',
+      quantity: Number(it.quantity) || 1,
+      weight: it.weight || '',
+      cbm: it.cbm || '',
+    }));
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, count: data.length, data });
+  } catch (error) {
+    console.error('Get invoice items error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load invoice items' });
+  }
+});
+
+// GET /:invoiceNumber — fetch one invoice for the editor. Staff only their own.
+router.get('/:invoiceNumber', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (!Invoice) {
+      return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
+    }
+    const oneWhere = { invoice_number: req.params.invoiceNumber };
+    if (isStaff(req)) oneWhere.created_by_user_id = req.user.id;
+    const invoice = await Invoice.findOne({ where: oneWhere });
     if (!invoice) return res.status(404).json({ success: false, message: 'Invoice not found' });
     res.json({ success: true, data: invoice });
   } catch (error) {

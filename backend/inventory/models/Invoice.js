@@ -21,6 +21,17 @@ const Invoice = sequelize
         type: DataTypes.STRING,
         allowNull: true,
       },
+      // Ownership stamp: the staff/admin user who created this invoice. NULL on
+      // legacy rows = treated as admin-owned. Staff queries are forced to filter
+      // on this; admins see everything and use created_by_name for attribution.
+      created_by_user_id: {
+        type: DataTypes.UUID,
+        allowNull: true,
+      },
+      created_by_name: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
       customer_name: {
         type: DataTypes.STRING,
         allowNull: true,
@@ -56,6 +67,10 @@ const Invoice = sequelize
     }, {
       tableName: 'invoices',
       timestamps: true,
+      indexes: [
+        { fields: ['created_by_user_id'] },
+        { fields: ['shared_user_id'] },
+      ],
     })
   : null;
 

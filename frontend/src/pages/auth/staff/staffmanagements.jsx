@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import AdminPageShell from "./AdminPageShell";
+import StaffPageShell from "./StaffPageShell";
 
 const API_URL = import.meta.env.VITE_API_URL
   || (import.meta.env.PROD ? `${window.location.origin}/api` : "http://localhost:5300/api");
@@ -10,19 +10,24 @@ const CATEGORIES = [
   { key: "suppliers", label: "Suppliers" },
   { key: "partners", label: "Partners" },
   { key: "logistics", label: "Logistics" },
-  { key: "staff", label: "Staff" },
 ];
 
+// accountType stored on the user record when a staff member enrols someone of
+// the active category. The backend GET /users filter matches on these.
+const ACCOUNT_TYPE_BY_KEY = {
+  distributors: "Distributor",
+  customers: "Customer",
+  suppliers: "Supplier",
+  partners: "Partner",
+  logistics: "Logistics",
+};
+
 const buildAuthHeaders = (extra = {}) => ({
-  Authorization: `Bearer ${localStorage.getItem("inv_token") || ""}`,
+  Authorization: `Bearer ${localStorage.getItem("staff_token") || ""}`,
   ...extra,
 });
 
-// The Staff category is backed by a different endpoint (/inventory/auth/staff)
-// than the customer-side categories (/inventory/auth/users?type=...).
-const isStaffCategory = (key) => key === "staff";
-
-export default function AdminManagements() {
+export default function StaffManagements() {
   const [activeKey, setActiveKey] = useState(CATEGORIES[0].key);
   const [usersByCategory, setUsersByCategory] = useState({});
   const [loading, setLoading] = useState(false);
@@ -38,7 +43,7 @@ export default function AdminManagements() {
   const [noticeMessage, setNoticeMessage] = useState("");
   const [sendingNotice, setSendingNotice] = useState(false);
 
-  // Create staff account (admin only — shown on the Staff tab).
+  // Create (enrol) a new person under the active category — staff-owned.
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm, setCreateForm] = useState({ name: "", email: "", password: "", phone: "", country: "" });
   const [creating, setCreating] = useState(false);
@@ -54,10 +59,10 @@ export default function AdminManagements() {
     setError("");
 
     try {
-      const url = isStaffCategory(key)
-        ? `${API_URL}/inventory/auth/staff`
-        : `${API_URL}/inventory/auth/users?type=${encodeURIComponent(key)}`;
-      const response = await fetch(url, { headers: buildAuthHeaders() });
+      const response = await fetch(
+        `${API_URL}/inventory/auth/users?type=${encodeURIComponent(key)}`,
+        { headers: buildAuthHeaders() }
+      );
       const data = await response.json();
 
       if (!response.ok) {
@@ -99,10 +104,10 @@ export default function AdminManagements() {
     setError("");
 
     try {
-      const base = isStaffCategory(activeKey)
-        ? `${API_URL}/inventory/auth/staff/${deleteTarget.id}`
-        : `${API_URL}/inventory/auth/users/${deleteTarget.id}`;
-      const response = await fetch(base, { method: "DELETE", headers: buildAuthHeaders() });
+      const response = await fetch(
+        `${API_URL}/inventory/auth/users/${deleteTarget.id}`,
+        { method: "DELETE", headers: buildAuthHeaders() }
+      );
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -187,14 +192,14 @@ export default function AdminManagements() {
     setError("");
 
     try {
-      const editUrl = isStaffCategory(activeKey)
-        ? `${API_URL}/inventory/auth/staff/${editTarget.id}`
-        : `${API_URL}/inventory/auth/users/${editTarget.id}`;
-      const response = await fetch(editUrl, {
-        method: "PUT",
-        headers: buildAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(editForm),
-      });
+      const response = await fetch(
+        `${API_URL}/inventory/auth/users/${editTarget.id}`,
+        {
+          method: "PUT",
+          headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+          body: JSON.stringify(editForm),
+        }
+      );
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -240,18 +245,21 @@ export default function AdminManagements() {
     setError("");
 
     try {
-      const response = await fetch(`${API_URL}/inventory/auth/staff`, {
+      const response = await fetch(`${API_URL}/inventory/auth/users`, {
         method: "POST",
         headers: buildAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify(createForm),
+        body: JSON.stringify({
+          ...createForm,
+          accountType: ACCOUNT_TYPE_BY_KEY[activeKey] || "Customer",
+        }),
       });
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(data.message || "Unable to create staff account");
+        throw new Error(data.message || "Unable to create record");
       }
 
-      setFeedback(`${createForm.name || createForm.email} has been added as staff.`);
+      setFeedback(`${createForm.name || createForm.email} has been added to ${activeCategory.label}.`);
       setCreateOpen(false);
       await loadUsers(activeKey);
     } catch (createError) {
@@ -262,7 +270,7 @@ export default function AdminManagements() {
   };
 
   return (
-    <AdminPageShell activePage="Management" title="Management" eyebrow="Cellzen Operations Control">
+    <StaffPageShell activePage="Management" title="Management" eyebrow="Cellzen Operations Control">
       <div className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
         <div className="flex flex-wrap gap-2">
           {CATEGORIES.map((category) => {
@@ -295,15 +303,13 @@ export default function AdminManagements() {
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#2D2D2D]/45">
               {loading ? "Loading..." : `${users.length} ${users.length === 1 ? "record" : "records"}`}
             </p>
-            {isStaffCategory(activeKey) && (
-              <button
-                type="button"
-                onClick={openCreate}
-                className="rounded-full bg-[#412460] px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#B99353]"
-              >
-                + Add Staff
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={openCreate}
+              className="rounded-full bg-[#412460] px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#B99353]"
+            >
+              + Add {activeCategory.label.replace(/s$/, "")}
+            </button>
           </div>
         </div>
 
@@ -461,7 +467,6 @@ export default function AdminManagements() {
               </label>
             </div>
 
-            {!isStaffCategory(activeKey) && (
             <div className="mt-6 rounded-2xl border border-[#E1E3EE] bg-[#F7F6F2] p-4">
               <div className="flex items-baseline justify-between gap-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#412460]">
@@ -489,7 +494,6 @@ export default function AdminManagements() {
                 </button>
               </div>
             </div>
-            )}
 
             <div className="mt-6 flex justify-end gap-3">
               <button
@@ -518,9 +522,11 @@ export default function AdminManagements() {
             onSubmit={submitCreate}
             className="w-full max-w-lg rounded-[2rem] bg-white p-6 shadow-2xl"
           >
-            <h3 className="text-lg font-semibold text-[#412460]">Add Staff Account</h3>
+            <h3 className="text-lg font-semibold text-[#412460]">
+              Add {activeCategory.label.replace(/s$/, "")}
+            </h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              Create a warehouse staff login. They sign in at the staff portal and see only their own data.
+              Create a new {activeCategory.label.toLowerCase().replace(/s$/, "")} account. It will appear only in your list.
             </p>
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -617,12 +623,12 @@ export default function AdminManagements() {
                 disabled={creating}
                 className="rounded-full bg-[#412460] px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-[#B99353] disabled:opacity-60"
               >
-                {creating ? "Creating..." : "Create Staff"}
+                {creating ? "Creating..." : "Create"}
               </button>
             </div>
           </form>
         </div>
       )}
-    </AdminPageShell>
+    </StaffPageShell>
   );
 }

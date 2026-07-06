@@ -46,7 +46,29 @@ const COUNTRIES = [
 export default function AdminSettings() {
   const [activeModal, setActiveModal] = useState(null);
   const [activeTab, setActiveTab] = useState("add"); // for transport modal tabs
-  const { exchangeRates, updateExchangeRates, formatCurrency, currency, currencySymbols, convertToUSD, convertFromUSD } = useCurrency();
+  const { exchangeRates, updateExchangeRates, formatCurrency, currency, currencySymbols } = useCurrency();
+
+  // Convert a value between two currencies via the active exchange rates.
+  // Same currency returns the value unchanged (no rounding/drift).
+  const convertRateCurrency = (value, fromCurr, toCurr) => {
+    if (value == null || value === "" || isNaN(value)) return 0;
+    if (fromCurr === toCurr) return parseFloat(value);
+    const f = (exchangeRates && exchangeRates[fromCurr]) || 1;
+    const t = (exchangeRates && exchangeRates[toCurr]) || 1;
+    return (parseFloat(value) / f) * t;
+  };
+
+  // Format a transport rate in the currency it was entered in, so the saved
+  // value is shown exactly as typed. Legacy rows (no rateCurrency) were stored
+  // in USD — convert those to the active display currency as before.
+  const formatRate = (value, rateCurrency) => {
+    if (value == null || value === "" || isNaN(value)) return "—";
+    if (rateCurrency) {
+      const sym = currencySymbols[rateCurrency] || "";
+      return `${sym} ${parseFloat(value).toFixed(2)}`;
+    }
+    return formatCurrency(value);
+  };
 
   // State for transport form
   const [transportForm, setTransportForm] = useState({
@@ -92,16 +114,19 @@ export default function AdminSettings() {
 
   const handleEditRate = (rate) => {
     setEditingRateId(rate.id);
-    // Convert USD rate to display currency for editing
-    const rateInDisplayCurrency = convertFromUSD(rate.rate, currency);
-    setEditRateForm({ ...rate, rate: rateInDisplayCurrency });
+    // Show the rate in the currency it was entered in. Legacy rows (no
+    // rateCurrency) were stored in USD, so convert those to the display currency.
+    const rateCurr = rate.rateCurrency || "USD";
+    const shown = rateCurr === currency ? rate.rate : convertRateCurrency(rate.rate, rateCurr, currency);
+    setEditRateForm({ ...rate, rate: shown, rateCurrency: currency });
   };
 
   const handleUpdateRate = async () => {
-    const rateInUSD = convertToUSD(editRateForm.rate, currency);
+    // Store the raw typed value tagged with the currency it was entered in.
+    const rateValue = parseFloat(editRateForm.rate) || 0;
     const previous = savedTransportRates;
     const optimistic = savedTransportRates.map((rate) =>
-      rate.id === editingRateId ? { ...rate, ...editRateForm, rate: rateInUSD } : rate
+      rate.id === editingRateId ? { ...rate, ...editRateForm, rate: rateValue, rateCurrency: currency } : rate
     );
     setSavedTransportRates(optimistic);
     setEditingRateId(null);
@@ -115,8 +140,9 @@ export default function AdminSettings() {
           method: editRateForm.method,
           from: editRateForm.from,
           to: editRateForm.to,
-          rate: rateInUSD,
+          rate: rateValue,
           unit: editRateForm.unit,
+          rateCurrency: currency,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -318,20 +344,26 @@ export default function AdminSettings() {
       date: new Date().toISOString().split("T")[0],
     };
 
+    // Store the raw typed values plus the currency they were entered in. We no
+    // longer convert to USD — that round-trip made saved rates drift whenever the
+    // exchange rate changed. rateCurrency lets the rate be shown and calculated
+    // in exactly the currency entered.
     let payload;
     if (borderCrossingSelected) {
       payload = {
         ...base,
-        rateKg: transportForm.rateKg ? convertToUSD(transportForm.rateKg, currency) : null,
-        rateCBM: transportForm.rateCBM ? convertToUSD(transportForm.rateCBM, currency) : null,
-        rateBorder: transportForm.rateBorder ? convertToUSD(transportForm.rateBorder, currency) : null,
+        rateKg: transportForm.rateKg ? parseFloat(transportForm.rateKg) : null,
+        rateCBM: transportForm.rateCBM ? parseFloat(transportForm.rateCBM) : null,
+        rateBorder: transportForm.rateBorder ? parseFloat(transportForm.rateBorder) : null,
         unitBorder: "cbm",
+        rateCurrency: currency,
       };
     } else {
       payload = {
         ...base,
-        rate: convertToUSD(transportForm.rate, currency),
+        rate: parseFloat(transportForm.rate),
         unit: transportForm.unit,
+        rateCurrency: currency,
       };
     }
 
@@ -762,17 +794,17 @@ export default function AdminSettings() {
                               <div className="mt-1 space-y-0.5">
                                 <div className="text-xs text-[#412460] font-semibold">
                                   China → {borderCrossingLabels[rate.method] || rate.method}:{" "}
-                                  {rate.rateKg ? `${formatCurrency(rate.rateKg)}/kg` : "—"}{" "}|{" "}
-                                  {rate.rateCBM ? `${formatCurrency(rate.rateCBM)}/CBM` : "—"}
+                                  {rate.rateKg ? `${formatRate(rate.rateKg, rate.rateCurrency)}/kg` : "—"}{" "}|{" "}
+                                  {rate.rateCBM ? `${formatRate(rate.rateCBM, rate.rateCurrency)}/CBM` : "—"}
                                   <span className="text-[#2D2D2D]/40 font-normal ml-1">(higher applied)</span>
                                 </div>
                                 <div className="text-xs text-[#412460] font-semibold">
-                                  {borderCrossingLabels[rate.method] || rate.method} → Nepal: {formatCurrency(rate.rateBorder)} / CBM
+                                  {borderCrossingLabels[rate.method] || rate.method} → Nepal: {formatRate(rate.rateBorder, rate.rateCurrency)} / CBM
                                 </div>
                               </div>
                             ) : (
                               <div className="text-sm text-[#412460] font-semibold mt-1">
-                                {formatCurrency(rate.rate)} / {rate.unit}
+                                {formatRate(rate.rate, rate.rateCurrency)} / {rate.unit}
                               </div>
                             )}
                           </>

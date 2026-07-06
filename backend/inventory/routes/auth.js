@@ -1,10 +1,20 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { Op } = require('sequelize');
 const { User, UserNotice } = require('../models');
-const { authenticate, generateToken } = require('../middleware/auth');
+const { authenticate, generateToken, invalidateUserCache, JWT_SECRET } = require('../middleware/auth');
+const { sendVerificationCodeEmail } = require('../../services/emailService');
 
 const router = express.Router();
+
+// First-login email verification for staff accounts.
+const VERIFY_CODE_EXPIRY_MIN = 10;
+const generateCode = () => String(crypto.randomInt(100000, 1000000));
+const hashCode = (email, code) => crypto
+  .createHmac('sha256', JWT_SECRET)
+  .update(`${String(email || '').toLowerCase()}:${code}`)
+  .digest('hex');
 
 // In-memory cache for admin user records — admin emails are hardcoded and
 // rarely change at runtime, so we can skip the DB roundtrip on repeat logins.
@@ -80,6 +90,33 @@ const requireAdmin = (req, res, next) => {
   }
   next();
 };
+
+// True when the authenticated user is a warehouse staff account (not an admin).
+const isStaff = (req) => String(req.user?.role || '').toLowerCase() === 'staff';
+
+// Allow admins AND staff. Staff-scoped endpoints further restrict the data set
+// to rows the staff member owns (created_by_user_id = their id).
+const requireStaffOrAdmin = (req, res, next) => {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role === 'admin' || role === 'superadmin' || role === 'staff' || req.user?.accountType === 'Admin') {
+    return next();
+  }
+  return res.status(403).json({ success: false, message: 'Staff or admin access is required' });
+};
+
+const buildStaffPayload = (user) => ({
+  id: user.id,
+  name: user.name,
+  firstName: user.firstName,
+  lastName: user.lastName,
+  username: user.username,
+  email: user.email,
+  phone: user.phone,
+  country: user.country,
+  role: user.role,
+  accountType: user.accountType,
+  createdAt: user.createdAt,
+});
 
 // POST /admin-login
 router.post('/admin-login', async (req, res) => {
@@ -213,13 +250,17 @@ router.post('/register', async (req, res) => {
 // POST /login
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const rawEmail = String(req.body?.email || '').trim();
+    // Tolerate copy/paste whitespace around the password (Gmail-style spaces,
+    // trailing newlines) without altering an intentional internal space.
+    const password = String(req.body?.password || '').replace(/^\s+|\s+$/g, '');
 
-    if (!email || !password) {
+    if (!rawEmail || !password) {
       return res.status(400).json({ success: false, message: 'Email and password are required' });
     }
 
-    const user = await User.findOne({ where: { email } });
+    // Case-insensitive email match so "Staff@x.com" logs in as "staff@x.com".
+    const user = await User.findOne({ where: { email: { [Op.iLike]: rawEmail } } });
     if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
@@ -227,6 +268,32 @@ router.post('/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
+    }
+
+    // First-login gate for staff: email a one-time code and DON'T issue a token
+    // yet. The client then calls /verify-login with the code. After the first
+    // successful verification, emailVerified stays true and it's password-only.
+    if (String(user.role).toLowerCase() === 'staff' && !user.emailVerified) {
+      const code = generateCode();
+      await user.update({
+        emailVerificationCodeHash: hashCode(user.email, code),
+        emailVerificationExpiresAt: new Date(Date.now() + VERIFY_CODE_EXPIRY_MIN * 60 * 1000),
+      });
+      invalidateUserCache(user.id);
+
+      try {
+        await sendVerificationCodeEmail({ to: user.email, code, name: user.name, expiryMinutes: VERIFY_CODE_EXPIRY_MIN });
+      } catch (mailErr) {
+        console.error('Staff verification email failed:', mailErr.message);
+        return res.status(502).json({ success: false, message: 'Could not send the verification code email. Please try again or contact your admin.' });
+      }
+
+      return res.json({
+        success: true,
+        requiresVerification: true,
+        email: user.email,
+        message: 'A verification code has been sent to your email.',
+      });
     }
 
     const token = generateToken(user);
@@ -239,6 +306,50 @@ router.post('/login', async (req, res) => {
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ success: false, message: 'Login failed' });
+  }
+});
+
+// POST /verify-login - Complete a staff member's FIRST login by confirming the
+// emailed one-time code. On success the account is marked verified and a token
+// is issued; subsequent logins skip this step.
+router.post('/verify-login', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim();
+    const code = String(req.body?.code || '').trim();
+    if (!email || !code) {
+      return res.status(400).json({ success: false, message: 'Email and code are required' });
+    }
+
+    const user = await User.findOne({ where: { email: { [Op.iLike]: email } } });
+    if (!user || String(user.role).toLowerCase() !== 'staff') {
+      return res.status(401).json({ success: false, message: 'Invalid verification request' });
+    }
+    if (!user.emailVerificationCodeHash || !user.emailVerificationExpiresAt) {
+      return res.status(400).json({ success: false, message: 'No pending verification. Please sign in again.' });
+    }
+    if (new Date() > new Date(user.emailVerificationExpiresAt)) {
+      return res.status(400).json({ success: false, message: 'The code has expired. Please sign in again to get a new code.' });
+    }
+    if (hashCode(user.email, code) !== user.emailVerificationCodeHash) {
+      return res.status(401).json({ success: false, message: 'Incorrect verification code' });
+    }
+
+    await user.update({
+      emailVerified: true,
+      emailVerificationCodeHash: null,
+      emailVerificationExpiresAt: null,
+    });
+    invalidateUserCache(user.id);
+
+    const token = generateToken(user);
+    res.json({
+      success: true,
+      token,
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+    });
+  } catch (error) {
+    console.error('Verify login error:', error);
+    res.status(500).json({ success: false, message: 'Verification failed' });
   }
 });
 
@@ -355,8 +466,10 @@ router.post('/approval-requests/:id/approve', authenticate, requireAdmin, async 
   }
 });
 
-// GET /users - Fetch users by account type (for invoices/share dropdown)
-router.get('/users', authenticate, requireAdmin, async (req, res) => {
+// GET /users - Fetch users by account type (for invoices/share dropdown).
+// Admins see every customer; staff see only the customers they enrolled
+// (created_by_user_id = their own id).
+router.get('/users', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!User) {
       return res.status(503).json({ success: false, message: 'User database is not configured' });
@@ -364,10 +477,13 @@ router.get('/users', authenticate, requireAdmin, async (req, res) => {
 
     const { type } = req.query;
 
+    const where = { role: 'customer' };
+    if (isStaff(req)) where.created_by_user_id = req.user.id;
+
     // Fetch all customers and filter by type in JavaScript
     // This is more reliable than complex SQL patterns
     const users = await User.findAll({
-      where: { role: 'customer' },
+      where,
       attributes: ['id', 'name', 'email', 'accountType', 'phone', 'country'],
       order: [['name', 'ASC']],
     });
@@ -410,13 +526,15 @@ router.get('/users', authenticate, requireAdmin, async (req, res) => {
 });
 
 // PUT /users/:id - Update a user's editable fields
-router.put('/users/:id', authenticate, requireAdmin, async (req, res) => {
+router.put('/users/:id', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!User) {
       return res.status(503).json({ success: false, message: 'User database is not configured' });
     }
 
-    const user = await User.findOne({ where: { id: req.params.id, role: 'customer' } });
+    const where = { id: req.params.id, role: 'customer' };
+    if (isStaff(req)) where.created_by_user_id = req.user.id;
+    const user = await User.findOne({ where });
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -462,8 +580,8 @@ router.put('/users/:id', authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-// POST /users/:id/notices - Admin sends a personal notice to a single user
-router.post('/users/:id/notices', authenticate, requireAdmin, async (req, res) => {
+// POST /users/:id/notices - Admin/staff sends a personal notice to a single user
+router.post('/users/:id/notices', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!UserNotice) {
       return res.status(503).json({ success: false, message: 'Notice store is not configured' });
@@ -474,7 +592,9 @@ router.post('/users/:id/notices', authenticate, requireAdmin, async (req, res) =
       return res.status(400).json({ success: false, message: 'Message is required' });
     }
 
-    const user = await User.findOne({ where: { id: req.params.id, role: 'customer' } });
+    const where = { id: req.params.id, role: 'customer' };
+    if (isStaff(req)) where.created_by_user_id = req.user.id;
+    const user = await User.findOne({ where });
     if (!user) {
       return res.status(404).json({ success: false, message: 'Recipient user not found' });
     }
@@ -562,13 +682,15 @@ router.post('/me/notices/:id/read', authenticate, async (req, res) => {
 });
 
 // DELETE /users/:id - Delete a registered customer-side user
-router.delete('/users/:id', authenticate, requireAdmin, async (req, res) => {
+router.delete('/users/:id', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!User) {
       return res.status(503).json({ success: false, message: 'User database is not configured' });
     }
 
-    const user = await User.findOne({ where: { id: req.params.id, role: 'customer' } });
+    const where = { id: req.params.id, role: 'customer' };
+    if (isStaff(req)) where.created_by_user_id = req.user.id;
+    const user = await User.findOne({ where });
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
@@ -579,6 +701,201 @@ router.delete('/users/:id', authenticate, requireAdmin, async (req, res) => {
   } catch (error) {
     console.error('Delete user error:', error);
     res.status(500).json({ success: false, message: 'Unable to delete user' });
+  }
+});
+
+// POST /users - Create a customer-side user. Admins create unowned customers;
+// staff create customers stamped with their own id so they appear only in that
+// staff member's Management list (and the admin's full list).
+router.post('/users', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+
+    const { name, email, password, phone, country, accountType } = req.body || {};
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, message: 'Name, email, and password are required' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    }
+
+    const existing = await User.findOne({ where: { email } });
+    if (existing) {
+      return res.status(409).json({ success: false, message: 'Email already registered' });
+    }
+
+    const hashedPassword = await bcrypt.hash(String(password).replace(/^\s+|\s+$/g, ''), 10);
+    const trimmedName = String(name).trim();
+
+    const user = await User.create({
+      name: trimmedName,
+      firstName: trimmedName.split(' ')[0],
+      lastName: trimmedName.split(' ').slice(1).join(' ') || null,
+      email: String(email).trim().toLowerCase(),
+      password: hashedPassword,
+      role: 'customer',
+      accountType: accountType || 'Customer',
+      phone: phone || null,
+      country: country || null,
+      emailVerified: true,
+      accountApprovalStatus: 'approved',
+      // Stamp ownership when a staff member enrolls the customer.
+      created_by_user_id: isStaff(req) ? req.user.id : null,
+      created_by_name: isStaff(req) ? (req.user.name || null) : null,
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Customer created',
+      data: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        accountType: user.accountType,
+        phone: user.phone,
+        country: user.country,
+      },
+    });
+  } catch (error) {
+    console.error('Create customer error:', error);
+    res.status(500).json({ success: false, message: 'Unable to create customer' });
+  }
+});
+
+// ───────────────────────── Staff account management (admin only) ─────────────
+// Admins create/list/update/delete warehouse staff accounts. Staff log in via
+// the standard POST /login (bcrypt) and receive role 'staff'.
+
+// GET /staff - list all staff accounts
+router.get('/staff', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+    const staff = await User.findAll({
+      where: { role: 'staff' },
+      attributes: ['id', 'name', 'firstName', 'lastName', 'username', 'email', 'phone', 'country', 'role', 'accountType', 'createdAt'],
+      order: [['name', 'ASC']],
+    });
+    res.json({ success: true, count: staff.length, data: staff.map(buildStaffPayload) });
+  } catch (error) {
+    console.error('List staff error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load staff' });
+  }
+});
+
+// POST /staff - create a staff account
+router.post('/staff', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+
+    const { name, email, password, phone, country } = req.body || {};
+    if (!name || !email || !password) {
+      return res.status(400).json({ success: false, message: 'Name, email, and password are required' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+    }
+
+    const existing = await User.findOne({ where: { email } });
+    if (existing) {
+      return res.status(409).json({ success: false, message: 'Email already registered' });
+    }
+
+    const hashedPassword = await bcrypt.hash(String(password).replace(/^\s+|\s+$/g, ''), 10);
+    const trimmedName = String(name).trim();
+
+    const user = await User.create({
+      name: trimmedName,
+      firstName: trimmedName.split(' ')[0],
+      lastName: trimmedName.split(' ').slice(1).join(' ') || null,
+      email: String(email).trim().toLowerCase(),
+      password: hashedPassword,
+      role: 'staff',
+      accountType: 'Staff',
+      phone: phone || null,
+      country: country || null,
+      // Unverified on purpose: the staff member must confirm a one-time code
+      // emailed to them on their FIRST login. After that it's password-only.
+      emailVerified: false,
+      accountApprovalStatus: 'approved',
+    });
+
+    res.status(201).json({ success: true, message: 'Staff account created', data: buildStaffPayload(user) });
+  } catch (error) {
+    console.error('Create staff error:', error);
+    res.status(500).json({ success: false, message: 'Unable to create staff account' });
+  }
+});
+
+// PUT /staff/:id - update a staff account (optionally reset password)
+router.put('/staff/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+    const user = await User.findOne({ where: { id: req.params.id, role: 'staff' } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Staff account not found' });
+    }
+
+    const { name, email, phone, country, password } = req.body || {};
+    const updates = {};
+    if (typeof name === 'string') {
+      updates.name = name.trim();
+      updates.firstName = updates.name.split(' ')[0];
+      updates.lastName = updates.name.split(' ').slice(1).join(' ') || null;
+    }
+    if (typeof phone === 'string') updates.phone = phone;
+    if (typeof country === 'string') updates.country = country;
+    if (typeof email === 'string' && email.trim() && email.trim() !== user.email) {
+      const taken = await User.findOne({ where: { email: email.trim() } });
+      if (taken && taken.id !== user.id) {
+        return res.status(409).json({ success: false, message: 'Email is already in use' });
+      }
+      updates.email = email.trim();
+    }
+    if (typeof password === 'string' && password) {
+      if (password.length < 6) {
+        return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+      }
+      updates.password = await bcrypt.hash(password, 10);
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ success: false, message: 'No editable fields provided' });
+    }
+
+    await user.update(updates);
+    invalidateUserCache(user.id);
+
+    res.json({ success: true, message: 'Staff account updated', data: buildStaffPayload(user) });
+  } catch (error) {
+    console.error('Update staff error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update staff account' });
+  }
+});
+
+// DELETE /staff/:id - remove a staff account
+router.delete('/staff/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (!User) {
+      return res.status(503).json({ success: false, message: 'User database is not configured' });
+    }
+    const user = await User.findOne({ where: { id: req.params.id, role: 'staff' } });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Staff account not found' });
+    }
+    await user.destroy();
+    invalidateUserCache(user.id);
+    res.json({ success: true, message: 'Staff account deleted' });
+  } catch (error) {
+    console.error('Delete staff error:', error);
+    res.status(500).json({ success: false, message: 'Unable to delete staff account' });
   }
 });
 

@@ -59,6 +59,15 @@ const TransportRate = sequelize
         allowNull: true,
         field: 'unit_border',
       },
+      // Currency the rate values were entered in (e.g. 'CNY', 'NPR', 'USD').
+      // Stored so the rate is shown/calculated in exactly the currency typed and
+      // never drifts when the USD exchange rate is later changed. Null on legacy
+      // rows, which were stored in USD and are still read back as USD.
+      rateCurrency: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        field: 'rate_currency',
+      },
       effectiveDate: {
         type: DataTypes.DATEONLY,
         allowNull: true,

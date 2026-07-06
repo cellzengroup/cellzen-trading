@@ -8,6 +8,7 @@ const Invoice = require('./Invoice');
 const UserNotice = require('./UserNotice');
 const AppSetting = require('./AppSetting');
 const TransportRate = require('./TransportRate');
+const PackingList = require('./PackingList');
 
 if (sequelize) {
   // Product <-> Inventory
@@ -36,9 +37,21 @@ if (sequelize) {
   User.hasMany(Invoice, { foreignKey: 'shared_user_id', as: 'sharedInvoices' });
   Invoice.belongsTo(User, { foreignKey: 'shared_user_id', as: 'sharedUser' });
 
+  // User (staff) <-> Invoice ownership (who created the invoice)
+  User.hasMany(Invoice, { foreignKey: 'created_by_user_id', as: 'createdInvoices' });
+  Invoice.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdByUser' });
+
+  // User (staff) <-> User (customer) enrollment ownership
+  User.hasMany(User, { foreignKey: 'created_by_user_id', as: 'enrolledUsers' });
+  User.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'enrolledByUser' });
+
   // User <-> UserNotice
   User.hasMany(UserNotice, { foreignKey: 'userId', as: 'notices', onDelete: 'CASCADE' });
   UserNotice.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+  // User (staff) <-> PackingList ownership
+  User.hasMany(PackingList, { foreignKey: 'created_by_user_id', as: 'packingLists' });
+  PackingList.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdByUser' });
 }
 
 module.exports = {
@@ -52,4 +65,5 @@ module.exports = {
   UserNotice,
   AppSetting,
   TransportRate,
+  PackingList,
 };

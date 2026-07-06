@@ -1,13 +1,16 @@
 // Invoice persistence — talks to the backend so admins on different devices
 // see the same invoices, with localStorage as a transparent offline cache.
 
-import { resilientFetch } from "./apiBase";
+import { resilientFetch, activeInvToken } from "./apiBase";
 
 const LS_KEY = "invoice_drafts";
 const MIGRATED_KEY = "invoice_drafts_migrated_v1";
 
+// Path-aware: uses the admin token on /admin* pages and the staff token on
+// /staff* pages, so each portal's invoice sync hits the backend as itself
+// (the server then scopes the list/delete to that user when they're staff).
 const authHeaders = () => {
-  const token = localStorage.getItem("inv_token") || "";
+  const token = activeInvToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 };
 
@@ -74,6 +77,8 @@ function unwrapServerInvoice(row) {
     customerEmail: data.customerEmail || row.customer_email,
     invoiceDate: data.invoiceDate || row.invoice_date,
     currency: data.currency || row.currency,
+    createdByName: row.created_by_name || data.createdByName || null,
+    createdByUserId: row.created_by_user_id || null,
     _serverUpdatedAt: row.updatedAt,
   };
 }

@@ -171,6 +171,24 @@ router.get('/public-gallery', async (req, res) => {
   }
 });
 
+// GET /by-barcode/:code — exact barcode lookup used by the Packing List scanner.
+// Declared BEFORE /:id so "by-barcode" isn't matched as an :id.
+router.get('/by-barcode/:code', authenticate, async (req, res) => {
+  try {
+    const code = String(req.params.code || '').trim();
+    if (!code) return res.status(400).json({ success: false, message: 'Barcode is required' });
+    const product = await Product.findOne({
+      where: { barcode: { [Op.iLike]: code } },
+      attributes: ['id', 'name', 'barcode', 'weight', 'size', 'image_url'],
+    });
+    if (!product) return res.status(404).json({ success: false, message: 'No product found for this barcode' });
+    res.json({ success: true, data: product });
+  } catch (error) {
+    console.error('Barcode lookup error:', error);
+    res.status(500).json({ success: false, message: 'Barcode lookup failed' });
+  }
+});
+
 // GET /:id
 router.get('/:id', authenticate, async (req, res) => {
   try {

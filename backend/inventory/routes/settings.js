@@ -5,6 +5,18 @@ const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Company-wide settings (exchange rates, transport rates, HS codes) are global —
+// one shared copy in the DB. Reads stay open to any authenticated user (staff
+// need them for invoice currency/transport calculations) but WRITES are admin
+// only, so a staff member can never change config for the whole company.
+const requireAdmin = (req, res, next) => {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role !== 'admin' && role !== 'superadmin' && req.user?.accountType !== 'Admin') {
+    return res.status(403).json({ success: false, message: 'Admin access is required' });
+  }
+  next();
+};
+
 const DEFAULT_EXCHANGE_RATES = { USD: 1, CNY: 7.24, NPR: 135.5 };
 
 // Production deploys default to no auto-sync, so freshly added settings tables
@@ -41,6 +53,7 @@ function serializeRate(row) {
     rateCBM: r.rateCBM != null ? Number(r.rateCBM) : null,
     rateBorder: r.rateBorder != null ? Number(r.rateBorder) : null,
     unitBorder: r.unitBorder,
+    rateCurrency: r.rateCurrency || null,
     date: r.effectiveDate,
   };
 }
@@ -58,6 +71,7 @@ function rateInputFromBody(body = {}) {
     rateCBM: body.rateCBM !== undefined && body.rateCBM !== '' ? body.rateCBM : null,
     rateBorder: body.rateBorder !== undefined && body.rateBorder !== '' ? body.rateBorder : null,
     unitBorder: body.unitBorder ?? null,
+    rateCurrency: body.rateCurrency ?? null,
     effectiveDate: body.date ?? today,
   };
   return out;
@@ -81,7 +95,7 @@ router.get('/exchange-rates', async (req, res) => {
   }
 });
 
-router.put('/exchange-rates', authenticate, async (req, res) => {
+router.put('/exchange-rates', authenticate, requireAdmin, async (req, res) => {
   try {
     if (!AppSetting) {
       return res.status(503).json({ success: false, message: 'Database unavailable' });
@@ -118,7 +132,7 @@ router.get('/transport-rates', authenticate, async (req, res) => {
   }
 });
 
-router.post('/transport-rates', authenticate, async (req, res) => {
+router.post('/transport-rates', authenticate, requireAdmin, async (req, res) => {
   try {
     if (!TransportRate) {
       return res.status(503).json({ success: false, message: 'Database unavailable' });
@@ -136,7 +150,7 @@ router.post('/transport-rates', authenticate, async (req, res) => {
   }
 });
 
-router.put('/transport-rates/:id', authenticate, async (req, res) => {
+router.put('/transport-rates/:id', authenticate, requireAdmin, async (req, res) => {
   try {
     if (!TransportRate) {
       return res.status(503).json({ success: false, message: 'Database unavailable' });
@@ -154,7 +168,7 @@ router.put('/transport-rates/:id', authenticate, async (req, res) => {
   }
 });
 
-router.delete('/transport-rates/:id', authenticate, async (req, res) => {
+router.delete('/transport-rates/:id', authenticate, requireAdmin, async (req, res) => {
   try {
     if (!TransportRate) {
       return res.status(503).json({ success: false, message: 'Database unavailable' });

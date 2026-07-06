@@ -6,6 +6,7 @@ const inventoryRoutes = require('./inventory');
 const reportRoutes = require('./reports');
 const invoiceRoutes = require('./invoices');
 const settingsRoutes = require('./settings');
+const packingRoutes = require('./packing');
 
 const router = express.Router();
 
@@ -24,5 +25,6 @@ router.use('/inventory', inventoryRoutes);
 router.use('/reports', reportRoutes);
 router.use('/invoices', invoiceRoutes);
 router.use('/settings', settingsRoutes);
+router.use('/packing', packingRoutes);
 
 module.exports = router;

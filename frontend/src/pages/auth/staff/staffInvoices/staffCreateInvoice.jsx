@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import * as XLSX from 'xlsx';
-import AdminPageShell from "../AdminPageShell";
+import StaffPageShell from "../StaffPageShell";
 import CountrySelector from "../../../../components/ui/CountrySelector";
 import { countries } from "../../../../components/countries";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
@@ -561,7 +561,7 @@ function SearchableUserDropdown({ users, value, onChange, placeholder }) {
   );
 }
 
-export default function AdminCreateInvoice() {
+export default function StaffCreateInvoice() {
   const navigate = useNavigate();
   const { currency, setCurrency } = useCurrency();
   const [loading, setLoading] = useState(false);
@@ -886,7 +886,7 @@ export default function AdminCreateInvoice() {
 
   const fetchUsers = async () => {
     try {
-      const token = localStorage.getItem("inv_token");
+      const token = localStorage.getItem("staff_token");
       if (!token) {
         console.error("No auth token found");
         return;
@@ -962,7 +962,7 @@ export default function AdminCreateInvoice() {
   };
 
   const syncSharedInvoice = async (invoiceData) => {
-    const token = localStorage.getItem("inv_token");
+    const token = localStorage.getItem("staff_token");
     if (!token) return;
 
     const selectedUser = getSelectedShareUser(invoiceData.shareTo);
@@ -2027,7 +2027,7 @@ export default function AdminCreateInvoice() {
 
   const handleConfirmCancel = () => {
     setShowCancelModal(false);
-    navigate("/admin-invoices");
+    navigate("/staff-invoices");
   };
 
   const handleSaveDraft = async () => {
@@ -2582,7 +2582,7 @@ export default function AdminCreateInvoice() {
   ];
 
   return (
-    <AdminPageShell activePage="Invoices" title="Create Invoice" eyebrow="Create a new invoice for your customer">
+    <StaffPageShell activePage="Invoices" title="Create Invoice" eyebrow="Create a new invoice for your customer">
       <div className={`rounded-[2rem] border border-[#E1E3EE] bg-white ${currentStep === 2 ? 'py-6 px-0' : 'p-6'}`}>
         {/* Header with Title and Back Button */}
         <div className={`flex items-center justify-between border-b border-[#EAE8E5] pb-4 ${currentStep === 2 ? 'px-6' : ''}`}>
@@ -4047,7 +4047,7 @@ export default function AdminCreateInvoice() {
                     const wasType = successModal.type;
                     setSuccessModal({ show: false, message: "", type: "" });
                     if (wasType !== "error" && wasType !== "info") {
-                      navigate("/admin-invoices");
+                      navigate("/staff-invoices");
                     }
                   }}
                   className="w-full rounded-lg bg-[#2A1740] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#412460]"
@@ -4183,6 +4183,6 @@ export default function AdminCreateInvoice() {
           </div>
         );
       })()}
-    </AdminPageShell>
+    </StaffPageShell>
   );
 }

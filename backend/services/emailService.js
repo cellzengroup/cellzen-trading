@@ -2,35 +2,61 @@ const nodemailer = require('nodemailer');
 const path = require('path');
 const { getNext } = require('../models/Counter');
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS,
-  },
+// All outbound mail goes DIRECTLY through Gmail (Nodemailer). Requires a Gmail
+// account with 2-Step Verification on and an APP PASSWORD (not the normal
+// account password) — otherwise Gmail rejects the login with "Username and
+// Password not accepted" / "cannot authenticate".
+//
+// Gmail shows the 16-char App Password in 4 space-separated groups
+// ("abcd efgh ijkl mnop"). If those spaces get saved into the env var, Gmail
+// rejects the login. Strip all whitespace so it works either way.
+const cleanPass = (v) => String(v || '').replace(/\s+/g, '');
+const EMAIL_PASS = cleanPass(process.env.EMAIL_PASS);
+const SMTP_PASS = cleanPass(process.env.SMTP_PASS);
+
+const GMAIL_HOST = process.env.SMTP_HOST || 'smtp.gmail.com';
+const GMAIL_USER = process.env.SMTP_USER || process.env.EMAIL_USER;
+const GMAIL_PASS = SMTP_PASS || EMAIL_PASS;
+
+// Build a Gmail transport for a specific port. 465 = implicit TLS, 587 =
+// STARTTLS. Generous timeouts because Gmail's handshake is slow on some hosts.
+const buildGmailTransport = (port) => nodemailer.createTransport({
+  host: GMAIL_HOST,
+  port,
+  secure: port === 465,
+  requireTLS: port === 587,
+  auth: { user: GMAIL_USER, pass: GMAIL_PASS },
+  connectionTimeout: 60000,
+  greetingTimeout: 30000,
+  socketTimeout: 90000,
+  tls: { rejectUnauthorized: false },
 });
 
-// Invoice emails use the SAME SMTP path as the working verification-code email
-// (see backend/routes/customerAuth.js): host + port 587 STARTTLS. On some
-// networks the implicit-TLS port 465 (what `service: 'gmail'` uses) gets
-// TLS-reset while 587 connects fine — just slowly — so the timeouts are
-// generous. Falls back to the Gmail service transporter if SMTP_* isn't set.
-const invoiceTransporter = (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)
-  ? nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT || 587),
-      secure: String(process.env.SMTP_PORT) === '465',
-      auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
-      },
-      connectionTimeout: 120000,
-      greetingTimeout: 120000,
-      socketTimeout: 150000,
-    })
-  : transporter;
+const PREFERRED_PORT = Number(process.env.SMTP_PORT || 587);
+const ALT_PORT = PREFERRED_PORT === 465 ? 587 : 465;
+const primaryTransport = buildGmailTransport(PREFERRED_PORT);
+const fallbackTransport = buildGmailTransport(ALT_PORT);
 
-const invoiceFrom = process.env.SMTP_FROM || `"Cellzen Trading" <${process.env.EMAIL_USER}>`;
+// "Unexpected socket close" / connection resets happen when one Gmail port is
+// blocked or flaky on the host's network. Try the preferred port, then retry on
+// the other port before giving up. (If the network blocks BOTH ports — common
+// on local dev machines — sending still fails and must be done from a host that
+// allows outbound SMTP, e.g. production.)
+const CONN_ERR_RX = /socket close|ECONNECTION|ETIMEDOUT|ESOCKET|ECONNRESET|ECONNREFUSED|connection timeout|greeting never received/i;
+async function sendViaGmail(mailOptions) {
+  try {
+    return await primaryTransport.sendMail(mailOptions);
+  } catch (err) {
+    if (!CONN_ERR_RX.test(String(err && err.message))) throw err;
+    console.warn(`Gmail send on port ${PREFERRED_PORT} failed (${err.message}); retrying on ${ALT_PORT}...`);
+    return await fallbackTransport.sendMail(mailOptions);
+  }
+}
+
+// Kept for contact/newsletter emails (use the primary transport directly).
+const transporter = primaryTransport;
+
+const invoiceFrom = process.env.SMTP_FROM || `"Cellzen Trading" <${GMAIL_USER}>`;
 
 /**
  * Generate a sequential inquiry number (CZN-DDYYMM-0001, CZN-DDYYMM-0002, ...)
@@ -215,8 +241,8 @@ async function sendInvoiceEmail({ to, cc, subject, message, customerName, invoic
 
   const text = message || '';
 
-  // Send via the 587 SMTP transporter (same as the verification-code email).
-  const sendPromise = invoiceTransporter.sendMail({
+  // Send directly via Gmail, with automatic 587<->465 fallback on socket errors.
+  const sendPromise = sendViaGmail({
     from: invoiceFrom,
     to,
     ...(cc ? { cc } : {}),
@@ -246,4 +272,33 @@ async function sendInvoiceEmail({ to, cc, subject, message, customerName, invoic
   }
 }
 
-module.exports = { sendContactEmail, sendNewsletterEmail, sendInvoiceEmail };
+/**
+ * Send a one-time login verification code (used for a staff member's FIRST
+ * login). Sent directly through Gmail (same transporter as the invoice email).
+ *
+ * @param {object} opts
+ * @param {string} opts.to    - recipient email
+ * @param {string} opts.code  - the numeric code
+ * @param {string} [opts.name]
+ * @param {number} [opts.expiryMinutes]
+ */
+async function sendVerificationCodeEmail({ to, code, name, expiryMinutes = 10 }) {
+  const subject = 'Your Cellzen Trading staff verification code';
+  const safeName = String(name || 'there').replace(/[<>&]/g, '');
+  const text = `Your Cellzen Trading verification code is ${code}. It expires in ${expiryMinutes} minutes.`;
+  const html = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#2D2D2D;max-width:560px;margin:0 auto;border:1px solid #e0e0e0">
+      <div style="background-color:#412460;padding:18px 24px"><h2 style="color:#E5E1DA;margin:0;font-size:20px">Staff Verification</h2></div>
+      <div style="background-color:#E5E1DA;padding:24px">
+        <p style="margin:0 0 8px">Hello ${safeName},</p>
+        <p style="margin:0 0 14px">Use this code to finish signing in to the Cellzen staff portal for the first time:</p>
+        <p style="font-size:30px;font-weight:700;letter-spacing:8px;color:#412460;margin:0 0 14px">${code}</p>
+        <p style="margin:0;font-size:13px;color:#2D2D2D">This code expires in ${expiryMinutes} minutes. If you did not try to sign in, you can ignore this email.</p>
+      </div>
+    </div>
+  `;
+
+  return sendViaGmail({ from: invoiceFrom, to, subject, text, html });
+}
+
+module.exports = { sendContactEmail, sendNewsletterEmail, sendInvoiceEmail, sendVerificationCodeEmail };
