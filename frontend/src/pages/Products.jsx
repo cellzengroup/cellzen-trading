@@ -422,8 +422,8 @@ export default function Products() {
     }
     [
       "https://cellzen-trading.onrender.com/api",
-      "https://www.cellzen.com.np/api",
-      "https://cellzen.com.np/api",
+      "https://www.cellzengroup.com/api",
+      "https://cellzengroup.com/api",
     ].forEach((u) => { if (!candidates.includes(u)) candidates.push(u); });
 
     const fetchOne = (base) => fetch(`${base}/inventory/products/public-gallery`, {

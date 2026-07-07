@@ -32,10 +32,10 @@ app.use(compression({ threshold: 1024 }));
 const isProduction = process.env.NODE_ENV === 'production';
 const defaultProdOrigins = [
   'https://cellzen-trading.onrender.com',
-  'https://www.cellzen.com.np',
-  'https://cellzen.com.np',
-  'http://www.cellzen.com.np',
-  'http://cellzen.com.np',
+  'https://www.cellzengroup.com',
+  'https://cellzengroup.com',
+  'http://www.cellzengroup.com',
+  'http://cellzengroup.com',
 ];
 
 const defaultDevOrigins = [
@@ -58,10 +58,10 @@ const corsOrigin = (origin, callback) => {
 
   if (baseAllowedOrigins.includes(origin)) return callback(null, true);
 
-  // Allow any cellzen.com.np subdomain (api., admin., etc.) + Render subdomains
+  // Allow any cellzengroup.com subdomain (api., admin., etc.) + Render subdomains
   try {
     const host = new URL(origin).hostname;
-    if (host === 'cellzen.com.np' || host.endsWith('.cellzen.com.np')) return callback(null, true);
+    if (host === 'cellzengroup.com' || host.endsWith('.cellzengroup.com')) return callback(null, true);
     if (host.endsWith('.onrender.com')) return callback(null, true);
   } catch {
     // fall through to reject

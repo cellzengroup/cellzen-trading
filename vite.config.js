@@ -26,7 +26,8 @@ export default defineConfig({
     allowedHosts: [
       'cellzen-trading.onrender.com',
       '.onrender.com',
-      'www.cellzen.com.np',
+      'www.cellzengroup.com',
+      'cellzengroup.com',
       'localhost',
       '127.0.0.1'
     ]

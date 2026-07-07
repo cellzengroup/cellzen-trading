@@ -7,8 +7,8 @@
 
 const KNOWN_PROD_BASES = [
   "https://cellzen-trading.onrender.com/api",
-  "https://www.cellzen.com.np/api",
-  "https://cellzen.com.np/api",
+  "https://www.cellzengroup.com/api",
+  "https://cellzengroup.com/api",
 ];
 
 const explicitBase = import.meta.env.VITE_API_URL;

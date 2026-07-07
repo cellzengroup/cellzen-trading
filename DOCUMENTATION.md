@@ -31,7 +31,7 @@
 
 **Project Name:** Cellzen Trading
 
-**Domain:** [www.cellzen.com.np](https://www.cellzen.com.np)
+**Domain:** [www.cellzengroup.com](https://www.cellzengroup.com)
 
 **Purpose:** A full-stack web platform for exporting goods globally — managing product listings, customer inquiries, and an integrated inventory management system.
 
@@ -739,7 +739,7 @@ function MyComponent() {
 
 **Allowed Origins:**
 - Development: `localhost:3300`, `localhost:3001`, `localhost:5173`
-- Production: `cellzen-trading.onrender.com`, `www.cellzen.com.np`
+- Production: `cellzen-trading.onrender.com`, `www.cellzengroup.com`, `cellzengroup.com`
 - Wildcard: `*.onrender.com`
 
 **Settings:** Credentials enabled, all standard methods allowed.
@@ -771,7 +771,7 @@ function MyComponent() {
 - **Build Output:** `../dist`
 - **Plugin:** `@vitejs/plugin-react`
 - **Path Aliases:** `@/`, `src/`, `components/`, `utils/`
-- **Allowed Hosts:** `cellzen-trading.onrender.com`, `*.onrender.com`, `www.cellzen.com.np`, `localhost`
+- **Allowed Hosts:** `cellzen-trading.onrender.com`, `*.onrender.com`, `www.cellzengroup.com`, `cellzengroup.com`, `localhost`
 
 ### Tailwind CSS (`tailwind.config.js`)
 
@@ -832,7 +832,7 @@ SUPABASE_SERVICE_KEY=your-service-key
 SUPABASE_STORAGE_BUCKET=product-images
 
 # CORS
-CORS_ORIGINS=http://localhost:3300,https://www.cellzen.com.np
+CORS_ORIGINS=http://localhost:3300,https://www.cellzengroup.com
 ```
 
 ---
@@ -843,7 +843,7 @@ CORS_ORIGINS=http://localhost:3300,https://www.cellzen.com.np
 
 **URL:** `https://cellzen-trading.onrender.com`
 
-**Custom Domain:** `https://www.cellzen.com.np`
+**Custom Domain:** `https://www.cellzengroup.com`
 
 ### Build & Start Scripts
 
