@@ -1,0 +1,412 @@
+const express = require('express');
+const crypto = require('crypto');
+const { Op } = require('sequelize');
+const { Rack, WarehouseItem, PrintJob, sequelize } = require('../models');
+const { authenticate } = require('../middleware/auth');
+
+const router = express.Router();
+
+// The on-site print agent (print-bridge) is NOT a logged-in user — it
+// authenticates with a shared secret set as PRINT_AGENT_TOKEN in the backend
+// env AND in the agent's config.json. Constant-time compared to avoid leaks.
+const authenticateAgent = (req, res, next) => {
+  const expected = process.env.PRINT_AGENT_TOKEN;
+  if (!expected) {
+    return res.status(503).json({ success: false, message: 'Print agent is not configured' });
+  }
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const a = Buffer.from(token);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ success: false, message: 'Invalid agent token' });
+  }
+  next();
+};
+
+// Print queue needs both the model and a live connection (raw claim query).
+const printDbGuard = (res) => {
+  if (!PrintJob || !sequelize) {
+    res.status(503).json({ success: false, message: 'Print queue is not configured' });
+    return true;
+  }
+  return false;
+};
+
+// Warehouse — Scan & Locate.
+// Same staff-or-admin gate used across the inventory routes (see packing.js).
+// Warehouse data is SHARED: every staff/admin sees every rack + item. We only stamp
+// the acting user on each record for the audit trail — reads are never scoped.
+const requireStaffOrAdmin = (req, res, next) => {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role === 'admin' || role === 'superadmin' || role === 'staff' || req.user?.accountType === 'Admin') {
+    return next();
+  }
+  return res.status(403).json({ success: false, message: 'Staff or admin access is required' });
+};
+
+// Models export `null` when the DB is unconfigured — guard before any query.
+const dbGuard = (res) => {
+  if (!Rack || !WarehouseItem) {
+    res.status(503).json({ success: false, message: 'Warehouse database is not configured' });
+    return true;
+  }
+  return false;
+};
+
+const normRack = (v) => String(v || '').trim().toUpperCase();
+
+// The ONLY valid shelf-code shape: LETTERS + DIGITS - DIGITS - DIGITS
+// (e.g. CZN01-01-0001 / CZ02-02-0001). Anything else is a tracking number, not
+// a shelf, and must never be created as a rack.
+const SHELF_PATTERN = /^[A-Za-z]{1,6}\d{1,4}-\d{1,4}-\d{1,6}$/;
+const isShelfCode = (v) => SHELF_PATTERN.test(String(v || '').trim());
+
+// Escape LIKE/ILIKE metacharacters so a tracking number containing % or _ is
+// matched literally instead of being treated as a wildcard pattern.
+const escapeLike = (v) => String(v).replace(/[\\%_]/g, (c) => `\\${c}`);
+
+// UUID shape guard for :id path params (WarehouseItem PK is a UUID) — avoids a
+// Postgres "invalid input syntax for type uuid" 500 on a malformed id.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Generate the next SEQUENTIAL internal code: CZN00001, CZN00002, … — the max
+// existing CZN number + 1, zero-padded to 5 digits. The DB unique constraint on
+// `code` + the retry loop in POST /items cover concurrent races.
+async function generateItemCode() {
+  const rows = await WarehouseItem.findAll({
+    where: { code: { [Op.iLike]: 'CZN%' } },
+    attributes: ['code'],
+  });
+  let maxSeq = 0;
+  for (const r of rows) {
+    const n = parseInt(String(r.code || '').replace(/[^0-9]/g, ''), 10);
+    if (!isNaN(n) && n > maxSeq) maxSeq = n;
+  }
+  return `CZN${String(maxSeq + 1).padStart(5, '0')}`;
+}
+
+// ============================================================ RACKS
+
+// GET /racks — every rack (shared), newest first
+router.get('/racks', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const rows = await Rack.findAll({ order: [['createdAt', 'DESC']], limit: 2000 });
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (error) {
+    console.error('List racks error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load shelves' });
+  }
+});
+
+// POST /racks — create a rack. `id` IS the shelf code. 409 if it already exists.
+router.post('/racks', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const id = normRack(req.body?.id ?? req.body?.code);
+    if (!id) return res.status(400).json({ success: false, message: 'Shelf code is required' });
+    if (!isShelfCode(id)) {
+      return res.status(400).json({ success: false, message: 'Shelf code must look like CZN01-01-0001 (letters-digits-digits).' });
+    }
+    const existing = await Rack.findByPk(id);
+    if (existing) {
+      return res.status(409).json({ success: false, message: 'That shelf already exists', data: existing });
+    }
+    const rack = await Rack.create({ id, note: req.body?.note || null });
+    res.status(201).json({ success: true, data: rack });
+  } catch (error) {
+    console.error('Create rack error:', error);
+    res.status(500).json({ success: false, message: 'Unable to create shelf' });
+  }
+});
+
+// DELETE /racks/:id — blocked while the shelf still holds in-stock items
+router.delete('/racks/:id', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const id = normRack(req.params.id);
+    const rack = await Rack.findByPk(id);
+    if (!rack) return res.status(404).json({ success: false, message: 'Shelf not found' });
+    const inStock = await WarehouseItem.count({ where: { rack_id: id, status: 'in_stock' } });
+    if (inStock > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `Can't delete ${id} — it still holds ${inStock} in-stock item(s)`,
+      });
+    }
+    await rack.destroy();
+    res.json({ success: true, removed: 1 });
+  } catch (error) {
+    console.error('Delete rack error:', error);
+    res.status(500).json({ success: false, message: 'Unable to delete shelf' });
+  }
+});
+
+// ============================================================ ITEMS
+
+// GET /items/export.csv — declared BEFORE the /items/:id ship route so the
+// literal path is never captured by a param segment.
+router.get('/items/export.csv', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const rows = await WarehouseItem.findAll({ order: [['createdAt', 'DESC']] });
+    // RFC-4180 quoting PLUS CSV formula-injection guard: a value beginning with
+    // = + - @ (or tab/CR) is prefixed with a single quote so spreadsheets don't
+    // evaluate attacker-supplied tracking/rack text as a formula (CWE-1236).
+    const esc = (v) => {
+      const s = String(v ?? '');
+      const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+      return `"${safe.replace(/"/g, '""')}"`;
+    };
+    const header = ['Code', 'Tracking', 'Rack', 'Status', 'Stored By', 'Stored At', 'Shipped By', 'Shipped At'];
+    const lines = [header.join(',')];
+    for (const r of rows) {
+      lines.push([
+        r.code, r.tracking_number, r.rack_id, r.status,
+        r.created_by_name, r.createdAt, r.shipped_by_name, r.shipped_at,
+      ].map(esc).join(','));
+    }
+    const dateStr = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=warehouse_items_${dateStr}.csv`);
+    res.send('﻿' + lines.join('\r\n')); // BOM so Excel reads UTF-8
+  } catch (error) {
+    console.error('Export items error:', error);
+    res.status(500).json({ success: false, message: 'Export failed' });
+  }
+});
+
+// GET /items?search=&status=&rack_id= — every item (shared), searchable
+router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const { search, status, rack_id } = req.query;
+    const where = {};
+    if (status) where.status = status;
+    if (rack_id) where.rack_id = normRack(rack_id);
+    if (search) {
+      const s = `%${escapeLike(String(search).trim())}%`;
+      where[Op.or] = [
+        { code: { [Op.iLike]: s } },
+        { tracking_number: { [Op.iLike]: s } },
+        { rack_id: { [Op.iLike]: s } },
+      ];
+    }
+    const rows = await WarehouseItem.findAll({ where, order: [['createdAt', 'DESC']], limit: 5000 });
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (error) {
+    console.error('List items error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load items' });
+  }
+});
+
+// POST /items — put-away. Auto-creates the shelf on first sight, dedupes an
+// already-in-stock tracking number, mints a unique WH code, links item -> shelf.
+router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const trackingNumber = String(req.body?.trackingNumber ?? req.body?.tracking_number ?? '').trim().toUpperCase();
+    const rackId = normRack(req.body?.rackId ?? req.body?.rack_id);
+    if (!rackId) return res.status(400).json({ success: false, message: 'Scan or choose a shelf first' });
+    if (!isShelfCode(rackId)) {
+      return res.status(400).json({ success: false, message: 'Shelf code must look like CZN01-01-0001 (letters-digits-digits).' });
+    }
+    if (!trackingNumber) return res.status(400).json({ success: false, message: 'Tracking number is required' });
+
+    // Auto-create the shelf on first sight (spec: a new shelf code is created).
+    await Rack.findOrCreate({ where: { id: rackId }, defaults: { id: rackId } });
+
+    // Dedupe: a tracking number may only be in-stock once at a time. This
+    // app-level check is the friendly path; the partial unique index on
+    // warehouse_items (tracking_number WHERE status='in_stock') is the atomic
+    // backstop for concurrent double-scans (handled in the catch below).
+    const dupe = await WarehouseItem.findOne({
+      where: { tracking_number: { [Op.iLike]: escapeLike(trackingNumber) }, status: 'in_stock' },
+    });
+    if (dupe) {
+      return res.status(409).json({
+        success: false,
+        message: 'Already in stock — this tracking number is already stored',
+        data: dupe,
+      });
+    }
+
+    // Mint a sequential CZNnnnnn code and insert, retrying if a concurrent
+    // request grabbed the same number first. A tracking-index violation means a
+    // concurrent put-away already stored this tracking number (not retryable).
+    let item = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        item = await WarehouseItem.create({
+          code: await generateItemCode(),
+          tracking_number: trackingNumber,
+          rack_id: rackId,
+          status: 'in_stock',
+          created_by_user_id: req.user.id,
+          created_by_name: req.user.name || null,
+        });
+        break;
+      } catch (error) {
+        if (error.name === 'SequelizeUniqueConstraintError') {
+          const constraint = String(error?.parent?.constraint || '');
+          if (constraint.includes('tracking')) {
+            return res.status(409).json({ success: false, message: 'Already in stock — this tracking number is already stored' });
+          }
+          if (attempt < 5) continue; // code collision — regenerate + retry
+        }
+        throw error;
+      }
+    }
+    if (!item) {
+      return res.status(409).json({ success: false, message: 'Could not allocate a code — please retry' });
+    }
+    res.status(201).json({ success: true, data: item });
+  } catch (error) {
+    console.error('Put-away item error:', error);
+    res.status(500).json({ success: false, message: 'Unable to store item' });
+  }
+});
+
+// POST /items/:id/ship — mark shipped (records who + when for the audit trail)
+router.post('/items/:id/ship', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    if (!UUID_RE.test(String(req.params.id))) {
+      return res.status(404).json({ success: false, message: 'Item not found' });
+    }
+    const item = await WarehouseItem.findByPk(req.params.id);
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    if (item.status === 'shipped') {
+      return res.status(409).json({ success: false, message: 'Item is already shipped', data: item });
+    }
+    await item.update({
+      status: 'shipped',
+      shipped_at: new Date(),
+      shipped_by_user_id: req.user.id,
+      shipped_by_name: req.user.name || null,
+    });
+    res.json({ success: true, data: item });
+  } catch (error) {
+    console.error('Ship item error:', error);
+    res.status(500).json({ success: false, message: 'Unable to mark item shipped' });
+  }
+});
+
+// DELETE /items/:id — remove an item (used to clear dispatched history).
+router.delete('/items/:id', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    if (!UUID_RE.test(String(req.params.id))) {
+      return res.status(404).json({ success: false, message: 'Item not found' });
+    }
+    const item = await WarehouseItem.findByPk(req.params.id);
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    await item.destroy();
+    res.json({ success: true, removed: 1 });
+  } catch (error) {
+    console.error('Delete item error:', error);
+    res.status(500).json({ success: false, message: 'Unable to delete item' });
+  }
+});
+
+// ============================================================ PRINT QUEUE
+// Any device (incl. phones) enqueues a label; the on-site print agent polls the
+// queue, prints on the Deli 720C, and reports the result. See /print-bridge.
+
+// POST /print-jobs — enqueue a label print (staff/admin, any device).
+router.post('/print-jobs', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (printDbGuard(res)) return;
+    const code = String(req.body?.code || '').trim();
+    if (!code) return res.status(400).json({ success: false, message: 'code is required' });
+    const kind = String(req.body?.kind || 'item').trim().toLowerCase() === 'rack' ? 'rack' : 'item';
+    const copies = Math.min(Math.max(parseInt(req.body?.copies, 10) || 1, 1), 20);
+    const job = await PrintJob.create({
+      code: code.slice(0, 64),
+      kind,
+      copies,
+      status: 'pending',
+      created_by_user_id: req.user.id,
+      created_by_name: req.user.name || null,
+    });
+    res.status(201).json({ success: true, data: { id: job.id, status: job.status } });
+  } catch (error) {
+    console.error('Enqueue print job error:', error);
+    res.status(500).json({ success: false, message: 'Unable to queue print' });
+  }
+});
+
+// GET /print-jobs/pending — the agent atomically claims pending jobs (marks them
+// 'printing' so a second agent can't grab the same ones). Also re-claims jobs
+// stuck in 'printing' for >2 min (agent crashed mid-print). Declared BEFORE the
+// /print-jobs/:id route so the literal path is never captured as an :id.
+router.get('/print-jobs/pending', authenticateAgent, async (req, res) => {
+  try {
+    if (printDbGuard(res)) return;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 5, 1), 20);
+    const [rows] = await sequelize.query(
+      `UPDATE print_jobs SET status = 'printing', claimed_at = NOW(), "updatedAt" = NOW()
+       WHERE id IN (
+         SELECT id FROM print_jobs
+         WHERE status = 'pending'
+            OR (status = 'printing' AND claimed_at < NOW() - INTERVAL '2 minutes')
+         ORDER BY "createdAt" ASC
+         LIMIT :limit
+         FOR UPDATE SKIP LOCKED
+       )
+       RETURNING id, code, kind, copies`,
+      { replacements: { limit } }
+    );
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: rows || [] });
+  } catch (error) {
+    console.error('Claim print jobs error:', error);
+    res.status(500).json({ success: false, message: 'Unable to claim jobs' });
+  }
+});
+
+// POST /print-jobs/:id/complete — agent reports the print result.
+router.post('/print-jobs/:id/complete', authenticateAgent, async (req, res) => {
+  try {
+    if (printDbGuard(res)) return;
+    if (!UUID_RE.test(String(req.params.id))) {
+      return res.status(404).json({ success: false, message: 'Job not found' });
+    }
+    const job = await PrintJob.findByPk(req.params.id);
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+    const ok = req.body?.ok !== false && !req.body?.error;
+    await job.update({
+      status: ok ? 'done' : 'error',
+      error: ok ? null : String(req.body?.error || 'print failed').slice(0, 500),
+      printed_at: ok ? new Date() : null,
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Complete print job error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update job' });
+  }
+});
+
+// GET /print-jobs/:id — status lookup so the UI can confirm a queued print.
+router.get('/print-jobs/:id', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (printDbGuard(res)) return;
+    if (!UUID_RE.test(String(req.params.id))) {
+      return res.status(404).json({ success: false, message: 'Job not found' });
+    }
+    const job = await PrintJob.findByPk(req.params.id, {
+      attributes: ['id', 'status', 'error', 'printed_at'],
+    });
+    if (!job) return res.status(404).json({ success: false, message: 'Job not found' });
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: job });
+  } catch (error) {
+    console.error('Get print job error:', error);
+    res.status(500).json({ success: false, message: 'Unable to load job' });
+  }
+});
+
+module.exports = router;

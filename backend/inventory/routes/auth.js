@@ -259,8 +259,16 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email and password are required' });
     }
 
-    // Case-insensitive email match so "Staff@x.com" logs in as "staff@x.com".
-    const user = await User.findOne({ where: { email: { [Op.iLike]: rawEmail } } });
+    // Case-insensitive match by email OR username, so staff can sign in with a
+    // simple handle (e.g. "staff1") as well as their email.
+    const user = await User.findOne({
+      where: {
+        [Op.or]: [
+          { email: { [Op.iLike]: rawEmail } },
+          { username: { [Op.iLike]: rawEmail } },
+        ],
+      },
+    });
     if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }

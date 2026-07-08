@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { apiPostJson, getApiBaseCandidates } from "../../../utils/apiBase";
 
 // Staff portal sign-in. Staff are real database users (role: "staff") created
@@ -9,6 +9,7 @@ import { apiPostJson, getApiBaseCandidates } from "../../../utils/apiBase";
 // session in the same browser.
 export default function StaffLogin() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [form, setForm] = useState({ email: "", password: "" });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -31,7 +32,9 @@ export default function StaffLogin() {
     }
     localStorage.setItem("staff_token", data.token);
     sessionStorage.setItem("staff_user", JSON.stringify(data.user));
-    navigate("/staff-dashboard", { replace: true });
+    // Return to ?next= (e.g. /warehouse) when present, else the dashboard.
+    const next = new URLSearchParams(location.search).get("next");
+    navigate(next && next.startsWith("/") ? next : "/staff-dashboard", { replace: true });
   };
 
   const handleSubmit = async (event) => {
@@ -146,11 +149,14 @@ export default function StaffLogin() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <input
                 name="email"
-                type="email"
+                type="text"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 required
                 value={form.email}
                 onChange={handleChange}
-                placeholder="Staff email"
+                placeholder="Staff username or email"
                 className="w-full border border-[#E3DEEA] bg-white px-4 py-3 text-sm text-[#2D2D2D] outline-none transition-colors placeholder:text-[#2D2D2D]/30 focus:border-[#412460]"
               />
 

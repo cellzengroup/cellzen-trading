@@ -1,0 +1,9 @@
+{
+  "name": "cellzen-print-bridge",
+  "version": "1.0.0",
+  "description": "Local TSPL print bridge for the Deli DL-720C thermal printer",
+  "private": true,
+  "type": "commonjs",
+  "bin": { "cellzen-print-bridge": "bridge.js" },
+  "scripts": { "start": "node bridge.js" }
+}

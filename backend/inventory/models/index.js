@@ -9,6 +9,9 @@ const UserNotice = require('./UserNotice');
 const AppSetting = require('./AppSetting');
 const TransportRate = require('./TransportRate');
 const PackingList = require('./PackingList');
+const Rack = require('./Rack');
+const WarehouseItem = require('./WarehouseItem');
+const PrintJob = require('./PrintJob');
 
 if (sequelize) {
   // Product <-> Inventory
@@ -52,6 +55,18 @@ if (sequelize) {
   // User (staff) <-> PackingList ownership
   User.hasMany(PackingList, { foreignKey: 'created_by_user_id', as: 'packingLists' });
   PackingList.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdByUser' });
+
+  // Warehouse: Rack <-> WarehouseItem. rack_id is the shelf code string
+  // (Rack's STRING primary key). Data is SHARED across all staff.
+  // constraints:false → NO database FK, so deleting a rack does NOT null out
+  // rack_id on historical (shipped) items; the shelf code is preserved for the
+  // audit trail. In-stock deletion is still blocked in the route handler.
+  Rack.hasMany(WarehouseItem, { foreignKey: 'rack_id', as: 'items', constraints: false });
+  WarehouseItem.belongsTo(Rack, { foreignKey: 'rack_id', as: 'rack', constraints: false });
+
+  // User <-> WarehouseItem is an AUDIT stamp only — never scope reads by it.
+  User.hasMany(WarehouseItem, { foreignKey: 'created_by_user_id', as: 'warehouseItems' });
+  WarehouseItem.belongsTo(User, { foreignKey: 'created_by_user_id', as: 'createdByUser' });
 }
 
 module.exports = {
@@ -66,4 +81,7 @@ module.exports = {
   AppSetting,
   TransportRate,
   PackingList,
+  Rack,
+  WarehouseItem,
+  PrintJob,
 };

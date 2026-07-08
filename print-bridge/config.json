@@ -1,0 +1,22 @@
+{
+  "port": 9110,
+  "printerName": "",
+  "dpi": 203,
+  "widthIn": 1.97,
+  "heightIn": 0.97,
+  "gapMm": 3,
+  "direction": 1,
+  "density": 10,
+  "speed": 4,
+  "barcodeNarrow": 3,
+  "barcodeHeight": 140,
+  "showText": true,
+  "textFont": "3",
+  "textScale": 1,
+  "yOffset": 3,
+  "xOffset": 22,
+  "allowOrigin": "*",
+  "apiBaseUrl": "",
+  "agentToken": "",
+  "pollMs": 2500
+}

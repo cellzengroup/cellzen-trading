@@ -47,6 +47,8 @@ import StaffInvoices from './pages/auth/staff/staffInvoices/staffInvoices';
 import StaffCreateInvoice from './pages/auth/staff/staffInvoices/staffCreateInvoice';
 import StaffPackingList from './pages/auth/staff/staffPacking/staffPackingList';
 import StaffPackingEditor from './pages/auth/staff/staffPacking/staffPackingEditor';
+// Warehouse — standalone scan & locate app (own route, staff-authenticated)
+import WarehouseApp from './pages/auth/warehouse/WarehouseApp';
 import CostumersDashboard from './pages/tracking/trackingpage/costumers/costumersdashboard';
 import CostumersGoodsTracking from './pages/tracking/trackingpage/costumers/CostumersGoodsTracking';
 import CostumersInvoices from './pages/tracking/trackingpage/costumers/costumerInvoice/costumerInvoices.jsx';
@@ -85,6 +87,8 @@ import { useLocation } from 'react-router-dom';
 function ManasBubbleGuard() {
   const { pathname } = useLocation();
   if (pathname.startsWith('/admin-invoices')) return null;
+  // No MANAS chat bubble inside the standalone Warehouse portal.
+  if (pathname.startsWith('/warehouse')) return null;
   return <ManasBubble />;
 }
 
@@ -215,6 +219,9 @@ function App() {
         <Route path="/staff-tools/product-gallery/edit/:productId" element={<StaffAddProductGallery />} />
         <Route path="/staff-reports" element={<StaffReports />} />
         <Route path="/staff-settings" element={<StaffSettings />} />
+
+        {/* Warehouse — standalone scan & locate (staff-authenticated) */}
+        <Route path="/warehouse" element={<WarehouseApp />} />
 
         <Route path="/login" element={<TrackingLogin initialMode="signin" />} />
         <Route path="/reset" element={<ResetPassword />} />

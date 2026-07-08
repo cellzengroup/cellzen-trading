@@ -64,6 +64,17 @@ input[type=number] {
   to { transform: rotate(0deg); }
 }
 
+/* Warehouse scanner scan-line sweep */
+@keyframes whScanline {
+  0% { transform: translateY(-70px); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateY(70px); opacity: 0; }
+}
+.wh-scanline {
+  animation: whScanline 2s ease-in-out infinite;
+}
+
 /* ── Roboto ── */
 @font-face {
   font-family: "Roboto";
