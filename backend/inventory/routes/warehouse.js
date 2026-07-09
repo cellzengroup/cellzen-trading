@@ -324,11 +324,34 @@ router.post('/print-jobs', authenticate, requireStaffOrAdmin, async (req, res) =
     if (!code) return res.status(400).json({ success: false, message: 'code is required' });
     const kind = String(req.body?.kind || 'item').trim().toLowerCase() === 'rack' ? 'rack' : 'item';
     const copies = Math.min(Math.max(parseInt(req.body?.copies, 10) || 1, 1), 20);
+
+    // Optional pre-rendered label image (base64 packed 1-bit rows). When present
+    // the agent prints it verbatim as a TSPL BITMAP, so phone-queued labels match
+    // the warehouse PC exactly. Only accept a well-formed, sanely-sized payload.
+    const bmp = req.body?.bitmap;
+    let bitmap = { data: null, widthBytes: null, height: null };
+    if (bmp && typeof bmp.data === 'string') {
+      const widthBytes = parseInt(bmp.widthBytes, 10);
+      const height = parseInt(bmp.height, 10);
+      const okDims =
+        Number.isInteger(widthBytes) && widthBytes > 0 && widthBytes <= 512 &&
+        Number.isInteger(height) && height > 0 && height <= 4096;
+      // base64 of a 60x80mm mono label is ~51KB; cap well above that, reject abuse.
+      if (okDims && /^[A-Za-z0-9+/=]+$/.test(bmp.data) && bmp.data.length <= 400000) {
+        bitmap = { data: bmp.data, widthBytes, height };
+      } else {
+        return res.status(400).json({ success: false, message: 'Invalid bitmap payload' });
+      }
+    }
+
     const job = await PrintJob.create({
       code: code.slice(0, 64),
       kind,
       copies,
       status: 'pending',
+      bitmap_data: bitmap.data,
+      bitmap_width_bytes: bitmap.widthBytes,
+      bitmap_height: bitmap.height,
       created_by_user_id: req.user.id,
       created_by_name: req.user.name || null,
     });
@@ -357,7 +380,7 @@ router.get('/print-jobs/pending', authenticateAgent, async (req, res) => {
          LIMIT :limit
          FOR UPDATE SKIP LOCKED
        )
-       RETURNING id, code, kind, copies`,
+       RETURNING id, code, kind, copies, bitmap_data, bitmap_width_bytes, bitmap_height`,
       { replacements: { limit } }
     );
     res.set('Cache-Control', 'no-store');

@@ -1,13 +1,17 @@
 # Cellzen Print Bridge (Deli DL-720C)
 
-A tiny local service that lets the website print barcode labels **directly** to
-the Deli 720C thermal printer — exact 1.97 × 0.98 in (50 × 25 mm), native
-Code-128 barcodes, no browser print dialog.
+A tiny local service that lets the website print labels **directly** to the
+Deli 720C thermal printer on **60 × 80 mm** stock, no browser print dialog.
+
+- **Shipment labels** print the full approved design (CELLZEN logo, Code-128
+  barcode, Shelf / Tracking lines, handling icons, footer). The website renders
+  the whole label once and sends it as an image; the bridge prints it verbatim.
+- **Rack/shelf labels** stay a simple native Code-128 barcode.
 
 The website runs in the cloud (Render) and a web page can't touch a USB printer.
 So this little program runs on the **warehouse PC that has the printer plugged
-in**. The site's Print button quietly POSTs the code here, and this bridge sends
-a native TSPL label straight to the Deli 720C.
+in**. The site's Print button quietly POSTs here, and this bridge sends a native
+TSPL job straight to the Deli 720C.
 
 ```
 [Print button in browser]  --POST /print-->  [this bridge]  --RAW TSPL-->  [Deli 720C]
@@ -21,7 +25,7 @@ browser print — nothing breaks.
 1. **Install Node.js** (LTS) from <https://nodejs.org> — next-next-finish.
 2. Copy this whole `print-bridge` folder onto the warehouse PC (e.g. the Desktop).
 3. Make sure the Deli 720C is installed in Windows and prints a Windows test page.
-4. **Calibrate the labels once**: with 50 × 25 mm labels loaded, run the gap
+4. **Calibrate the labels once**: with 60 × 80 mm labels loaded, run the gap
    calibration (Deli utility, or hold the FEED button per the manual) so the
    printer learns where each label starts.
 5. Double-click **`start-bridge.bat`**. A window opens and lists your printers and
@@ -53,22 +57,22 @@ To undo it later, double-click `uninstall-autostart.bat`.
 | `port` | Local port the site talks to | `9110` |
 | `printerName` | Exact Windows printer name. Leave `""` to auto-pick the Deli/720. | `""` |
 | `dpi` | Printer resolution (203 dpi = 8 dots/mm) | `203` |
-| `widthIn` / `heightIn` | Label (media) size in inches | `1.97` × `0.97` |
+| `widthMm` / `heightMm` | Label (media) size in mm | `60` × `80` |
 | `gapMm` | Gap between die-cut labels (use `0` for continuous roll) | `3` |
 | `direction` | Flip to `0` if labels come out upside down | `1` |
 | `density` | Darkness 0–15 (raise if bars look faint) | `10` |
 | `speed` | Print speed | `4` |
-| `barcodeNarrow` | Narrow-bar width in dots (2 = safe; 3 = wider bars) | `2` |
-| `barcodeHeight` | Bar height in dots | `140` |
-| `showText` | Print the human-readable number under the barcode | `true` |
-| `yOffset` | Nudge the whole group up (−) / down (+), in dots | `0` |
-| `xOffset` | Nudge the whole group left (−) / right (+), in dots | `0` |
+| `bitmapInvert` | Set `true` only if a shipment label prints as a solid black rectangle | `false` |
+| `bitmapXOffset` / `bitmapYOffset` | Nudge the whole shipment-label image right/down (+), in dots | `0` |
+| `barcodeNarrow` | Rack barcode: narrow-bar width in dots (2 = safe; 3 = wider bars) | `3` |
+| `barcodeHeight` | Rack barcode: bar height in dots | `150` |
+| `showText` | Rack barcode: print the human-readable number below it | `true` |
+| `yOffset` / `xOffset` | Rack barcode: nudge down/right (+), in dots | `0` |
 
-Note: `barcodeNarrow` only takes whole numbers — `3` ≈ 1.66″ wide for an
-8-char code, `4` ≈ 2.2″ (too wide for a 1.97″ label). 1.66″ is the practical max.
-
-The barcode is **auto-centered** horizontally and vertically for the given label
-size, so codes of different lengths all sit in the middle.
+The shipment label is rendered by the website at exact printer resolution
+(480 × 640 dots) and printed 1:1, so it always fills the 60 × 80 mm label and the
+barcode stays scannable. The rack barcode is **auto-centered** for the label
+size, so codes of different lengths sit in the middle.
 
 To find the exact printer name, open <http://127.0.0.1:9110/printers> while the
 bridge is running, or run `Get-Printer` in PowerShell.
@@ -93,10 +97,14 @@ here. The label still comes out of the Deli 720C at the warehouse.
    PRINT_AGENT_TOKEN = <a long random string>
    ```
    (Generate one with `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`.)
-3. **Create the table** — run once (Render Shell, or locally against the prod DB):
+3. **Create the table + columns** — run once each (Render Shell, or locally
+   against the prod DB):
    ```
    node backend/migrations/add_print_jobs_table.js
+   node backend/migrations/add_printjob_bitmap_columns.js
    ```
+   (The second adds the columns that carry the pre-rendered shipment-label image,
+   so phone-queued labels print identically to the warehouse PC. It's idempotent.)
 
 ### Point this agent at the server
 In `config.json`, fill in:
@@ -115,6 +123,7 @@ the local path — no delay there.)
   Open `/printers`, copy the exact name into `config.json`, restart the bridge.
 - **Prints blank or skips labels** — run the gap calibration (step 4), or adjust
   `gapMm` (try `2`) / `heightMm`.
+- **Shipment label prints as a solid black rectangle** — set `bitmapInvert` to `true`.
 - **Upside down** — set `direction` to `0`.
 - **Faint bars that won't scan** — raise `density` (e.g. `12`) or lower `speed`.
 - **Site says it printed but nothing came out** — check the bridge window for an
@@ -132,13 +141,14 @@ the local path — no delay there.)
 ## Endpoints (for reference)
 
 Local (this PC):
-- `POST /print` — body `{ "code": "CZ-000123", "copies": 1 }`
+- `POST /print` — rack: `{ "code": "CZ-000123", "copies": 1 }`; shipment:
+  `{ "code": "...", "kind": "item", "bitmap": { "data": "<base64>", "widthBytes": 60, "height": 640 } }`
 - `GET /health` — `{ ok, printer }`
 - `GET /printers` — list installed printers + which is selected
 - `GET /selftest` — print a sample label
 
 Server (used by phones + this agent, under `/api/inventory/warehouse`):
-- `POST /print-jobs` — enqueue `{ code, kind, copies }` (staff/admin login)
+- `POST /print-jobs` — enqueue `{ code, kind, copies, bitmap? }` (staff/admin login)
 - `GET /print-jobs/pending` — agent claims jobs (agent token)
 - `POST /print-jobs/:id/complete` — agent reports result (agent token)
 - `GET /print-jobs/:id` — status lookup (staff/admin login)

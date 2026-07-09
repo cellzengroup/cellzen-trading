@@ -3,10 +3,12 @@
  * Cellzen thermal print bridge
  * ----------------------------
  * A tiny local HTTP service that runs on the warehouse PC (the one with the
- * Deli DL-720C plugged in over USB). The website's Print button POSTs a code
- * here; the bridge builds a native TSPL label (exact 50 x 25 mm) and sends it
- * straight to the printer as a RAW spool job — no browser print dialog, and
- * crisp scannable barcodes rendered by the printer itself.
+ * Deli DL-720C plugged in over USB). The website's Print button POSTs here:
+ *   - Shipment labels send a pre-rendered image (the full 60 x 80 mm design);
+ *     the bridge prints it verbatim as a native TSPL BITMAP.
+ *   - Rack/shelf labels send just a code; the bridge builds a native barcode.
+ * Either way it goes out as a RAW spool job — no browser print dialog, and a
+ * crisp scannable barcode because the image prints 1:1 with the printer dots.
  *
  * No `npm install` needed: uses only Node's standard library, plus the
  * built-in Windows PowerShell for the RAW printer write (see rawprint.ps1).
@@ -28,19 +30,24 @@ const DEFAULTS = {
   port: 9110,
   printerName: "",      // exact Windows printer name; "" = auto-detect (Deli/720)
   dpi: 203,             // Deli 720C native resolution (8 dots/mm)
-  widthIn: 1.97,        // media (label stock) width
-  heightIn: 0.97,       // media (label stock) height
+  widthMm: 60,          // media (label stock) width  — the shipment-label roll
+  heightMm: 80,         // media (label stock) height
   gapMm: 3,             // gap between die-cut labels; set 0 for continuous stock
   direction: 1,         // flip to 0 if labels print upside down
   density: 10,          // darkness 0-15
   speed: 4,             // print speed
+  // --- native barcode (rack/shelf labels; the full shipment label is a bitmap) ---
   barcodeNarrow: 3,     // narrow-bar width in dots (3 ≈ 1.8" wide; drop to 2 if it won't scan)
   barcodeHeight: 150,   // bar height in dots
   showText: true,       // print the human-readable number under the barcode
   textFont: "3",        // TSPL internal font for the number
   textScale: 1,         // text size multiplier (1-3)
-  yOffset: 0,           // nudge whole group up (negative) / down (positive), in dots
-  xOffset: 0,           // nudge whole group left (negative) / right (positive), in dots
+  yOffset: 0,           // nudge native barcode up (negative) / down (positive), in dots
+  xOffset: 0,           // nudge native barcode left (negative) / right (positive), in dots
+  // --- full-design shipment label (pre-rendered bitmap) ---
+  bitmapXOffset: 0,     // nudge the whole label image right (+) / left (-), in dots
+  bitmapYOffset: 0,     // nudge the whole label image down (+) / up (-), in dots
+  bitmapInvert: false,  // set true only if the label prints as a black rectangle
   allowOrigin: "*",     // CORS: your Render origin, or "*" for any
   apiBaseUrl: "",       // site origin for phone printing, e.g. https://cellzen-trading.onrender.com
   agentToken: "",       // must match PRINT_AGENT_TOKEN in the backend env
@@ -109,8 +116,9 @@ function buildTSPL(code, copies) {
   const n = Math.min(Math.max(parseInt(copies, 10) || 1, 1), 20);
 
   const dpi = cfg.dpi || 203;
-  const mediaW = Math.round(cfg.widthIn * dpi);   // label width in dots
-  const mediaH = Math.round(cfg.heightIn * dpi);  // label height in dots
+  const dotsPerMm = dpi / 25.4;
+  const mediaW = Math.round((cfg.widthMm || 60) * dotsPerMm);  // label width in dots
+  const mediaH = Math.round((cfg.heightMm || 80) * dotsPerMm); // label height in dots
   const narrow = cfg.barcodeNarrow || 3;
   const barH = cfg.barcodeHeight || 150;
   const showText = cfg.showText !== false;
@@ -132,7 +140,7 @@ function buildTSPL(code, copies) {
   const textY = topY + barH + GAP;
 
   const lines = [
-    `SIZE ${cfg.widthIn},${cfg.heightIn}`,   // inches (unit-less number = inch in TSPL)
+    `SIZE ${cfg.widthMm} mm,${cfg.heightMm} mm`,
     `GAP ${cfg.gapMm} mm,0 mm`,
     `DIRECTION ${cfg.direction}`,
     `REFERENCE 0,0`,
@@ -148,13 +156,56 @@ function buildTSPL(code, copies) {
   return lines.join("\r\n");
 }
 
+// Build a TSPL job that prints a pre-rendered label image (the full 60x80mm
+// shipment design). `bitmap` = { data: base64 packed 1-bit rows, widthBytes,
+// height }, packed MSB-first with bit 0 = black — TSPL BITMAP polarity. Returns
+// a Buffer because the image bytes are binary and must survive verbatim.
+function buildBitmapTSPL(bitmap, copies) {
+  const n = Math.min(Math.max(parseInt(copies, 10) || 1, 1), 20);
+  const widthBytes = parseInt(bitmap && bitmap.widthBytes, 10);
+  const height = parseInt(bitmap && bitmap.height, 10);
+  let data = Buffer.from(String((bitmap && bitmap.data) || ""), "base64");
+  const need = widthBytes * height;
+  if (!widthBytes || !height || !need || data.length < need) {
+    throw new Error("Invalid bitmap payload");
+  }
+  if (data.length > need) data = data.subarray(0, need); // ignore any trailing bytes
+  if (cfg.bitmapInvert) {
+    const inv = Buffer.allocUnsafe(data.length);
+    for (let i = 0; i < data.length; i++) inv[i] = ~data[i] & 0xff;
+    data = inv;
+  }
+  const x = Math.max(0, parseInt(cfg.bitmapXOffset, 10) || 0);
+  const y = Math.max(0, parseInt(cfg.bitmapYOffset, 10) || 0);
+
+  // The image bytes follow the BITMAP header comma with NO separator, then CRLF.
+  const header = Buffer.from(
+    [
+      `SIZE ${cfg.widthMm} mm,${cfg.heightMm} mm`,
+      `GAP ${cfg.gapMm} mm,0 mm`,
+      `DIRECTION ${cfg.direction}`,
+      `REFERENCE 0,0`,
+      `DENSITY ${cfg.density}`,
+      `SPEED ${cfg.speed}`,
+      `CLS`,
+      `BITMAP ${x},${y},${widthBytes},${height},0,`,
+    ].join("\r\n"),
+    "latin1"
+  );
+  const footer = Buffer.from(`\r\nPRINT ${n}\r\n`, "latin1");
+  return Buffer.concat([header, data, footer]);
+}
+
 // --- RAW send via PowerShell ----------------------------------------------
 
 function sendRaw(tspl) {
   return new Promise((resolve, reject) => {
     if (!PRINTER) return reject(new Error("No printer selected — set printerName in config.json"));
+    // Accept a Buffer (binary BITMAP jobs) or a string (native TSPL). Write the
+    // bytes verbatim — no text encoding — so the image survives to the printer.
+    const buf = Buffer.isBuffer(tspl) ? tspl : Buffer.from(String(tspl), "latin1");
     const tmp = path.join(os.tmpdir(), `cellzen-label-${process.pid}-${tmpCounter++}.prn`);
-    fs.writeFile(tmp, tspl, { encoding: "latin1" }, (werr) => {
+    fs.writeFile(tmp, buf, (werr) => {
       if (werr) return reject(werr);
       execFile(
         "powershell",
@@ -191,7 +242,8 @@ function json(res, code, obj) {
 function readBody(req) {
   return new Promise((resolve) => {
     let data = "";
-    req.on("data", (c) => { data += c; if (data.length > 1e5) req.destroy(); });
+    // Allow room for a pre-rendered label bitmap (~51KB base64) plus overhead.
+    req.on("data", (c) => { data += c; if (data.length > 2e6) req.destroy(); });
     req.on("end", () => resolve(data));
   });
 }
@@ -217,8 +269,16 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url === "/print") {
     try {
       const body = JSON.parse((await readBody(req)) || "{}");
+      // A pre-rendered label image (full shipment design) prints verbatim; a bare
+      // code builds a native barcode (rack labels, or a render-failed fallback).
+      if (body.bitmap && body.bitmap.data) {
+        await sendRaw(buildBitmapTSPL(body.bitmap, body.copies));
+        console.log(`  printed FULL-DESIGN label image (${body.bitmap.widthBytes * 8}x${body.bitmap.height} dots)`);
+        return json(res, 200, { ok: true, printer: PRINTER, mode: "bitmap" });
+      }
       if (!body.code) return json(res, 400, { ok: false, error: "Missing code" });
       await sendRaw(buildTSPL(body.code, body.copies));
+      console.log(`  printed plain barcode ${body.code} (no image was sent)`);
       return json(res, 200, { ok: true, printer: PRINTER, code: body.code });
     } catch (e) {
       return json(res, 500, { ok: false, error: e.message });
@@ -258,7 +318,15 @@ async function pollOnce() {
   const json = await res.json().catch(() => ({}));
   for (const job of (json && json.data) || []) {
     try {
-      await sendRaw(buildTSPL(job.code, job.copies));
+      if (job.bitmap_data) {
+        // Phone-queued full-design label — print the stored image verbatim.
+        await sendRaw(buildBitmapTSPL(
+          { data: job.bitmap_data, widthBytes: job.bitmap_width_bytes, height: job.bitmap_height },
+          job.copies
+        ));
+      } else {
+        await sendRaw(buildTSPL(job.code, job.copies));
+      }
       await reportJob(job.id, { ok: true });
       console.log(`  printed queued label ${job.code}`);
     } catch (e) {
@@ -275,23 +343,29 @@ async function startCloudPoller() {
   }
 }
 
-(async () => {
-  const names = await listPrinters();
-  PRINTER = pickPrinter(names);
-  server.listen(cfg.port, "127.0.0.1", () => {
-    console.log("");
-    console.log("  Cellzen print bridge is running.");
-    console.log("  URL            : http://127.0.0.1:" + cfg.port);
-    console.log("  Installed      : " + (names.length ? names.join(" | ") : "(no printers found)"));
-    console.log("  Using printer  : " + (PRINTER || "(NONE — set printerName in config.json)"));
-    console.log("  Local test     : open http://127.0.0.1:" + cfg.port + "/selftest");
-    if (cloudEnabled()) {
-      console.log("  Cloud queue    : ON  → " + cfg.apiBaseUrl + " (phones can print; polling " + (cfg.pollMs || 2500) + "ms)");
-      startCloudPoller();
-    } else {
-      console.log("  Cloud queue    : OFF (set apiBaseUrl + agentToken in config.json to enable phone printing)");
-    }
-    console.log("  Keep this window open while staff print. Ctrl+C to stop.");
-    console.log("");
-  });
-})();
+// Start the service only when run directly (`node bridge.js`). When required as
+// a module (e.g. by a test), just expose the TSPL builders.
+if (require.main === module) {
+  (async () => {
+    const names = await listPrinters();
+    PRINTER = pickPrinter(names);
+    server.listen(cfg.port, "127.0.0.1", () => {
+      console.log("");
+      console.log("  Cellzen print bridge is running.");
+      console.log("  URL            : http://127.0.0.1:" + cfg.port);
+      console.log("  Installed      : " + (names.length ? names.join(" | ") : "(no printers found)"));
+      console.log("  Using printer  : " + (PRINTER || "(NONE — set printerName in config.json)"));
+      console.log("  Local test     : open http://127.0.0.1:" + cfg.port + "/selftest");
+      if (cloudEnabled()) {
+        console.log("  Cloud queue    : ON  → " + cfg.apiBaseUrl + " (phones can print; polling " + (cfg.pollMs || 2500) + "ms)");
+        startCloudPoller();
+      } else {
+        console.log("  Cloud queue    : OFF (set apiBaseUrl + agentToken in config.json to enable phone printing)");
+      }
+      console.log("  Keep this window open while staff print. Ctrl+C to stop.");
+      console.log("");
+    });
+  })();
+}
+
+module.exports = { buildTSPL, buildBitmapTSPL };

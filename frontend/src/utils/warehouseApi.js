@@ -120,12 +120,16 @@ export async function deleteItem(id) {
 // Queue a label to print on the warehouse printer. Works from ANY device
 // (including phones): the on-site print agent polls this queue and prints it on
 // the Deli 720C. Returns { id, status }.
-export async function enqueuePrintJob(code, kind = "item", copies = 1) {
+//
+// `bitmap` (optional) is a pre-rendered label image { data, widthBytes, height }
+// — base64 packed 1-bit rows. When supplied, the agent prints it verbatim as a
+// TSPL BITMAP so a phone-queued label comes out identical to the warehouse PC.
+export async function enqueuePrintJob(code, kind = "item", copies = 1, bitmap = null) {
   const res = await authFetch("/inventory/warehouse/print-jobs", {
     ...STAFF,
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code, kind, copies }),
+    body: JSON.stringify(bitmap ? { code, kind, copies, bitmap } : { code, kind, copies }),
   });
   const json = await readJson(res);
   if (!res.ok || !json.success) throw new Error(json.message || "Failed to queue print");
