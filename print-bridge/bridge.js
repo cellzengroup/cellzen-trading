@@ -177,6 +177,9 @@ function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", cfg.allowOrigin);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  // Chrome "Private Network Access": a public HTTPS page (the site) calling a
+  // loopback address is gated behind this header on the preflight, else blocked.
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
 }
 
 function json(res, code, obj) {

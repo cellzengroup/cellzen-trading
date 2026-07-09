@@ -28,6 +28,9 @@ dist-ssr
 .env.local
 .env.production
 
+# Print bridge — holds the PRINT_AGENT_TOKEN secret; keep it out of git
+print-bridge/config.json
+
 # Temporary files
 temp_reference
 

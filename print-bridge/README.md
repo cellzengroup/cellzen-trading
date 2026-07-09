@@ -29,14 +29,22 @@ browser print — nothing breaks.
 6. In a browser on that PC, open <http://127.0.0.1:9110/selftest> — a test label
    should print. 🎉
 
-## Make it start automatically (recommended)
+## Make it fully automatic — never turn it on again (recommended)
 
-So staff never have to launch it:
+**Double-click `install-autostart.bat` once.** That's it. From then on the bridge:
 
-1. Press `Win + R`, type `shell:startup`, press Enter.
-2. Right-drag `start-bridge.bat` into that folder → **Create shortcuts here**.
+- starts **automatically and invisibly** every time the PC logs in (no window, nothing to click),
+- **restarts itself** if it ever stops,
+- and it starts right away too, so you can print immediately.
 
-Now the bridge starts whenever the PC logs in.
+To undo it later, double-click `uninstall-autostart.bat`.
+
+> A website can't launch a program or read the USB by itself (browser security),
+> so this little bridge has to be running — but after `install-autostart.bat` it
+> just always is. Plug the printer in, log in, print. Nothing to switch on.
+
+*(Manual alternative: `Win + R` → `shell:startup` → drop a shortcut to
+`start-hidden.vbs` in that folder.)*
 
 ## Configuration — `config.json`
 
