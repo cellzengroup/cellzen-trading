@@ -368,6 +368,7 @@ export default function WarehouseApp() {
   // ==================================================== SHIP
   const [shipSearch, setShipSearch] = useState("");
   const [shipSelectedId, setShipSelectedId] = useState(null);
+  const [shipConfirmTarget, setShipConfirmTarget] = useState(null); // item awaiting ship confirm
   const shipSelected = useMemo(
     () => items.find((i) => i.id === shipSelectedId) || null,
     [items, shipSelectedId]
@@ -407,6 +408,39 @@ export default function WarehouseApp() {
     }
   };
 
+  // Ask before shipping — the tick on each Ship row, the detail-card button and
+  // a Ship-tab scan all open this confirm, so a box is never shipped by accident.
+  const requestShip = useCallback((item) => setShipConfirmTarget(item), []);
+  const confirmShip = async () => {
+    const item = shipConfirmTarget;
+    setShipConfirmTarget(null);
+    if (item) await handleShip(item);
+  };
+
+  // A scan on the Ship tab: locate the item, then pop the ship confirm for an
+  // in-stock box (or bounce an already-shipped one over to Dispatched).
+  const handleShipScan = useCallback(
+    (text) => {
+      const t = String(text || "").trim();
+      const item = findItem(t);
+      if (!item) {
+        setShipSearch(t);
+        setShipSelectedId(null);
+        if (t) showToast(`No item matches "${t}"`, "warn");
+        return;
+      }
+      if (item.status === "shipped") {
+        setShipSelectedId(item.id);
+        setTab("Dispatched");
+        showToast(`${item.code} is already shipped`, "warn");
+        return;
+      }
+      setShipSelectedId(item.id);
+      setShipConfirmTarget(item);
+    },
+    [findItem, showToast]
+  );
+
   // Print / download a label for an item (Store, Ship, Dispatched rows).
   const handlePrintLabel = async (item) => {
     try {
@@ -424,14 +458,14 @@ export default function WarehouseApp() {
     <div className="mb-5">
       <div className={LABEL_CARD}>
         <div className="-mx-5 -mt-5 mb-4 h-3 opacity-55" style={BARCODE_STRIP} />
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0 sm:flex-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#2D2D2D]/45">Item</div>
-            <div className="mt-0.5 truncate text-2xl font-black tracking-tight">{item.code}</div>
-            <dl className="mt-3 space-y-1 text-xs">
+            <div className="mt-0.5 break-all text-2xl font-black tracking-tight">{item.code}</div>
+            <dl className="mt-3 space-y-1.5 text-xs">
               <div className="flex gap-2">
                 <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Shelf</dt>
-                <dd className="font-semibold">{item.rackId || "—"}</dd>
+                <dd className="min-w-0 break-all font-semibold">{item.rackId || "—"}</dd>
               </div>
               <div className="flex gap-2">
                 <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Tracking</dt>
@@ -439,12 +473,12 @@ export default function WarehouseApp() {
               </div>
               <div className="flex gap-2">
                 <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Stored</dt>
-                <dd>{fmtDate(item.createdAt)}{item.createdByName ? ` · ${item.createdByName}` : ""}</dd>
+                <dd className="min-w-0">{fmtDate(item.createdAt)}{item.createdByName ? ` · ${item.createdByName}` : ""}</dd>
               </div>
               {item.status === "shipped" && (
                 <div className="flex gap-2">
                   <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Shipped</dt>
-                  <dd>{fmtDate(item.shippedAt)}{item.shippedByName ? ` · ${item.shippedByName}` : ""}</dd>
+                  <dd className="min-w-0">{fmtDate(item.shippedAt)}{item.shippedByName ? ` · ${item.shippedByName}` : ""}</dd>
                 </div>
               )}
             </dl>
@@ -452,14 +486,15 @@ export default function WarehouseApp() {
               <StatusBadge status={item.status} />
             </div>
           </div>
-          <div className="shrink-0 rounded-lg bg-white p-2.5 shadow-sm">
-            <Barcode text={item.code} className="w-56 sm:w-80" />
+          {/* Barcode: full-width card below the details on phones, fixed beside them on ≥sm */}
+          <div className="mx-auto w-full max-w-[240px] shrink-0 rounded-lg bg-white p-3 shadow-sm sm:mx-0 sm:w-80 sm:max-w-none">
+            <Barcode text={item.code} className="w-full" />
           </div>
         </div>
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         {item.status === "in_stock" && (
-          <button type="button" onClick={() => handleShip(item)} className={BTN_PRIMARY}>
+          <button type="button" onClick={() => requestShip(item)} className={BTN_PRIMARY}>
             <IconCheck className="h-3.5 w-3.5" /> Mark as Shipped
           </button>
         )}
@@ -510,13 +545,17 @@ export default function WarehouseApp() {
       } else if (tab === "Racks") {
         handleScanAddShelf(text);
         setScanOpen(false);
+      } else if (tab === "Ship") {
+        // Ship → locate the box and pop the "mark as shipped" confirm
+        handleShipScan(text);
+        setScanOpen(false);
       } else {
-        // Ship + Dashboard → locate the item
+        // Dashboard → locate the item
         doLookup(text);
         setScanOpen(false);
       }
     },
-    [tab, handleStoreDecode, handleScanAddShelf, doLookup]
+    [tab, handleStoreDecode, handleScanAddShelf, handleShipScan, doLookup]
   );
 
   const scanHint = {
@@ -841,55 +880,98 @@ export default function WarehouseApp() {
                   Scan a shelf, then scan boxes — they'll appear here.
                 </p>
               ) : (
-                <div className="-mx-1 overflow-x-auto">
-                  <table className="w-full min-w-[520px] text-left text-sm">
-                    <thead>
-                      <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
-                        <th>Selected Rack</th>
-                        <th>Tracking Number</th>
-                        <th>Arrived Date</th>
-                        <th>Sorted by</th>
-                        <th className="text-center">Remarks</th>
-                      </tr>
-                    </thead>
-                    <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
-                      {feed.map((it) => (
-                        <tr
-                          key={it.id}
-                          onClick={() => openDetail(it)}
-                          className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3"
-                        >
-                          <td>
-                            <span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-semibold text-[#412460]">{it.rackId}</span>
-                          </td>
-                          <td className="max-w-[200px] truncate font-medium text-[#2D2D2D]/80">{it.trackingNumber}</td>
-                          <td className="whitespace-nowrap text-xs text-[#2D2D2D]/55">{fmtDate(it.createdAt)}</td>
-                          <td className="whitespace-nowrap text-xs text-[#2D2D2D]/70">{it.createdByName || "—"}</td>
-                          <td className="text-center">
-                            <div className="flex items-center justify-center gap-1">
-                              <button
-                                type="button"
-                                title="Print label"
-                                onClick={(e) => { e.stopPropagation(); handlePrintLabel(it); }}
-                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"
-                              >
-                                <IconPrinter className="h-4 w-4" />
-                              </button>
-                              <button
-                                type="button"
-                                title="Download label"
-                                onClick={(e) => { e.stopPropagation(); handleDownloadLabel(it); }}
-                                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"
-                              >
-                                <IconDownload className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </td>
+                <>
+                  {/* Mobile: cards */}
+                  <ul className="space-y-2.5 md:hidden">
+                    {feed.map((it) => (
+                      <li
+                        key={it.id}
+                        onClick={() => openDetail(it)}
+                        className="cursor-pointer rounded-2xl bg-white p-4 ring-1 ring-[#ECE9E3] transition active:scale-[.99]"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <span className="inline-block rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-semibold text-[#412460]">{it.rackId}</span>
+                            <p className="mt-2 break-all text-xs font-medium text-[#2D2D2D]/80">{it.trackingNumber}</p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <button
+                              type="button"
+                              title="Print label"
+                              onClick={(e) => { e.stopPropagation(); handlePrintLabel(it); }}
+                              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#2D2D2D]/55 ring-1 ring-[#ECE9E3] transition active:scale-95"
+                            >
+                              <IconPrinter className="h-4 w-4" />
+                            </button>
+                            <button
+                              type="button"
+                              title="Download label"
+                              onClick={(e) => { e.stopPropagation(); handleDownloadLabel(it); }}
+                              className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-[#2D2D2D]/55 ring-1 ring-[#ECE9E3] transition active:scale-95"
+                            >
+                              <IconDownload className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#2D2D2D]/50">
+                          <span>{fmtDate(it.createdAt)}</span>
+                          <span>· {it.createdByName || "—"}</span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+
+                  {/* Desktop: table */}
+                  <div className="-mx-1 hidden overflow-x-auto md:block">
+                    <table className="w-full min-w-[520px] text-left text-sm">
+                      <thead>
+                        <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
+                          <th>Selected Rack</th>
+                          <th>Tracking Number</th>
+                          <th>Arrived Date</th>
+                          <th>Sorted by</th>
+                          <th className="text-center">Remarks</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
+                        {feed.map((it) => (
+                          <tr
+                            key={it.id}
+                            onClick={() => openDetail(it)}
+                            className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3"
+                          >
+                            <td>
+                              <span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-semibold text-[#412460]">{it.rackId}</span>
+                            </td>
+                            <td className="max-w-[200px] truncate font-medium text-[#2D2D2D]/80">{it.trackingNumber}</td>
+                            <td className="whitespace-nowrap text-xs text-[#2D2D2D]/55">{fmtDate(it.createdAt)}</td>
+                            <td className="whitespace-nowrap text-xs text-[#2D2D2D]/70">{it.createdByName || "—"}</td>
+                            <td className="text-center">
+                              <div className="flex items-center justify-center gap-1">
+                                <button
+                                  type="button"
+                                  title="Print label"
+                                  onClick={(e) => { e.stopPropagation(); handlePrintLabel(it); }}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"
+                                >
+                                  <IconPrinter className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Download label"
+                                  onClick={(e) => { e.stopPropagation(); handleDownloadLabel(it); }}
+                                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"
+                                >
+                                  <IconDownload className="h-4 w-4" />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -915,6 +997,7 @@ export default function WarehouseApp() {
             <ItemsTable
               rows={filteredShip}
               onView={openDetail}
+              onShip={requestShip}
               onPrint={handlePrintLabel}
               onDownload={handleDownloadLabel}
               emptyAll={items.every((i) => i.status !== "in_stock")}
@@ -953,13 +1036,13 @@ export default function WarehouseApp() {
                 {racks.map((r) => (
                   <div key={r.id} className={LABEL_CARD}>
                     <div className="-mx-5 -mt-5 mb-4 h-3 opacity-55" style={BARCODE_STRIP} />
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0 sm:flex-1">
                         <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#2D2D2D]/45">Shelf</div>
-                        <div className="mt-0.5 truncate text-lg font-black tracking-tight">{r.id}</div>
+                        <div className="mt-0.5 break-all text-lg font-black tracking-tight">{r.id}</div>
                       </div>
-                      <div className="shrink-0 rounded-lg bg-white p-2 shadow-sm">
-                        <Barcode text={r.id} className="w-44 sm:w-56" />
+                      <div className="mx-auto w-full max-w-[220px] shrink-0 rounded-lg bg-white p-2 shadow-sm sm:mx-0 sm:w-56 sm:max-w-none">
+                        <Barcode text={r.id} className="w-full" />
                       </div>
                     </div>
                     <div className="mt-4 flex gap-2">
@@ -1083,6 +1166,43 @@ export default function WarehouseApp() {
                 className="rounded-full bg-red-600 px-5 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-red-700 active:scale-[.98]"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* mark-as-shipped confirm — opened by the tick button and by a Ship scan */}
+      {shipConfirmTarget && (
+        <div className="fixed inset-0 z-[125] flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl">
+            <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
+              <IconCheck className="h-5 w-5" />
+            </span>
+            <h3 className="text-base font-bold">Mark this item as shipped?</h3>
+            <p className="mt-1 text-xs text-[#2D2D2D]/55">
+              This moves <span className="font-semibold text-[#412460]">{shipConfirmTarget.code}</span> out of stock and into Dispatched.
+            </p>
+            <dl className="mt-4 space-y-2 rounded-2xl bg-[#F6F4F0] p-4 text-xs">
+              <div className="flex justify-between gap-3">
+                <dt className="shrink-0 text-[#2D2D2D]/50">Tracking</dt>
+                <dd className="min-w-0 break-all text-right font-semibold">{shipConfirmTarget.trackingNumber}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-[#2D2D2D]/50">Shelf</dt>
+                <dd className="font-semibold">{shipConfirmTarget.rackId || "—"}</dd>
+              </div>
+            </dl>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => setShipConfirmTarget(null)} className={BTN_GHOST}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmShip}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#412460] px-5 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#B99353] active:scale-[.98]"
+              >
+                <IconCheck className="h-3.5 w-3.5" /> Mark as Shipped
               </button>
             </div>
           </div>
@@ -1320,7 +1440,7 @@ export default function WarehouseApp() {
 }
 
 // Shared items table (Dashboard + Ship). `withDate` adds a Stored column.
-function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyText, onDelete, onPrint, onDownload }) {
+function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyText, onShip, onDelete, onPrint, onDownload }) {
   if (!rows || rows.length === 0) {
     return (
       <EmptyState>
@@ -1329,77 +1449,161 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
     );
   }
   return (
-    <div className="-mx-1 overflow-x-auto">
-      <table className="w-full min-w-[560px] text-left text-sm">
-        <thead>
-          <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
-            <th>Code</th>
-            <th>Tracking</th>
-            <th>Shelf</th>
-            <th>Status</th>
-            {withDate && <th>Stored</th>}
-            <th className="text-center">Remarks</th>
-          </tr>
-        </thead>
-        <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
-          {rows.map((it) => (
-            <tr
-              key={it.id}
-              onClick={() => onView(it)}
-              className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3"
-            >
-              <td className="font-bold text-[#412460]">{it.code}</td>
-              <td className="max-w-[220px] truncate text-[#2D2D2D]/80">{it.trackingNumber}</td>
-              <td>
-                <span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">
-                  {it.rackId}
+    <>
+      {/* Mobile: card list — a wide table scrolls awkwardly on a phone */}
+      <ul className="space-y-2.5 md:hidden">
+        {rows.map((it) => (
+          <li
+            key={it.id}
+            onClick={() => onView(it)}
+            className="cursor-pointer rounded-2xl bg-white p-4 shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3] transition active:scale-[.99]"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="break-all text-base font-bold leading-tight text-[#412460]">{it.code}</div>
+                <p className="mt-1 break-all text-xs font-medium text-[#2D2D2D]/70">{it.trackingNumber || "—"}</p>
+              </div>
+              <StatusBadge status={it.status} />
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+              <span className="inline-flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">Shelf</span>
+                <span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 font-semibold text-[#412460]">{it.rackId || "—"}</span>
+              </span>
+              {withDate && (
+                <span className="inline-flex items-center gap-1.5 text-[#2D2D2D]/55">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">Stored</span>
+                  {fmtDate(it.createdAt)}
                 </span>
-              </td>
-              <td>
-                <StatusBadge status={it.status} />
-              </td>
-              {withDate && <td className="whitespace-nowrap text-xs text-[#2D2D2D]/50">{fmtDate(it.createdAt)}</td>}
-              <td className="text-center">
-                <div className="flex items-center justify-center gap-1">
-                  {onPrint && (
-                    <button
-                      type="button"
-                      title="Print label"
-                      onClick={(e) => { e.stopPropagation(); onPrint(it); }}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"
-                    >
-                      <IconPrinter className="h-4 w-4" />
-                    </button>
-                  )}
-                  {onDownload && (
-                    <button
-                      type="button"
-                      title="Download label"
-                      onClick={(e) => { e.stopPropagation(); onDownload(it); }}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"
-                    >
-                      <IconDownload className="h-4 w-4" />
-                    </button>
-                  )}
-                  {onDelete && (
-                    <button
-                      type="button"
-                      title="Delete"
-                      onClick={(e) => { e.stopPropagation(); onDelete(it); }}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/40 transition-colors hover:bg-red-50 hover:text-red-600"
-                    >
-                      <IconTrash className="h-4 w-4" />
-                    </button>
-                  )}
-                  {!onPrint && !onDownload && !onDelete && (
-                    <IconChevron className="h-4 w-4 text-[#2D2D2D]/25" />
-                  )}
-                </div>
-              </td>
+              )}
+            </div>
+            {(onShip || onPrint || onDownload || onDelete) && (
+              <div className="mt-3 flex items-center gap-2 border-t border-[#F1EFEA] pt-3">
+                {onPrint && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onPrint(it); }}
+                    className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95"
+                  >
+                    <IconPrinter className="h-3.5 w-3.5" /> Print
+                  </button>
+                )}
+                {onDownload && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onDownload(it); }}
+                    className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95"
+                  >
+                    <IconDownload className="h-3.5 w-3.5" /> Label
+                  </button>
+                )}
+                {onShip && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onShip(it); }}
+                    className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95"
+                  >
+                    <IconCheck className="h-3.5 w-3.5" /> Ship
+                  </button>
+                )}
+                {onDelete && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onDelete(it); }}
+                    className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-red-500/80 ring-1 ring-red-100 transition active:scale-95"
+                  >
+                    <IconTrash className="h-3.5 w-3.5" /> Delete
+                  </button>
+                )}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {/* Desktop: table */}
+      <div className="-mx-1 hidden overflow-x-auto md:block">
+        <table className="w-full min-w-[560px] text-left text-sm">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
+              <th>Code</th>
+              <th>Tracking</th>
+              <th>Shelf</th>
+              <th>Status</th>
+              {withDate && <th>Stored</th>}
+              <th className="text-center">Remarks</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
+            {rows.map((it) => (
+              <tr
+                key={it.id}
+                onClick={() => onView(it)}
+                className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3"
+              >
+                <td className="font-bold text-[#412460]">{it.code}</td>
+                <td className="max-w-[220px] truncate text-[#2D2D2D]/80">{it.trackingNumber}</td>
+                <td>
+                  <span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">
+                    {it.rackId}
+                  </span>
+                </td>
+                <td>
+                  <StatusBadge status={it.status} />
+                </td>
+                {withDate && <td className="whitespace-nowrap text-xs text-[#2D2D2D]/50">{fmtDate(it.createdAt)}</td>}
+                <td className="text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {onPrint && (
+                      <button
+                        type="button"
+                        title="Print label"
+                        onClick={(e) => { e.stopPropagation(); onPrint(it); }}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"
+                      >
+                        <IconPrinter className="h-4 w-4" />
+                      </button>
+                    )}
+                    {onDownload && (
+                      <button
+                        type="button"
+                        title="Download label"
+                        onClick={(e) => { e.stopPropagation(); onDownload(it); }}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"
+                      >
+                        <IconDownload className="h-4 w-4" />
+                      </button>
+                    )}
+                    {onShip && (
+                      <button
+                        type="button"
+                        title="Mark as shipped"
+                        onClick={(e) => { e.stopPropagation(); onShip(it); }}
+                        className="ml-1 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#412460] text-white transition-colors hover:bg-[#B99353]"
+                      >
+                        <IconCheck className="h-4 w-4" />
+                      </button>
+                    )}
+                    {onDelete && (
+                      <button
+                        type="button"
+                        title="Delete"
+                        onClick={(e) => { e.stopPropagation(); onDelete(it); }}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/40 transition-colors hover:bg-red-50 hover:text-red-600"
+                      >
+                        <IconTrash className="h-4 w-4" />
+                      </button>
+                    )}
+                    {!onShip && !onPrint && !onDownload && !onDelete && (
+                      <IconChevron className="h-4 w-4 text-[#2D2D2D]/25" />
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
