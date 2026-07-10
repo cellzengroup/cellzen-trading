@@ -48,6 +48,69 @@ const ADMIN_CREDENTIALS = [
   },
 ];
 
+// Fixed warehouse staff: a simple username + one shared password, and NO email
+// verification (warehouse workers have no personal email/inbox). Like the
+// hardcoded admins, they're auto-provisioned into the users table on first
+// login, so admins don't have to create them and the email-code step is skipped.
+// Username matching is case-insensitive; the displayed name is just the name.
+const WAREHOUSE_STAFF_PASSWORD = 'Cellzen2025@';
+const WAREHOUSE_STAFF = [
+  { username: 'Moona', name: 'Moona' },
+  { username: 'Yukesh', name: 'Yukesh' },
+  { username: 'subodh', name: 'Subodh' },
+  { username: 'Colleen', name: 'Colleen' },
+  { username: 'Amrin', name: 'Amrin' },
+  { username: 'Yiron', name: 'Yiron' },
+];
+
+// A stable internal email so the (required, unique) email column is satisfied.
+// It never receives mail — these accounts are emailVerified from the start.
+const warehouseStaffEmail = (username) => `${String(username).toLowerCase()}@warehouse.cellzen`;
+
+// Match an identifier (username or the internal email) to a fixed staff entry,
+// case-insensitively.
+const findWarehouseStaff = (identifier) => {
+  const id = String(identifier || '').trim().toLowerCase();
+  return WAREHOUSE_STAFF.find(
+    (s) => s.username.toLowerCase() === id || warehouseStaffEmail(s.username) === id
+  );
+};
+
+// Find-or-create the DB user for a fixed warehouse staff account, keeping its
+// name/role/verified state in sync. Returns the User row.
+async function ensureWarehouseStaffUser(staff) {
+  const email = warehouseStaffEmail(staff.username);
+  let user = await User.findOne({
+    where: { [Op.or]: [{ username: { [Op.iLike]: staff.username } }, { email }] },
+  });
+  if (!user) {
+    const hashedPassword = await bcrypt.hash(WAREHOUSE_STAFF_PASSWORD, 10);
+    user = await User.create({
+      name: staff.name,
+      firstName: staff.name,
+      lastName: null,
+      username: staff.username,
+      email,
+      password: hashedPassword,
+      role: 'staff',
+      accountType: 'Staff',
+      emailVerified: true,
+      accountApprovalStatus: 'approved',
+    });
+    return user;
+  }
+  const updates = {};
+  if (user.name !== staff.name) { updates.name = staff.name; updates.firstName = staff.name; updates.lastName = null; }
+  if (user.username !== staff.username) updates.username = staff.username;
+  if (String(user.role).toLowerCase() !== 'staff') updates.role = 'staff';
+  if (!user.emailVerified) updates.emailVerified = true;
+  if (Object.keys(updates).length) {
+    await user.update(updates);
+    invalidateUserCache(user.id);
+  }
+  return user;
+}
+
 const buildAdminUserPayload = (matched, hashedPassword) => ({
   name: matched.name,
   firstName: matched.name.split(' ')[0],
@@ -257,6 +320,19 @@ router.post('/login', async (req, res) => {
 
     if (!rawEmail || !password) {
       return res.status(400).json({ success: false, message: 'Email and password are required' });
+    }
+
+    // Fixed warehouse staff (username + shared password): auto-provision and sign
+    // in directly, skipping the first-login email-code step. Case-insensitive.
+    const fixedStaff = findWarehouseStaff(rawEmail);
+    if (fixedStaff && password === WAREHOUSE_STAFF_PASSWORD) {
+      const staffUser = await ensureWarehouseStaffUser(fixedStaff);
+      const token = generateToken(staffUser);
+      return res.json({
+        success: true,
+        token,
+        user: { id: staffUser.id, name: staffUser.name, email: staffUser.email, role: staffUser.role },
+      });
     }
 
     // Case-insensitive match by email OR username, so staff can sign in with a
