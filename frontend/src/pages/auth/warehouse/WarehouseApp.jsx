@@ -37,6 +37,73 @@ const LABEL = "block text-[10px] font-semibold uppercase tracking-[0.14em] text-
 const LABEL_CARD =
   "relative overflow-hidden rounded-2xl bg-[#E9E4D8] p-5 text-[#2D2D2D] ring-1 ring-[#D9D0BC]";
 
+// A custom (non-native) searchable dropdown: type to filter, click to pick,
+// click outside to close. `allowCustom` keeps a typed value that isn't in the
+// list (used for the logistics name). Module-level so its identity is stable
+// and the input never loses focus mid-keystroke.
+function SearchSelect({ value, onChange, options, placeholder, allowCustom = true }) {
+  const [open, setOpen] = useState(false);
+  const [typed, setTyped] = useState(null); // null → show `value`; string → filtering
+  const wrapRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDoc = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) { setOpen(false); setTyped(null); }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const shown = typed !== null ? typed : (value || "");
+  const q = (typed || "").trim().toLowerCase();
+  const filtered = q ? options.filter((o) => o.toLowerCase().includes(q)) : options;
+  const pick = (opt) => { onChange(opt); setTyped(null); setOpen(false); };
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <input
+        type="text"
+        value={shown}
+        onChange={(e) => { setTyped(e.target.value); setOpen(true); if (allowCustom) onChange(e.target.value); }}
+        onFocus={(e) => { setOpen(true); e.target.select(); }}
+        placeholder={placeholder}
+        autoComplete="off"
+        className={`${FIELD} pr-9`}
+      />
+      <svg
+        className={`pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#2D2D2D]/40 transition-transform ${open ? "rotate-180" : ""}`}
+        viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+      >
+        <path d="M6 9l6 6 6-6" />
+      </svg>
+      {open && (
+        <ul className="absolute z-20 mt-1.5 max-h-56 w-full overflow-auto rounded-2xl border border-[#E3DEEA] bg-white py-1.5 shadow-xl">
+          {filtered.map((opt) => (
+            <li key={opt}>
+              <button
+                type="button"
+                onMouseDown={(e) => { e.preventDefault(); pick(opt); }}
+                className={`flex w-full items-center justify-between px-4 py-2.5 text-left text-sm transition-colors hover:bg-[#F6F4F0] ${
+                  value === opt ? "font-semibold text-[#412460]" : "text-[#2D2D2D]"
+                }`}
+              >
+                {opt}
+                {value === opt && (
+                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                )}
+              </button>
+            </li>
+          ))}
+          {filtered.length === 0 && (
+            <li className="px-4 py-2.5 text-sm text-[#2D2D2D]/40">No matches</li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // A faint barcode strip that reads as a "physical shipping label" edge.
 const BARCODE_STRIP = {
   backgroundImage:
@@ -155,7 +222,7 @@ export default function WarehouseApp() {
   const showSaved = useCallback((item) => {
     setSavedItem(item);
     if (savedTimer.current) clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSavedItem(null), 3500);
+    savedTimer.current = setTimeout(() => setSavedItem(null), 6000);
   }, []);
   useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
 
@@ -328,7 +395,9 @@ export default function WarehouseApp() {
           value={manualRackSelect}
           onChange={(e) => {
             setManualRackSelect(e.target.value);
-            if (e.target.value) setManualRackText("");
+            // Auto-fill the Shelf Number field with the chosen shelf so it's
+            // visible (and editable) instead of left blank.
+            if (e.target.value) setManualRackText(e.target.value);
           }}
           className={`${FIELD} mt-1.5`}
         >
@@ -369,6 +438,8 @@ export default function WarehouseApp() {
   const [shipSearch, setShipSearch] = useState("");
   const [shipSelectedId, setShipSelectedId] = useState(null);
   const [shipConfirmTarget, setShipConfirmTarget] = useState(null); // item awaiting ship confirm
+  const [shipLogistics, setShipLogistics] = useState(""); // required at ship time
+  const [shipFrom, setShipFrom] = useState(""); // "By Land" | "By Sea", required
   const shipSelected = useMemo(
     () => items.find((i) => i.id === shipSelectedId) || null,
     [items, shipSelectedId]
@@ -397,9 +468,9 @@ export default function WarehouseApp() {
     [findItem, showToast]
   );
 
-  const handleShip = async (item) => {
+  const handleShip = async (item, logisticsName, shipmentFrom) => {
     try {
-      const updated = await shipItem(item.id);
+      const updated = await shipItem(item.id, logisticsName, shipmentFrom);
       setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
       setShipSelectedId(null); // it leaves Ship and appears in Dispatched
       showToast(`${updated.code} marked shipped`, "ok");
@@ -410,11 +481,21 @@ export default function WarehouseApp() {
 
   // Ask before shipping — the tick on each Ship row, the detail-card button and
   // a Ship-tab scan all open this confirm, so a box is never shipped by accident.
-  const requestShip = useCallback((item) => setShipConfirmTarget(item), []);
+  // The confirm also collects the required logistics + shipment-from details.
+  const requestShip = useCallback((item) => {
+    setShipLogistics("");
+    setShipFrom("");
+    setShipConfirmTarget(item);
+  }, []);
   const confirmShip = async () => {
     const item = shipConfirmTarget;
+    if (!item) return;
+    const logistics = shipLogistics.trim();
+    const from = shipFrom.trim();
+    if (!logistics) return showToast("Enter the name of the logistics.", "error");
+    if (!from) return showToast("Choose shipment from — By Land or By Sea.", "error");
     setShipConfirmTarget(null);
-    if (item) await handleShip(item);
+    await handleShip(item, logistics, from);
   };
 
   // A scan on the Ship tab: locate the item, then pop the ship confirm for an
@@ -479,6 +560,18 @@ export default function WarehouseApp() {
                 <div className="flex gap-2">
                   <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Shipped</dt>
                   <dd className="min-w-0">{fmtDate(item.shippedAt)}{item.shippedByName ? ` · ${item.shippedByName}` : ""}</dd>
+                </div>
+              )}
+              {item.status === "shipped" && item.logisticsName && (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Logistics</dt>
+                  <dd className="min-w-0 break-all font-semibold">{item.logisticsName}</dd>
+                </div>
+              )}
+              {item.status === "shipped" && item.shipmentFrom && (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Ship via</dt>
+                  <dd className="min-w-0 font-semibold">{item.shipmentFrom}</dd>
                 </div>
               )}
             </dl>
@@ -652,6 +745,25 @@ export default function WarehouseApp() {
       showToast(`${item.code} deleted`, "ok");
     } catch (e) {
       showToast(e.message || "Unable to delete item", "error");
+    }
+  };
+
+  // "Item stored" sheet actions. Any interaction stops the sheet's auto-dismiss
+  // so it doesn't disappear mid-tap.
+  const keepSavedSheet = () => { if (savedTimer.current) clearTimeout(savedTimer.current); };
+  const printSavedItem = () => { keepSavedSheet(); if (savedItem) handlePrintLabel(savedItem); };
+  const undoSavedItem = async () => {
+    const item = savedItem;
+    keepSavedSheet();
+    setSavedItem(null);
+    if (!item) return;
+    try {
+      await deleteItem(item.id);
+      setItems((prev) => prev.filter((i) => i.id !== item.id));
+      setFeed((prev) => prev.filter((i) => i.id !== item.id));
+      showToast(`${item.code} removed`, "ok");
+    } catch (e) {
+      showToast(e.message || "Unable to remove item", "error");
     }
   };
 
@@ -1193,6 +1305,38 @@ export default function WarehouseApp() {
                 <dd className="font-semibold">{shipConfirmTarget.rackId || "—"}</dd>
               </div>
             </dl>
+
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className={LABEL}>
+                  Name of the logistics <span className="text-red-500">*</span>
+                </label>
+                <div className="mt-1.5">
+                  <SearchSelect
+                    value={shipLogistics}
+                    onChange={setShipLogistics}
+                    options={["RK Logistics", "FR Logistics"]}
+                    placeholder="Search or type, e.g. RK Logistics"
+                    allowCustom
+                  />
+                </div>
+              </div>
+              <div>
+                <label className={LABEL}>
+                  Shipment from <span className="text-red-500">*</span>
+                </label>
+                <div className="mt-1.5">
+                  <SearchSelect
+                    value={shipFrom}
+                    onChange={setShipFrom}
+                    options={["By Land", "By Sea"]}
+                    placeholder="Search or choose — By Land / By Sea"
+                    allowCustom={false}
+                  />
+                </div>
+              </div>
+            </div>
+
             <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setShipConfirmTarget(null)} className={BTN_GHOST}>
                 Cancel
@@ -1315,6 +1459,8 @@ export default function WarehouseApp() {
           <div
             className="w-full max-w-md rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl"
             onClick={(e) => e.stopPropagation()}
+            onMouseEnter={keepSavedSheet}
+            onTouchStart={keepSavedSheet}
           >
             <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-600">
               <IconCheck className="h-7 w-7" />
@@ -1339,13 +1485,31 @@ export default function WarehouseApp() {
                 <dd className="font-semibold">{fmtDate(savedItem.createdAt)}</dd>
               </div>
             </dl>
-            <button
-              type="button"
-              onClick={() => setSavedItem(null)}
-              className="mt-6 w-full rounded-full bg-[#412460] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-[#B99353] active:scale-[.98]"
-            >
-              OK
-            </button>
+            <div className="mt-6 space-y-2.5">
+              <button
+                type="button"
+                onClick={printSavedItem}
+                className="flex w-full items-center justify-center gap-2 rounded-full bg-[#412460] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-[#B99353] active:scale-[.98]"
+              >
+                <IconPrinter className="h-4 w-4" /> Print label
+              </button>
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={undoSavedItem}
+                  className="rounded-full border border-[#E3DEEA] bg-white px-6 py-3 text-sm font-semibold text-[#2D2D2D]/70 transition hover:border-red-300 hover:text-red-600 active:scale-[.98]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { keepSavedSheet(); setSavedItem(null); }}
+                  className="rounded-full bg-[#2D2D2D] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#412460] active:scale-[.98]"
+                >
+                  OK
+                </button>
+              </div>
+            </div>
           </div>
         </div>,
         document.body

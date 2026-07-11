@@ -50,6 +50,15 @@ const WarehouseItem = sequelize
         type: DataTypes.STRING,
         allowNull: true,
       },
+      // Captured (required) when the item is marked shipped.
+      logistics_name: {
+        type: DataTypes.STRING,
+        allowNull: true, // e.g. "RK Logistics" — free text with suggestions
+      },
+      shipment_from: {
+        type: DataTypes.STRING,
+        allowNull: true, // "By Land" | "By Sea"
+      },
     }, {
       tableName: 'warehouse_items',
       timestamps: true,

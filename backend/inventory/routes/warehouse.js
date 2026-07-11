@@ -282,11 +282,18 @@ router.post('/items/:id/ship', authenticate, requireStaffOrAdmin, async (req, re
     if (item.status === 'shipped') {
       return res.status(409).json({ success: false, message: 'Item is already shipped', data: item });
     }
+    // Both details are required at ship time.
+    const logisticsName = String(req.body?.logisticsName ?? req.body?.logistics_name ?? '').trim();
+    const shipmentFrom = String(req.body?.shipmentFrom ?? req.body?.shipment_from ?? '').trim();
+    if (!logisticsName) return res.status(400).json({ success: false, message: 'Name of the logistics is required' });
+    if (!shipmentFrom) return res.status(400).json({ success: false, message: 'Shipment from is required' });
     await item.update({
       status: 'shipped',
       shipped_at: new Date(),
       shipped_by_user_id: req.user.id,
       shipped_by_name: req.user.name || null,
+      logistics_name: logisticsName.slice(0, 120),
+      shipment_from: shipmentFrom.slice(0, 60),
     });
     res.json({ success: true, data: item });
   } catch (error) {

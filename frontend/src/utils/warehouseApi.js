@@ -23,6 +23,8 @@ export function unwrapItem(row) {
     createdAt: row.createdAt,
     shippedAt: row.shipped_at || null,
     shippedByName: row.shipped_by_name || null,
+    logisticsName: row.logistics_name || "",
+    shipmentFrom: row.shipment_from || "",
   };
 }
 
@@ -96,10 +98,14 @@ export async function putAwayItem(rackId, trackingNumber) {
   return unwrapItem(json.data);
 }
 
-export async function shipItem(id) {
+// Mark an item shipped. `logisticsName` and `shipmentFrom` are required by the
+// backend (the carrier + whether it goes by land or sea).
+export async function shipItem(id, logisticsName, shipmentFrom) {
   const res = await authFetch(`/inventory/warehouse/items/${encodeURIComponent(id)}/ship`, {
     ...STAFF,
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ logisticsName, shipmentFrom }),
   });
   const json = await readJson(res);
   if (!res.ok || !json.success) throw new Error(json.message || "Failed to mark shipped");
