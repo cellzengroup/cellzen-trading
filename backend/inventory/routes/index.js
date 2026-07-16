@@ -8,6 +8,7 @@ const invoiceRoutes = require('./invoices');
 const settingsRoutes = require('./settings');
 const packingRoutes = require('./packing');
 const warehouseRoutes = require('./warehouse');
+const supplierOrderRoutes = require('./supplierOrders');
 
 const router = express.Router();
 
@@ -28,5 +29,6 @@ router.use('/invoices', invoiceRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/packing', packingRoutes);
 router.use('/warehouse', warehouseRoutes);
+router.use('/supplier-orders', supplierOrderRoutes);
 
 module.exports = router;

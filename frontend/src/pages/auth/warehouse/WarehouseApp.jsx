@@ -12,6 +12,8 @@ import {
   shipItem,
   deleteItem,
   exportItemsCsv,
+  loadSupplierOrders,
+  syncSupplierOrders,
 } from "../../../utils/warehouseApi";
 import { downloadItemLabel, downloadRackLabel, printItemLabel } from "../../../utils/warehouseLabels";
 
@@ -21,7 +23,8 @@ import { downloadItemLabel, downloadRackLabel, printItemLabel } from "../../../u
 const RACK_CODE_PATTERN = /^[A-Za-z]{1,6}\d{1,4}-\d{1,4}-\d{1,6}$/;
 const isShelf = (text) => RACK_CODE_PATTERN.test(String(text || "").trim());
 
-const TABS = ["Store", "Ship", "Racks", "Dashboard", "Dispatched"];
+const CELLZEN_TABS = ["Store", "Ship", "Racks", "Dashboard", "Dispatched"];
+const GTRADEA_TABS = ["Store", "Ship", "Racks", "Dispatched", "1688 Orders"];
 
 // ---- shared Tailwind tokens (match the staff-portal design system) ----
 const SURFACE =
@@ -36,6 +39,27 @@ const FIELD =
 const LABEL = "block text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/50";
 const LABEL_CARD =
   "relative overflow-hidden rounded-2xl bg-[#E9E4D8] p-5 text-[#2D2D2D] ring-1 ring-[#D9D0BC]";
+
+// Instant-paint cache: remember the last item list per section (Cellzen / GtradeA)
+// so re-opening the app paints rows immediately while the network refresh runs in
+// the background. Keyed by mode so the two sections never bleed together. Best
+// effort — quota / private-mode / bad JSON all fall back to an empty list.
+const itemsCacheKey = (mode) => `wh_items_cache_${mode === "gtradea" ? "gtradea" : "cellzen"}`;
+function readItemsCache(mode) {
+  try {
+    const arr = JSON.parse(localStorage.getItem(itemsCacheKey(mode)) || "[]");
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+function writeItemsCache(mode, items) {
+  try {
+    localStorage.setItem(itemsCacheKey(mode), JSON.stringify(items || []));
+  } catch {
+    /* storage full / unavailable — instant-paint is best-effort */
+  }
+}
 
 // A custom (non-native) searchable dropdown: type to filter, click to pick,
 // click outside to close. `allowCustom` keeps a typed value that isn't in the
@@ -193,11 +217,50 @@ function EmptyState({ children }) {
   );
 }
 
-export default function WarehouseApp() {
+// Row + header checkboxes for batch selection (Ship / Dispatched). stopPropagation
+// on the box keeps a tap from also opening the row's detail view.
+function RowCheck({ checked, onChange, label }) {
+  return (
+    <input
+      type="checkbox"
+      checked={checked}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => onChange(e.target.checked)}
+      aria-label={label}
+      className="h-4 w-4 shrink-0 cursor-pointer rounded accent-[#412460]"
+    />
+  );
+}
+
+// Header "select all" — checked when every visible row is selected, indeterminate
+// when only some are. Toggles the whole visible page.
+function SelectAllCheck({ rows, selected, onToggleAll }) {
+  const ref = useRef(null);
+  const total = rows ? rows.length : 0;
+  const sel = rows ? rows.filter((r) => selected?.has(r.id)).length : 0;
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = sel > 0 && sel < total;
+  }, [sel, total]);
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      checked={total > 0 && sel === total}
+      onChange={(e) => onToggleAll(e.target.checked)}
+      aria-label="Select all"
+      className="h-4 w-4 cursor-pointer rounded accent-[#412460]"
+    />
+  );
+}
+
+export default function WarehouseApp({ mode = "cellzen" }) {
+  const isGtradea = mode === "gtradea";
+  const homePath = isGtradea ? "/warehouse-gtradea" : "/warehouse";
+  const TABS = isGtradea ? GTRADEA_TABS : CELLZEN_TABS;
   const navigate = useNavigate();
 
   const [racks, setRacks] = useState([]);
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState(() => readItemsCache(mode)); // instant paint from cache
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [tab, setTab] = useState("Store");
@@ -252,7 +315,7 @@ export default function WarehouseApp() {
     setLoading(true);
     setError("");
     try {
-      const [r, it] = await Promise.all([loadRacks(), loadItems()]);
+      const [r, it] = await Promise.all([loadRacks(), loadItems(mode)]);
       setRacks(r);
       setItems(it);
     } catch (e) {
@@ -269,10 +332,16 @@ export default function WarehouseApp() {
     if (localStorage.getItem("staff_token")) loadData();
   }, [loadData]);
 
+  // Keep the instant-paint cache in step with the live list so the next open of
+  // this section paints immediately (then reconciles via loadData).
+  useEffect(() => {
+    writeItemsCache(mode, items);
+  }, [items, mode]);
+
   // Standalone /warehouse isn't covered by the global auth:expired redirect, so
   // handle it here.
   useEffect(() => {
-    const onExpired = () => navigate("/staff-login?next=/warehouse", { replace: true });
+    const onExpired = () => navigate(`/staff-login?next=${homePath}`, { replace: true });
     window.addEventListener("auth:expired", onExpired);
     return () => window.removeEventListener("auth:expired", onExpired);
   }, [navigate]);
@@ -338,7 +407,7 @@ export default function WarehouseApp() {
   const storeTracking = useCallback(
     async (rackId, tracking) => {
       try {
-        const item = await putAwayItem(rackId, String(tracking).trim().toUpperCase());
+        const item = await putAwayItem(rackId, String(tracking).trim().toUpperCase(), mode);
         setItems((prev) => [item, ...prev]);
         setFeed((prev) => [item, ...prev].slice(0, 8));
         upsertRack({ id: item.rackId, note: "", createdAt: item.createdAt });
@@ -437,9 +506,22 @@ export default function WarehouseApp() {
   // ==================================================== SHIP
   const [shipSearch, setShipSearch] = useState("");
   const [shipSelectedId, setShipSelectedId] = useState(null);
-  const [shipConfirmTarget, setShipConfirmTarget] = useState(null); // item awaiting ship confirm
+  const [shipConfirmItems, setShipConfirmItems] = useState(null); // items awaiting ship confirm (1 or many)
   const [shipLogistics, setShipLogistics] = useState(""); // required at ship time
   const [shipFrom, setShipFrom] = useState(""); // "By Land" | "By Sea", required
+  // Batch selection — hidden by default; the "Batch Ship" / "Batch Delete" button
+  // turns on select mode, which reveals the row checkboxes. Ship (in-stock) and
+  // Dispatched (shipped) keep independent modes + selection sets.
+  const [shipBatchMode, setShipBatchMode] = useState(false);
+  const [dispatchBatchMode, setDispatchBatchMode] = useState(false);
+  const [shipSel, setShipSel] = useState(() => new Set());
+  const [dispatchSel, setDispatchSel] = useState(() => new Set());
+  const exitShipBatch = () => { setShipBatchMode(false); setShipSel(new Set()); };
+  const exitDispatchBatch = () => { setDispatchBatchMode(false); setDispatchSel(new Set()); };
+  const toggleShipSel = useCallback((id) => setShipSel((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
+  const toggleDispatchSel = useCallback((id) => setDispatchSel((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
+  const toggleAllShip = useCallback((rows, checked) => setShipSel((prev) => { const n = new Set(prev); rows.forEach((r) => (checked ? n.add(r.id) : n.delete(r.id))); return n; }), []);
+  const toggleAllDispatch = useCallback((rows, checked) => setDispatchSel((prev) => { const n = new Set(prev); rows.forEach((r) => (checked ? n.add(r.id) : n.delete(r.id))); return n; }), []);
   const shipSelected = useMemo(
     () => items.find((i) => i.id === shipSelectedId) || null,
     [items, shipSelectedId]
@@ -468,34 +550,62 @@ export default function WarehouseApp() {
     [findItem, showToast]
   );
 
-  const handleShip = async (item, logisticsName, shipmentFrom) => {
-    try {
-      const updated = await shipItem(item.id, logisticsName, shipmentFrom);
-      setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
-      setShipSelectedId(null); // it leaves Ship and appears in Dispatched
-      showToast(`${updated.code} marked shipped`, "ok");
-    } catch (e) {
-      showToast(e.message || "Failed to mark shipped", "error");
+  // Ship one or many items with the same logistics details. Runs the calls
+  // concurrently and reconciles the list from whatever succeeded, so one failure
+  // doesn't abort the rest of a batch.
+  const handleShipMany = async (list, logisticsName, shipmentFrom) => {
+    const results = await Promise.allSettled(
+      list.map((it) => shipItem(it.id, logisticsName, shipmentFrom))
+    );
+    const shipped = [];
+    let failed = 0;
+    results.forEach((r) => { if (r.status === "fulfilled") shipped.push(r.value); else failed += 1; });
+    if (shipped.length) {
+      const byId = new Map(shipped.map((s) => [s.id, s]));
+      setItems((prev) => prev.map((i) => byId.get(i.id) || i));
+      setShipSel((prev) => { const n = new Set(prev); shipped.forEach((s) => n.delete(s.id)); return n; });
+      setShipSelectedId(null); // they leave Ship and appear in Dispatched
+    }
+    if (shipped.length && !failed) {
+      showToast(shipped.length === 1 ? `${shipped[0].code} marked shipped` : `${shipped.length} items marked shipped`, "ok");
+    } else if (shipped.length && failed) {
+      showToast(`${shipped.length} shipped · ${failed} failed`, "warn");
+    } else {
+      showToast("Failed to mark shipped", "error");
     }
   };
 
-  // Ask before shipping — the tick on each Ship row, the detail-card button and
-  // a Ship-tab scan all open this confirm, so a box is never shipped by accident.
-  // The confirm also collects the required logistics + shipment-from details.
+  // Ask before shipping — the tick on each Ship row, the detail-card button, a
+  // Ship-tab scan, and the "Ship selected" batch button all open this confirm, so
+  // a box is never shipped by accident. The confirm also collects the required
+  // logistics + shipment-from details, applied to every item in the batch.
   const requestShip = useCallback((item) => {
     setShipLogistics("");
     setShipFrom("");
-    setShipConfirmTarget(item);
+    setShipConfirmItems([item]);
   }, []);
+  const requestBatchShip = () => {
+    const list = items.filter((i) => i.status === "in_stock" && shipSel.has(i.id));
+    if (!list.length) return showToast("Select items to ship first", "warn");
+    setShipLogistics("");
+    setShipFrom("");
+    setShipConfirmItems(list);
+  };
   const confirmShip = async () => {
-    const item = shipConfirmTarget;
-    if (!item) return;
-    const logistics = shipLogistics.trim();
-    const from = shipFrom.trim();
-    if (!logistics) return showToast("Enter the name of the logistics.", "error");
-    if (!from) return showToast("Choose shipment from — By Land or By Sea.", "error");
-    setShipConfirmTarget(null);
-    await handleShip(item, logistics, from);
+    const list = shipConfirmItems;
+    if (!list || !list.length) return;
+    let logistics = "";
+    let from = "";
+    // GtradeA ships with a single tap (no carrier / land-sea details).
+    if (!isGtradea) {
+      logistics = shipLogistics.trim();
+      from = shipFrom.trim();
+      if (!logistics) return showToast("Enter the name of the logistics.", "error");
+      if (!from) return showToast("Choose shipment from — By Land or By Sea.", "error");
+    }
+    setShipConfirmItems(null);
+    await handleShipMany(list, logistics, from);
+    if (shipBatchMode) exitShipBatch(); // leave select mode once the batch is done
   };
 
   // A scan on the Ship tab: locate the item, then pop the ship confirm for an
@@ -517,19 +627,31 @@ export default function WarehouseApp() {
         return;
       }
       setShipSelectedId(item.id);
-      setShipConfirmTarget(item);
+      setShipConfirmItems([item]);
     },
     [findItem, showToast]
   );
 
-  // Print / download a label for an item (Store, Ship, Dispatched rows).
-  const handlePrintLabel = async (item) => {
+  // Print a label — ask how many copies first (default 1). Some shipments share a
+  // tracking number but have several packages, so you can print e.g. 12.
+  const [printQtyTarget, setPrintQtyTarget] = useState(null); // item awaiting a copy count
+  const [printQty, setPrintQty] = useState("1");
+  const doPrintLabel = async (item, copies) => {
     try {
-      const how = await printItemLabel(item);
-      if (how === "queued") showToast("Sent to the warehouse printer ✓", "ok");
+      const how = await printItemLabel(item, copies);
+      const n = copies > 1 ? `${copies} labels` : "label";
+      if (how === "queued") showToast(`Sent ${n} to the warehouse printer ✓`, "ok");
+      else if (how === "local") showToast(`Printing ${n} ✓`, "ok");
     } catch (e) {
       showToast(e.message || "Print failed", "error");
     }
+  };
+  const handlePrintLabel = (item) => { setPrintQty("1"); setPrintQtyTarget(item); };
+  const confirmPrintQty = async () => {
+    const item = printQtyTarget;
+    const copies = Math.max(1, Math.min(parseInt(printQty, 10) || 1, 20));
+    setPrintQtyTarget(null);
+    if (item) await doPrintLabel(item, copies);
   };
   const handleDownloadLabel = (item) =>
     downloadItemLabel(item).catch((e) => showToast(e.message || "Download failed", "error"));
@@ -552,6 +674,18 @@ export default function WarehouseApp() {
                 <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Tracking</dt>
                 <dd className="min-w-0 break-all font-semibold">{item.trackingNumber}</dd>
               </div>
+              {item.orderNumber && (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Order #</dt>
+                  <dd className="min-w-0 break-all font-semibold">{item.orderNumber}</dd>
+                </div>
+              )}
+              {item.productName && (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Product</dt>
+                  <dd className="min-w-0">{item.productName}</dd>
+                </div>
+              )}
               <div className="flex gap-2">
                 <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Stored</dt>
                 <dd className="min-w-0">{fmtDate(item.createdAt)}{item.createdByName ? ` · ${item.createdByName}` : ""}</dd>
@@ -642,6 +776,10 @@ export default function WarehouseApp() {
         // Ship → locate the box and pop the "mark as shipped" confirm
         handleShipScan(text);
         setScanOpen(false);
+      } else if (tab === "1688 Orders") {
+        // 1688 Orders → filter the list by the scanned CN tracking number
+        setSupplierSearch(String(text || "").trim());
+        setScanOpen(false);
       } else {
         // Dashboard → locate the item
         doLookup(text);
@@ -656,6 +794,7 @@ export default function WarehouseApp() {
     Ship: "Scan any code to locate it",
     Racks: "Scan a shelf label to add it",
     Dashboard: "Scan any code to find it",
+    "1688 Orders": "Scan a CN tracking to search",
   }[tab] || "Scan a code";
 
   // Manual mode in the camera overlay uses the light Cellzen theme, not black.
@@ -706,6 +845,7 @@ export default function WarehouseApp() {
   const [newRackName, setNewRackName] = useState("");
   const [rackDeleteTarget, setRackDeleteTarget] = useState(null);
   const [itemDeleteTarget, setItemDeleteTarget] = useState(null);
+  const [batchDeleteItems, setBatchDeleteItems] = useState(null); // shipped records awaiting batch delete
 
   const handleAddRack = async () => {
     const id = newRackName.trim().toUpperCase();
@@ -746,6 +886,33 @@ export default function WarehouseApp() {
     } catch (e) {
       showToast(e.message || "Unable to delete item", "error");
     }
+  };
+
+  // Batch delete of dispatched records. Runs the deletes concurrently and drops
+  // whatever succeeded from the list, so one failure doesn't block the rest.
+  const requestBatchDelete = () => {
+    const list = items.filter((i) => i.status === "shipped" && dispatchSel.has(i.id));
+    if (!list.length) return showToast("Select records to delete first", "warn");
+    setBatchDeleteItems(list);
+  };
+  const confirmBatchDelete = async () => {
+    const list = batchDeleteItems;
+    setBatchDeleteItems(null);
+    if (!list || !list.length) return;
+    const results = await Promise.allSettled(list.map((it) => deleteItem(it.id)));
+    const okIds = [];
+    let failed = 0;
+    results.forEach((r, idx) => { if (r.status === "fulfilled") okIds.push(list[idx].id); else failed += 1; });
+    if (okIds.length) {
+      const okSet = new Set(okIds);
+      setItems((prev) => prev.filter((i) => !okSet.has(i.id)));
+      setDispatchSel((prev) => { const n = new Set(prev); okIds.forEach((id) => n.delete(id)); return n; });
+      if (okSet.has(shipSelectedId)) setShipSelectedId(null);
+    }
+    if (okIds.length && !failed) showToast(okIds.length === 1 ? "1 record deleted" : `${okIds.length} records deleted`, "ok");
+    else if (okIds.length && failed) showToast(`${okIds.length} deleted · ${failed} failed`, "warn");
+    else showToast("Failed to delete", "error");
+    exitDispatchBatch(); // leave select mode once the batch is done
   };
 
   // "Item stored" sheet actions. Any interaction stops the sheet's auto-dismiss
@@ -818,11 +985,88 @@ export default function WarehouseApp() {
     );
   }, [items, dispatchSearch]);
 
+  // Selected counts resolved against the live list, so stale ids left in a set
+  // (after an item ships or is deleted) never inflate the count.
+  const shipSelCount = useMemo(
+    () => items.filter((i) => i.status === "in_stock" && shipSel.has(i.id)).length,
+    [items, shipSel]
+  );
+  const dispatchSelCount = useMemo(
+    () => items.filter((i) => i.status === "shipped" && dispatchSel.has(i.id)).length,
+    [items, dispatchSel]
+  );
+
+  // ==================================================== 1688 ORDERS (gtradea)
+  // Procurement orders + CN tracking pulled from gtradea by the backend poller.
+  // Read-only here; matched against warehouse items by tracking number.
+  const [supplierOrders, setSupplierOrders] = useState([]);
+  const [supplierLoading, setSupplierLoading] = useState(false);
+  const [supplierSearch, setSupplierSearch] = useState("");
+  const [supplierSync, setSupplierSync] = useState(null); // last server sync status
+  const [supplierSyncing, setSupplierSyncing] = useState(false);
+  const supplierReqId = useRef(0);          // guards against out-of-order responses
+  const supplierLoadedOnce = useRef(false); // full-screen spinner only on first load
+
+  const loadSupplier = useCallback(async () => {
+    const reqId = ++supplierReqId.current;
+    if (!supplierLoadedOnce.current) setSupplierLoading(true);
+    try {
+      const { rows, lastSync } = await loadSupplierOrders();
+      if (reqId !== supplierReqId.current) return; // a newer request superseded this one
+      setSupplierOrders(rows);
+      setSupplierSync(lastSync);
+      supplierLoadedOnce.current = true;
+    } catch (e) {
+      if (reqId === supplierReqId.current) showToast(e.message || "Failed to load 1688 orders", "error");
+    } finally {
+      if (reqId === supplierReqId.current) setSupplierLoading(false);
+    }
+  }, [showToast]);
+
+  // Load when the 1688 tab is open, then poll for near-real-time freshness.
+  useEffect(() => {
+    if (!isGtradea || tab !== "1688 Orders") return undefined;
+    if (!localStorage.getItem("staff_token")) return undefined;
+    loadSupplier();
+    const id = setInterval(loadSupplier, 20000);
+    return () => clearInterval(id);
+  }, [isGtradea, tab, loadSupplier]);
+
+  // "Sync now" — force the server to pull fresh data from gtradea, then reload.
+  const handleSyncNow = async () => {
+    setSupplierSyncing(true);
+    try {
+      const result = await syncSupplierOrders();
+      await loadSupplier();
+      showToast(`Synced ${result?.items ?? 0} item(s) from gtradea`, "ok");
+    } catch (e) {
+      showToast(e.message || "Sync failed", "error");
+    } finally {
+      setSupplierSyncing(false);
+    }
+  };
+
+  const filteredSupplier = useMemo(() => {
+    const f = supplierSearch.trim().toLowerCase();
+    const base = !f
+      ? supplierOrders
+      : supplierOrders.filter(
+          (o) =>
+            (o.orderNumber || "").toLowerCase().includes(f) ||
+            (o.cnTracking || "").toLowerCase().includes(f) ||
+            (o.productName || "").toLowerCase().includes(f) ||
+            (o.jobCode || "").toLowerCase().includes(f)
+        );
+    // Received (already in the warehouse) float to the top; the rest follow. Sort
+    // is stable, so each group keeps its existing (newest-synced-first) order.
+    return [...base].sort((a, b) => Number(b.inWarehouse) - Number(a.inWarehouse));
+  }, [supplierOrders, supplierSearch]);
+
   // Synchronous auth gate: redirect DURING render (not in an effect) so a
   // logged-out visitor goes straight to the login without the warehouse panel
   // flashing first. Placed after all hooks to respect the Rules of Hooks.
   if (typeof window !== "undefined" && !localStorage.getItem("staff_token")) {
-    return <Navigate to="/staff-login?next=/warehouse" replace />;
+    return <Navigate to={`/staff-login?next=${homePath}`} replace />;
   }
 
   // ============================================================ RENDER
@@ -837,9 +1081,28 @@ export default function WarehouseApp() {
                 <IconBox className="h-5 w-5" />
               </span>
               <div>
-                <h1 className="text-base font-bold leading-tight text-[#2D2D2D]">Warehouse</h1>
+                <h1 className="text-base font-bold leading-tight text-[#2D2D2D]">
+                  {isGtradea ? "GtradeA Warehouse" : "Warehouse"}
+                </h1>
                 <p className="text-[11px] text-[#2D2D2D]/45">Scan &amp; locate · shared for all staff</p>
               </div>
+            </div>
+            {/* Cellzen / GtradeA warehouse switch (separate pages, shared shelves) */}
+            <div className="inline-flex rounded-full bg-[#EAE6DF] p-0.5 text-[11px] font-semibold">
+              <button
+                type="button"
+                onClick={() => navigate("/warehouse")}
+                className={`rounded-full px-3.5 py-1.5 transition-all ${!isGtradea ? "bg-white text-[#412460] shadow-sm" : "text-[#2D2D2D]/50 hover:text-[#2D2D2D]/70"}`}
+              >
+                Cellzen
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/warehouse-gtradea")}
+                className={`rounded-full px-3.5 py-1.5 transition-all ${isGtradea ? "bg-white text-[#412460] shadow-sm" : "text-[#2D2D2D]/50 hover:text-[#2D2D2D]/70"}`}
+              >
+                GtradeA
+              </button>
             </div>
             <div className="flex items-center gap-2">
               <div className="hidden items-center gap-2 rounded-full bg-white py-1.5 pl-1.5 pr-3 ring-1 ring-[#ECE9E3] md:flex">
@@ -914,7 +1177,7 @@ export default function WarehouseApp() {
         )}
 
         {/* ================= DASHBOARD ================= */}
-        {tab === "Dashboard" && (
+        {!isGtradea && tab === "Dashboard" && (
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {[
@@ -1096,25 +1359,64 @@ export default function WarehouseApp() {
               <SectionTitle>Locate or ship</SectionTitle>
             </div>
             <div className="mb-4 flex flex-wrap items-center gap-3">
-              <SearchInput
-                value={shipSearch}
-                onChange={(v) => { setShipSearch(v); setShipSelectedId(null); }}
-                onEnter={doLookup}
-                placeholder="Search code, tracking, or shelf"
-              />
+              <div className="w-full sm:w-72">
+                <SearchInput
+                  value={shipSearch}
+                  onChange={(v) => { setShipSearch(v); setShipSelectedId(null); }}
+                  onEnter={doLookup}
+                  placeholder="Search code, tracking, or shelf"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+                {!shipBatchMode ? (
+                  <button type="button" onClick={() => setShipBatchMode(true)} className={BTN_GHOST}>
+                    <IconCheck className="h-3.5 w-3.5" /> Batch Ship
+                  </button>
+                ) : (
+                  <>
+                    <span className="text-xs font-semibold text-[#412460]">{shipSelCount} selected</span>
+                    <button type="button" onClick={requestBatchShip} disabled={shipSelCount === 0} className={BTN_PRIMARY}>
+                      <IconCheck className="h-3.5 w-3.5" /> Ship selected
+                    </button>
+                    <button type="button" onClick={exitShipBatch} className={BTN_GHOST}>
+                      Cancel
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {shipSelected?.status === "in_stock" && detailCard(shipSelected)}
 
-            <ItemsTable
-              rows={filteredShip}
-              onView={openDetail}
-              onShip={requestShip}
-              onPrint={handlePrintLabel}
-              onDownload={handleDownloadLabel}
-              emptyAll={items.every((i) => i.status !== "in_stock")}
-              emptyText="Nothing in stock to ship — put items away in the Store tab."
-            />
+            {isGtradea ? (
+              <GtradeaItemsTable
+                rows={filteredShip}
+                selectable={shipBatchMode}
+                selected={shipSel}
+                onToggleSelect={toggleShipSel}
+                onToggleAll={(checked) => toggleAllShip(filteredShip, checked)}
+                onView={openDetail}
+                onShip={requestShip}
+                onPrint={handlePrintLabel}
+                onDownload={handleDownloadLabel}
+                emptyAll={items.every((i) => i.status !== "in_stock")}
+                emptyText="Nothing in stock to ship — scan 1688 goods in the Store tab."
+              />
+            ) : (
+              <ItemsTable
+                rows={filteredShip}
+                selectable={shipBatchMode}
+                selected={shipSel}
+                onToggleSelect={toggleShipSel}
+                onToggleAll={(checked) => toggleAllShip(filteredShip, checked)}
+                onView={openDetail}
+                onShip={requestShip}
+                onPrint={handlePrintLabel}
+                onDownload={handleDownloadLabel}
+                emptyAll={items.every((i) => i.status !== "in_stock")}
+                emptyText="Nothing in stock to ship — put items away in the Store tab."
+              />
+            )}
           </div>
         )}
 
@@ -1188,24 +1490,104 @@ export default function WarehouseApp() {
             <div className="mb-4">
               <SectionTitle>Dispatched</SectionTitle>
             </div>
-            <div className="mb-4">
-              <SearchInput
-                value={dispatchSearch}
-                onChange={(v) => { setDispatchSearch(v); setShipSelectedId(null); }}
-                placeholder="Search dispatched by code, tracking, or shelf…"
-              />
+            <div className="mb-4 flex flex-wrap items-center gap-3">
+              <div className="w-full sm:w-72">
+                <SearchInput
+                  value={dispatchSearch}
+                  onChange={(v) => { setDispatchSearch(v); setShipSelectedId(null); }}
+                  placeholder="Search dispatched by code, tracking, or shelf…"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+                {!dispatchBatchMode ? (
+                  <button type="button" onClick={() => setDispatchBatchMode(true)} className={BTN_GHOST}>
+                    <IconTrash className="h-3.5 w-3.5" /> Batch Delete
+                  </button>
+                ) : (
+                  <>
+                    <span className="text-xs font-semibold text-red-600">{dispatchSelCount} selected</span>
+                    <button
+                      type="button"
+                      onClick={requestBatchDelete}
+                      disabled={dispatchSelCount === 0}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-full bg-red-600 px-5 py-2.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-red-700 active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <IconTrash className="h-3.5 w-3.5" /> Delete selected
+                    </button>
+                    <button type="button" onClick={exitDispatchBatch} className={BTN_GHOST}>
+                      Cancel
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
             {shipSelected?.status === "shipped" && detailCard(shipSelected)}
-            <ItemsTable
-              rows={filteredDispatched}
-              withDate
-              onView={openDetail}
-              onPrint={handlePrintLabel}
-              onDownload={handleDownloadLabel}
-              onDelete={(it) => setItemDeleteTarget(it)}
-              emptyAll={items.every((i) => i.status !== "shipped")}
-              emptyText="Nothing dispatched yet — mark items shipped from the Ship tab."
-            />
+            {isGtradea ? (
+              <GtradeaItemsTable
+                rows={filteredDispatched}
+                selectable={dispatchBatchMode}
+                selected={dispatchSel}
+                onToggleSelect={toggleDispatchSel}
+                onToggleAll={(checked) => toggleAllDispatch(filteredDispatched, checked)}
+                onView={openDetail}
+                onPrint={handlePrintLabel}
+                onDownload={handleDownloadLabel}
+                onDelete={(it) => setItemDeleteTarget(it)}
+                emptyAll={items.every((i) => i.status !== "shipped")}
+                emptyText="Nothing dispatched yet — mark items shipped from the Ship tab."
+              />
+            ) : (
+              <ItemsTable
+                rows={filteredDispatched}
+                withDate
+                selectable={dispatchBatchMode}
+                selected={dispatchSel}
+                onToggleSelect={toggleDispatchSel}
+                onToggleAll={(checked) => toggleAllDispatch(filteredDispatched, checked)}
+                onView={openDetail}
+                onPrint={handlePrintLabel}
+                onDownload={handleDownloadLabel}
+                onDelete={(it) => setItemDeleteTarget(it)}
+                emptyAll={items.every((i) => i.status !== "shipped")}
+                emptyText="Nothing dispatched yet — mark items shipped from the Ship tab."
+              />
+            )}
+          </div>
+        )}
+
+        {/* ================= 1688 ORDERS (gtradea) ================= */}
+        {isGtradea && tab === "1688 Orders" && (
+          <div className={CARD}>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <SectionTitle>1688 orders &amp; CN tracking</SectionTitle>
+              <div className="flex items-center gap-3">
+                {supplierSync?.at && (
+                  <span className="hidden text-[11px] text-[#2D2D2D]/45 sm:inline">
+                    Synced {fmtDate(supplierSync.at)}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={handleSyncNow}
+                  disabled={supplierSyncing}
+                  className={BTN_GHOST}
+                >
+                  <IconRefresh className={`h-3.5 w-3.5 ${supplierSyncing ? "animate-spin" : ""}`} />
+                  {supplierSyncing ? "Syncing…" : "Sync now"}
+                </button>
+              </div>
+            </div>
+            <p className="mb-4 text-xs text-[#2D2D2D]/45">
+              Pulled automatically from gtradea. A 📦 badge means that CN tracking number is already stored in your warehouse.
+            </p>
+            <div className="mb-4">
+              <SearchInput
+                value={supplierSearch}
+                onChange={setSupplierSearch}
+                placeholder="Search order #, CN tracking, or product…"
+              />
+            </div>
+            <SupplierOrdersTable rows={filteredSupplier} loading={supplierLoading} />
           </div>
         )}
       </main>
@@ -1259,6 +1641,43 @@ export default function WarehouseApp() {
         </div>
       )}
 
+      {/* batch delete confirm — Dispatched "Delete selected" */}
+      {batchDeleteItems && batchDeleteItems.length > 0 && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl">
+            <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-red-50 text-red-500">
+              <IconTrash className="h-5 w-5" />
+            </span>
+            <h3 className="text-base font-bold">Delete {batchDeleteItems.length} record{batchDeleteItems.length > 1 ? "s" : ""}?</h3>
+            <p className="mt-1 text-xs text-[#2D2D2D]/55">
+              Removes {batchDeleteItems.length > 1 ? "these dispatched records" : "this dispatched record"}. This can't be undone.
+            </p>
+            <div className="mt-4 max-h-40 overflow-y-auto rounded-2xl bg-[#F6F4F0] p-3 text-xs">
+              <ul className="space-y-1.5">
+                {batchDeleteItems.map((it) => (
+                  <li key={it.id} className="flex justify-between gap-3">
+                    <span className="shrink-0 font-semibold text-[#412460]">{it.code}</span>
+                    <span className="min-w-0 truncate text-right text-[#2D2D2D]/60">{it.trackingNumber || "—"}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => setBatchDeleteItems(null)} className={BTN_GHOST}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmBatchDelete}
+                className="rounded-full bg-red-600 px-5 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-red-700 active:scale-[.98]"
+              >
+                Delete {batchDeleteItems.length}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* rack delete confirm */}
       {rackDeleteTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm">
@@ -1284,61 +1703,85 @@ export default function WarehouseApp() {
         </div>
       )}
 
-      {/* mark-as-shipped confirm — opened by the tick button and by a Ship scan */}
-      {shipConfirmTarget && (
+      {/* mark-as-shipped confirm — opened by the row tick, a Ship scan, or the
+          "Ship selected" batch button (one item or many). */}
+      {shipConfirmItems && shipConfirmItems.length > 0 && (
         <div className="fixed inset-0 z-[125] flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl">
             <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
               <IconCheck className="h-5 w-5" />
             </span>
-            <h3 className="text-base font-bold">Mark this item as shipped?</h3>
+            <h3 className="text-base font-bold">
+              {shipConfirmItems.length > 1
+                ? `Mark ${shipConfirmItems.length} items as shipped?`
+                : "Mark this item as shipped?"}
+            </h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              This moves <span className="font-semibold text-[#412460]">{shipConfirmTarget.code}</span> out of stock and into Dispatched.
+              {shipConfirmItems.length > 1 ? (
+                "These move out of stock and into Dispatched."
+              ) : (
+                <>This moves <span className="font-semibold text-[#412460]">{shipConfirmItems[0].code}</span> out of stock and into Dispatched.</>
+              )}
             </p>
-            <dl className="mt-4 space-y-2 rounded-2xl bg-[#F6F4F0] p-4 text-xs">
-              <div className="flex justify-between gap-3">
-                <dt className="shrink-0 text-[#2D2D2D]/50">Tracking</dt>
-                <dd className="min-w-0 break-all text-right font-semibold">{shipConfirmTarget.trackingNumber}</dd>
+            {shipConfirmItems.length > 1 ? (
+              <div className="mt-4 max-h-40 overflow-y-auto rounded-2xl bg-[#F6F4F0] p-3 text-xs">
+                <ul className="space-y-1.5">
+                  {shipConfirmItems.map((it) => (
+                    <li key={it.id} className="flex justify-between gap-3">
+                      <span className="shrink-0 font-semibold text-[#412460]">{it.code}</span>
+                      <span className="min-w-0 truncate text-right text-[#2D2D2D]/60">{it.trackingNumber || "—"}</span>
+                    </li>
+                  ))}
+                </ul>
               </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-[#2D2D2D]/50">Shelf</dt>
-                <dd className="font-semibold">{shipConfirmTarget.rackId || "—"}</dd>
-              </div>
-            </dl>
+            ) : (
+              <dl className="mt-4 space-y-2 rounded-2xl bg-[#F6F4F0] p-4 text-xs">
+                <div className="flex justify-between gap-3">
+                  <dt className="shrink-0 text-[#2D2D2D]/50">Tracking</dt>
+                  <dd className="min-w-0 break-all text-right font-semibold">{shipConfirmItems[0].trackingNumber}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-[#2D2D2D]/50">Shelf</dt>
+                  <dd className="font-semibold">{shipConfirmItems[0].rackId || "—"}</dd>
+                </div>
+              </dl>
+            )}
 
-            <div className="mt-4 space-y-3">
-              <div>
-                <label className={LABEL}>
-                  Name of the logistics <span className="text-red-500">*</span>
-                </label>
-                <div className="mt-1.5">
-                  <SearchSelect
-                    value={shipLogistics}
-                    onChange={setShipLogistics}
-                    options={["RK Logistics", "FR Logistics"]}
-                    placeholder="Search or type, e.g. RK Logistics"
-                    allowCustom
-                  />
+            {!isGtradea && (
+              <div className="mt-4 space-y-3">
+                <div>
+                  <label className={LABEL}>
+                    Name of the logistics <span className="text-red-500">*</span>
+                  </label>
+                  <div className="mt-1.5">
+                    <SearchSelect
+                      value={shipLogistics}
+                      onChange={setShipLogistics}
+                      options={["RK Logistics", "FR Logistics"]}
+                      placeholder="Search or type, e.g. RK Logistics"
+                      allowCustom
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className={LABEL}>
+                    Shipment from <span className="text-red-500">*</span>
+                  </label>
+                  <div className="mt-1.5">
+                    <SearchSelect
+                      value={shipFrom}
+                      onChange={setShipFrom}
+                      options={["By Land", "By Sea"]}
+                      placeholder="Search or choose — By Land / By Sea"
+                      allowCustom={false}
+                    />
+                  </div>
                 </div>
               </div>
-              <div>
-                <label className={LABEL}>
-                  Shipment from <span className="text-red-500">*</span>
-                </label>
-                <div className="mt-1.5">
-                  <SearchSelect
-                    value={shipFrom}
-                    onChange={setShipFrom}
-                    options={["By Land", "By Sea"]}
-                    placeholder="Search or choose — By Land / By Sea"
-                    allowCustom={false}
-                  />
-                </div>
-              </div>
-            </div>
+            )}
 
             <div className="mt-6 flex justify-end gap-2">
-              <button type="button" onClick={() => setShipConfirmTarget(null)} className={BTN_GHOST}>
+              <button type="button" onClick={() => setShipConfirmItems(null)} className={BTN_GHOST}>
                 Cancel
               </button>
               <button
@@ -1346,7 +1789,58 @@ export default function WarehouseApp() {
                 onClick={confirmShip}
                 className="inline-flex items-center gap-1.5 rounded-full bg-[#412460] px-5 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#B99353] active:scale-[.98]"
               >
-                <IconCheck className="h-3.5 w-3.5" /> Mark as Shipped
+                <IconCheck className="h-3.5 w-3.5" />
+                {shipConfirmItems.length > 1 ? `Ship ${shipConfirmItems.length} items` : "Mark as Shipped"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* print quantity — how many labels/packages to print (default 1) */}
+      {printQtyTarget && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xs rounded-3xl bg-white p-6 shadow-2xl">
+            <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
+              <IconPrinter className="h-5 w-5" />
+            </span>
+            <h3 className="text-base font-bold">How many labels?</h3>
+            <p className="mt-1 text-xs text-[#2D2D2D]/55">
+              Printing <span className="font-semibold text-[#412460]">{printQtyTarget.code}</span> — one label per package.
+            </p>
+            <div className="mt-4 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPrintQty((q) => String(Math.max(1, (parseInt(q, 10) || 1) - 1)))}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#F6F4F0] text-xl font-bold text-[#2D2D2D]/70 transition hover:bg-[#EDEAE3] active:scale-95"
+              >
+                −
+              </button>
+              <input
+                type="number"
+                min="1"
+                max="20"
+                value={printQty}
+                onChange={(e) => setPrintQty(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && confirmPrintQty()}
+                autoFocus
+                onFocus={(e) => e.target.select()}
+                className={`${FIELD} text-center text-lg font-bold`}
+              />
+              <button
+                type="button"
+                onClick={() => setPrintQty((q) => String(Math.min(20, (parseInt(q, 10) || 1) + 1)))}
+                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#F6F4F0] text-xl font-bold text-[#2D2D2D]/70 transition hover:bg-[#EDEAE3] active:scale-95"
+              >
+                +
+              </button>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => setPrintQtyTarget(null)} className={BTN_GHOST}>
+                Cancel
+              </button>
+              <button type="button" onClick={confirmPrintQty} className={BTN_PRIMARY}>
+                <IconPrinter className="h-3.5 w-3.5" /> Print
               </button>
             </div>
           </div>
@@ -1604,7 +2098,7 @@ export default function WarehouseApp() {
 }
 
 // Shared items table (Dashboard + Ship). `withDate` adds a Stored column.
-function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyText, onShip, onDelete, onPrint, onDownload }) {
+function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyText, onShip, onDelete, onPrint, onDownload, selectable = false, selected, onToggleSelect, onToggleAll }) {
   if (!rows || rows.length === 0) {
     return (
       <EmptyState>
@@ -1623,6 +2117,11 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
             className="cursor-pointer rounded-2xl bg-white p-4 shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3] transition active:scale-[.99]"
           >
             <div className="flex items-start justify-between gap-3">
+              {selectable && (
+                <span className="pt-0.5">
+                  <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code}`} />
+                </span>
+              )}
               <div className="min-w-0 flex-1">
                 <div className="break-all text-base font-bold leading-tight text-[#412460]">{it.code}</div>
                 <p className="mt-1 break-all text-xs font-medium text-[#2D2D2D]/70">{it.trackingNumber || "—"}</p>
@@ -1690,6 +2189,11 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
         <table className="w-full min-w-[560px] text-left text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
+              {selectable && (
+                <th className="w-8">
+                  <SelectAllCheck rows={rows} selected={selected} onToggleAll={onToggleAll} />
+                </th>
+              )}
               <th>Code</th>
               <th>Tracking</th>
               <th>Shelf</th>
@@ -1705,6 +2209,11 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
                 onClick={() => onView(it)}
                 className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3"
               >
+                {selectable && (
+                  <td className="w-8" onClick={(e) => e.stopPropagation()}>
+                    <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code}`} />
+                  </td>
+                )}
                 <td className="font-bold text-[#412460]">{it.code}</td>
                 <td className="max-w-[220px] truncate text-[#2D2D2D]/80">{it.trackingNumber}</td>
                 <td>
@@ -1763,6 +2272,247 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
                     )}
                   </div>
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+// GtradeA shipment table — CZN code, shelf, the linked 1688 order #, CN tracking,
+// product, status + Print/Download/Ship. Mirrors ItemsTable with the 1688 columns.
+function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onDownload, selectable = false, selected, onToggleSelect, onToggleAll }) {
+  if (!rows || rows.length === 0) {
+    return (
+      <EmptyState>
+        {emptyAll ? (emptyText || "No 1688 goods stored yet — scan them in the Store tab.") : "No items match that search."}
+      </EmptyState>
+    );
+  }
+  return (
+    <>
+      {/* Mobile: cards */}
+      <ul className="space-y-2.5 md:hidden">
+        {rows.map((it) => (
+          <li
+            key={it.id}
+            onClick={() => onView(it)}
+            className="cursor-pointer rounded-2xl bg-white p-4 shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3] transition active:scale-[.99]"
+          >
+            <div className="flex items-start justify-between gap-3">
+              {selectable && (
+                <span className="pt-0.5">
+                  <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code}`} />
+                </span>
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">Order #</div>
+                <div className="break-all text-base font-bold leading-tight text-[#412460]">{it.orderNumber || "—"}</div>
+              </div>
+              <StatusBadge status={it.status} />
+            </div>
+            <dl className="mt-3 space-y-1.5 text-xs">
+              <div className="flex justify-between gap-3">
+                <dt className="text-[#2D2D2D]/45">CZN</dt>
+                <dd className="font-semibold text-[#412460]">{it.code}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-[#2D2D2D]/45">Shelf</dt>
+                <dd><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 font-semibold text-[#412460]">{it.rackId || "—"}</span></dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-[#2D2D2D]/45">CN Tracking</dt>
+                <dd className="min-w-0 break-all text-right font-medium">{it.trackingNumber || "—"}</dd>
+              </div>
+            </dl>
+            {(onShip || onPrint || onDownload || onDelete) && (
+              <div className="mt-3 flex items-center gap-2 border-t border-[#F1EFEA] pt-3">
+                {onPrint && (
+                  <button type="button" onClick={(e) => { e.stopPropagation(); onPrint(it); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                    <IconPrinter className="h-3.5 w-3.5" /> Print
+                  </button>
+                )}
+                {onDownload && (
+                  <button type="button" onClick={(e) => { e.stopPropagation(); onDownload(it); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                    <IconDownload className="h-3.5 w-3.5" /> Label
+                  </button>
+                )}
+                {onShip && (
+                  <button type="button" onClick={(e) => { e.stopPropagation(); onShip(it); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95">
+                    <IconCheck className="h-3.5 w-3.5" /> Ship
+                  </button>
+                )}
+                {onDelete && (
+                  <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(it); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-red-500/80 ring-1 ring-red-100 transition active:scale-95">
+                    <IconTrash className="h-3.5 w-3.5" /> Delete
+                  </button>
+                )}
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {/* Desktop: table */}
+      <div className="-mx-1 hidden overflow-x-auto md:block">
+        <table className="w-full min-w-[820px] text-left text-sm">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
+              {selectable && (
+                <th className="w-8">
+                  <SelectAllCheck rows={rows} selected={selected} onToggleAll={onToggleAll} />
+                </th>
+              )}
+              <th>CZN Tracking</th>
+              <th>Shelf</th>
+              <th>Order #</th>
+              <th>Tracking</th>
+              <th>Status</th>
+              <th className="text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
+            {rows.map((it) => (
+              <tr key={it.id} onClick={() => onView(it)} className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3">
+                {selectable && (
+                  <td className="w-8" onClick={(e) => e.stopPropagation()}>
+                    <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code}`} />
+                  </td>
+                )}
+                <td className="whitespace-nowrap font-bold text-[#412460]">{it.code}</td>
+                <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{it.rackId || "—"}</span></td>
+                <td className="whitespace-nowrap font-semibold text-[#2D2D2D]/80">{it.orderNumber || "—"}</td>
+                <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={it.trackingNumber}>{it.trackingNumber || "—"}</td>
+                <td><StatusBadge status={it.status} /></td>
+                <td className="text-center">
+                  <div className="flex items-center justify-center gap-1">
+                    {onPrint && (<button type="button" title="Print label" onClick={(e) => { e.stopPropagation(); onPrint(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconPrinter className="h-4 w-4" /></button>)}
+                    {onDownload && (<button type="button" title="Download label" onClick={(e) => { e.stopPropagation(); onDownload(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconDownload className="h-4 w-4" /></button>)}
+                    {onShip && (<button type="button" title="Mark as shipped" onClick={(e) => { e.stopPropagation(); onShip(it); }} className="ml-1 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#412460] text-white transition-colors hover:bg-[#B99353]"><IconCheck className="h-4 w-4" /></button>)}
+                    {onDelete && (<button type="button" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/40 transition-colors hover:bg-red-50 hover:text-red-600"><IconTrash className="h-4 w-4" /></button>)}
+                    {!onShip && !onPrint && !onDownload && !onDelete && (<IconChevron className="h-4 w-4 text-[#2D2D2D]/25" />)}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+// Whether this CN tracking number has been received into the warehouse. Once its
+// tracking is scanned onto a shelf, the order reads "Received" in bold purple.
+function WarehousePill({ order }) {
+  if (!order.inWarehouse) {
+    return <span className="text-[11px] text-[#2D2D2D]/35">Not received</span>;
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-[#412460]/10 px-2.5 py-1 text-[11px] font-bold text-[#412460]">
+      <span aria-hidden="true">📦</span>
+      Received{order.warehouseCode ? ` · ${order.warehouseCode}` : ""}
+    </span>
+  );
+}
+
+// The 1688 orders table (desktop) / card list (mobile). Read-only.
+function SupplierOrdersTable({ rows, loading }) {
+  // Track images that failed to load and hide them via STATE, not by mutating the
+  // DOM node — an imperative style change would persist across re-renders and could
+  // permanently hide a later-valid image for the same row key.
+  const [brokenImgs, setBrokenImgs] = useState(() => new Set());
+  const markImgBroken = (url) =>
+    setBrokenImgs((prev) => (!url || prev.has(url) ? prev : new Set(prev).add(url)));
+  const canShowImg = (url) => url && !brokenImgs.has(url);
+
+  if (loading && (!rows || rows.length === 0)) {
+    return (
+      <div className="flex items-center justify-center gap-3 py-12 text-sm text-[#2D2D2D]/45">
+        <IconRefresh className="h-4 w-4 animate-spin" /> Loading 1688 orders…
+      </div>
+    );
+  }
+  if (!rows || rows.length === 0) {
+    return (
+      <EmptyState>
+        No 1688 orders yet. They appear here automatically once gtradea has procurement data — or tap "Sync now".
+      </EmptyState>
+    );
+  }
+  return (
+    <>
+      {/* Mobile: cards */}
+      <ul className="space-y-2.5 md:hidden">
+        {rows.map((o) => (
+          <li key={o.id} className="rounded-2xl bg-white p-4 ring-1 ring-[#ECE9E3]">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="break-all text-sm font-bold text-[#412460]">{o.orderNumber || "—"}</div>
+                <p className="mt-1 break-words text-xs text-[#2D2D2D]/70">{o.productName || "—"}</p>
+              </div>
+              {canShowImg(o.productImage) ? (
+                <img
+                  src={o.productImage}
+                  alt=""
+                  loading="lazy"
+                  onError={() => markImgBroken(o.productImage)}
+                  className="h-12 w-12 shrink-0 rounded-lg object-cover ring-1 ring-[#ECE9E3]"
+                />
+              ) : null}
+            </div>
+            <dl className="mt-3 space-y-1.5 text-xs">
+              <div className="flex justify-between gap-3">
+                <dt className="text-[#2D2D2D]/45">CN tracking</dt>
+                <dd className="min-w-0 break-all text-right font-semibold">{o.cnTracking || "—"}</dd>
+              </div>
+              <div className="flex justify-between gap-3">
+                <dt className="text-[#2D2D2D]/45">Qty</dt>
+                <dd className="font-semibold">{o.quantity ?? "—"}</dd>
+              </div>
+            </dl>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <WarehousePill order={o} />
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      {/* Desktop: table */}
+      <div className="-mx-1 hidden overflow-x-auto md:block">
+        <table className="w-full min-w-[760px] text-left text-sm">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
+              <th>Order #</th>
+              <th>Product</th>
+              <th className="text-center">Qty</th>
+              <th>CN Tracking</th>
+              <th>Warehouse</th>
+            </tr>
+          </thead>
+          <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
+            {rows.map((o) => (
+              <tr key={o.id} className="transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3">
+                <td className="whitespace-nowrap font-bold text-[#412460]">{o.orderNumber || "—"}</td>
+                <td className="max-w-[300px]">
+                  <div className="flex items-center gap-2">
+                    {canShowImg(o.productImage) ? (
+                      <img
+                        src={o.productImage}
+                        alt=""
+                        loading="lazy"
+                        onError={() => markImgBroken(o.productImage)}
+                        className="h-8 w-8 shrink-0 rounded object-cover ring-1 ring-[#ECE9E3]"
+                      />
+                    ) : null}
+                    <span className="truncate text-xs text-[#2D2D2D]/80">{o.productName || "—"}</span>
+                  </div>
+                </td>
+                <td className="text-center text-[#2D2D2D]/70">{o.quantity ?? "—"}</td>
+                <td className="max-w-[190px] truncate font-semibold text-[#2D2D2D]/80" title={o.cnTracking}>{o.cnTracking || "—"}</td>
+                <td><WarehousePill order={o} /></td>
               </tr>
             ))}
           </tbody>

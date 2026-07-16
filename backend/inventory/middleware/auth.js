@@ -1,6 +1,12 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
+// Fail CLOSED in production: never fall back to a committed default secret
+// there (that would let anyone mint valid staff/admin tokens). A dev-only
+// fallback keeps local work friction-free.
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET environment variable is required in production');
+}
 const JWT_SECRET = process.env.JWT_SECRET || 'cellzentrading-default-secret';
 
 const generateToken = (user) => {

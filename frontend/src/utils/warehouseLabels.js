@@ -425,7 +425,8 @@ function triggerDownload(dataUrl, filename) {
 }
 
 // Print an image on a label-sized page via a hidden iframe (no popup blocker).
-function printImageOnLabel(dataUrl, title, fit) {
+function printImageOnLabel(dataUrl, title, fit, copies = 1) {
+  const n = Math.max(1, Math.min(parseInt(copies, 10) || 1, 20));
   const iframe = document.createElement("iframe");
   iframe.setAttribute("aria-hidden", "true");
   iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
@@ -434,13 +435,15 @@ function printImageOnLabel(dataUrl, title, fit) {
   try {
     const doc = iframe.contentWindow.document;
     doc.open();
+    // One label div per copy, each on its own page.
+    const oneLabel = `<div class="label"><img src="${dataUrl}"></div>`;
     doc.write(
       `<!doctype html><html><head><title>${title || ""}</title><style>` +
         `@page { size: ${PAGE_W} ${PAGE_H}; margin: 0; }` +
         `html,body { margin:0; padding:0; }` +
-        `.label { width:${PAGE_W}; height:${PAGE_H}; display:flex; align-items:center; justify-content:center; overflow:hidden; }` +
+        `.label { width:${PAGE_W}; height:${PAGE_H}; display:flex; align-items:center; justify-content:center; overflow:hidden; page-break-after: always; }` +
         `.label img { ${fit === "cover" ? `width:${PAGE_W};height:${PAGE_H};object-fit:contain;` : "max-width:100%;max-height:100%;"} }` +
-        `</style></head><body><div class="label"><img src="${dataUrl}"></div></body></html>`
+        `</style></head><body>${oneLabel.repeat(n)}</body></html>`
     );
     doc.close();
     const img = doc.querySelector("img");
@@ -505,7 +508,8 @@ export async function downloadRackLabel(rackId) {
 //                      the on-site agent prints it identically seconds later.
 //   3. Browser print — last resort: print the rendered PNG on a 60 x 80 page.
 // Returns "local" | "queued" | "browser".
-export async function printItemLabel(item) {
+export async function printItemLabel(item, copies = 1) {
+  const n = Math.max(1, Math.min(parseInt(copies, 10) || 1, 20));
   let rendered = null;
   try {
     rendered = await renderShipmentLabel(item);
@@ -515,13 +519,13 @@ export async function printItemLabel(item) {
   }
   const bitmap = rendered ? rendered.mono : null;
 
-  if (await printViaBridge(item.code, "item", 1, bitmap)) return "local";
+  if (await printViaBridge(item.code, "item", n, bitmap)) return "local";
   try {
-    await enqueuePrintJob(item.code, "item", 1, bitmap);
+    await enqueuePrintJob(item.code, "item", n, bitmap);
     return "queued";
   } catch {
-    if (rendered) printImageOnLabel(rendered.png, item.code, "cover");
-    else printImageOnLabel(barcodeDataUrl(item.code), item.code);
+    if (rendered) printImageOnLabel(rendered.png, item.code, "cover", n);
+    else printImageOnLabel(barcodeDataUrl(item.code), item.code, undefined, n);
     return "browser";
   }
 }

@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const { Op } = require('sequelize');
-const { Rack, WarehouseItem, PrintJob, sequelize } = require('../models');
+const { Rack, WarehouseItem, PrintJob, SupplierOrder, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
@@ -182,10 +182,11 @@ router.get('/items/export.csv', authenticate, requireStaffOrAdmin, async (req, r
 router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const { search, status, rack_id } = req.query;
+    const { search, status, rack_id, source } = req.query;
     const where = {};
     if (status) where.status = status;
     if (rack_id) where.rack_id = normRack(rack_id);
+    if (source) where.source = String(source).trim().toLowerCase();
     if (search) {
       const s = `%${escapeLike(String(search).trim())}%`;
       where[Op.or] = [
@@ -195,6 +196,31 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       ];
     }
     const rows = await WarehouseItem.findAll({ where, order: [['createdAt', 'DESC']], limit: 5000 });
+
+    // For GtradeA items, resolve the linked 1688 order # + product from the live
+    // supplier_orders (matched by CN tracking) whenever it wasn't captured at
+    // put-away time — so the order # always shows once the item's tracking is a
+    // known 1688 order.
+    if (SupplierOrder) {
+      const need = rows.filter((r) => r.source === 'gtradea' && r.tracking_number && (!r.order_number || !r.product_name));
+      if (need.length) {
+        const trackings = [...new Set(need.map((r) => r.tracking_number))];
+        const orders = await SupplierOrder.findAll({
+          where: { china_tracking_no: { [Op.in]: trackings } },
+          attributes: ['china_tracking_no', 'order_number', 'product_name'],
+        });
+        const map = {};
+        for (const o of orders) { if (!map[o.china_tracking_no]) map[o.china_tracking_no] = o; }
+        for (const r of rows) {
+          const m = r.source === 'gtradea' ? map[r.tracking_number] : null;
+          if (m) {
+            if (!r.order_number) r.order_number = m.order_number;
+            if (!r.product_name) r.product_name = m.product_name;
+          }
+        }
+      }
+    }
+
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, count: rows.length, data: rows });
   } catch (error) {
@@ -215,6 +241,28 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Shelf code must look like CZN01-01-0001 (letters-digits-digits).' });
     }
     if (!trackingNumber) return res.status(400).json({ success: false, message: 'Tracking number is required' });
+
+    // GtradeA section: the tracking number MUST correspond to a known 1688
+    // supplier order. Free-form trackings are rejected; the matched order # +
+    // product are linked onto the item for the shipment panel. Cellzen is
+    // unchanged (source defaults to 'cellzen', any tracking allowed).
+    const source = String(req.body?.source || 'cellzen').trim().toLowerCase() === 'gtradea' ? 'gtradea' : 'cellzen';
+    let orderNumber = null;
+    let productName = null;
+    if (source === 'gtradea') {
+      if (!SupplierOrder) {
+        return res.status(503).json({ success: false, message: '1688 orders are not configured' });
+      }
+      const match = await SupplierOrder.findOne({
+        where: { china_tracking_no: trackingNumber },
+        order: [['synced_at', 'DESC']],
+      });
+      if (!match) {
+        return res.status(422).json({ success: false, message: "This tracking number doesn't exist in the orders" });
+      }
+      orderNumber = match.order_number || null;
+      productName = match.product_name || null;
+    }
 
     // Auto-create the shelf on first sight (spec: a new shelf code is created).
     await Rack.findOrCreate({ where: { id: rackId }, defaults: { id: rackId } });
@@ -245,6 +293,9 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
           tracking_number: trackingNumber,
           rack_id: rackId,
           status: 'in_stock',
+          source,
+          order_number: orderNumber,
+          product_name: productName,
           created_by_user_id: req.user.id,
           created_by_name: req.user.name || null,
         });
@@ -282,18 +333,21 @@ router.post('/items/:id/ship', authenticate, requireStaffOrAdmin, async (req, re
     if (item.status === 'shipped') {
       return res.status(409).json({ success: false, message: 'Item is already shipped', data: item });
     }
-    // Both details are required at ship time.
+    // Cellzen requires the carrier + land/sea at ship time; GtradeA ships with a
+    // single tap (those details aren't tracked for 1688 goods).
     const logisticsName = String(req.body?.logisticsName ?? req.body?.logistics_name ?? '').trim();
     const shipmentFrom = String(req.body?.shipmentFrom ?? req.body?.shipment_from ?? '').trim();
-    if (!logisticsName) return res.status(400).json({ success: false, message: 'Name of the logistics is required' });
-    if (!shipmentFrom) return res.status(400).json({ success: false, message: 'Shipment from is required' });
+    if (item.source !== 'gtradea') {
+      if (!logisticsName) return res.status(400).json({ success: false, message: 'Name of the logistics is required' });
+      if (!shipmentFrom) return res.status(400).json({ success: false, message: 'Shipment from is required' });
+    }
     await item.update({
       status: 'shipped',
       shipped_at: new Date(),
       shipped_by_user_id: req.user.id,
       shipped_by_name: req.user.name || null,
-      logistics_name: logisticsName.slice(0, 120),
-      shipment_from: shipmentFrom.slice(0, 60),
+      logistics_name: logisticsName ? logisticsName.slice(0, 120) : null,
+      shipment_from: shipmentFrom ? shipmentFrom.slice(0, 60) : null,
     });
     res.json({ success: true, data: item });
   } catch (error) {

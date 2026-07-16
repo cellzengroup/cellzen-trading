@@ -221,7 +221,10 @@ function App() {
         <Route path="/staff-settings" element={<StaffSettings />} />
 
         {/* Warehouse — standalone scan & locate (staff-authenticated) */}
-        <Route path="/warehouse" element={<WarehouseApp />} />
+        {/* Distinct keys force a fresh mount when toggling between the two
+            warehouses, so mode/tab/items/callbacks never carry over. */}
+        <Route path="/warehouse" element={<WarehouseApp key="cellzen" mode="cellzen" />} />
+        <Route path="/warehouse-gtradea" element={<WarehouseApp key="gtradea" mode="gtradea" />} />
 
         <Route path="/login" element={<TrackingLogin initialMode="signin" />} />
         <Route path="/reset" element={<ResetPassword />} />

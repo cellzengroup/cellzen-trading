@@ -189,6 +189,14 @@ const startServer = async () => {
     }
   }
 
+  // Start the external gtradea → supplier_orders background sync (no-op unless
+  // GTRADEA_EMAIL/GTRADEA_PASSWORD are configured). Never blocks server startup.
+  try {
+    require('./inventory/services/gtradeaSync').startScheduler();
+  } catch (e) {
+    console.error('gtradea sync scheduler not started:', e.message);
+  }
+
   const server = app.listen(config.PORT, () => {
     console.log(`\n🚀 Server running on port ${config.PORT}`);
     console.log(`📱 Environment: ${config.NODE_ENV}`);
