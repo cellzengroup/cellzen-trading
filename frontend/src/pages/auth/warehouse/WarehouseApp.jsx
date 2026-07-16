@@ -61,6 +61,27 @@ function writeItemsCache(mode, items) {
   }
 }
 
+// Run an async op over a list with a small concurrency cap, so a big batch (a
+// select-all over thousands of rows) can't fire that many simultaneous requests
+// and exhaust the DB pool / starve other staff. Returns Promise.allSettled-shaped
+// results in input order.
+async function mapPool(list, limit, fn) {
+  const results = new Array(list.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, list.length) }, async () => {
+    while (next < list.length) {
+      const idx = next++;
+      try {
+        results[idx] = { status: "fulfilled", value: await fn(list[idx], idx) };
+      } catch (e) {
+        results[idx] = { status: "rejected", reason: e };
+      }
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 // A custom (non-native) searchable dropdown: type to filter, click to pick,
 // click outside to close. `allowCustom` keeps a typed value that isn't in the
 // list (used for the logistics name). Module-level so its identity is stable
@@ -507,6 +528,8 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [shipSearch, setShipSearch] = useState("");
   const [shipSelectedId, setShipSelectedId] = useState(null);
   const [shipConfirmItems, setShipConfirmItems] = useState(null); // items awaiting ship confirm (1 or many)
+  const [shipConfirmIsBatch, setShipConfirmIsBatch] = useState(false); // was the confirm opened by the batch button?
+  const [batchBusy, setBatchBusy] = useState(false); // a batch ship/delete is in flight
   const [shipLogistics, setShipLogistics] = useState(""); // required at ship time
   const [shipFrom, setShipFrom] = useState(""); // "By Land" | "By Sea", required
   // Batch selection — hidden by default; the "Batch Ship" / "Batch Delete" button
@@ -554,9 +577,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // concurrently and reconciles the list from whatever succeeded, so one failure
   // doesn't abort the rest of a batch.
   const handleShipMany = async (list, logisticsName, shipmentFrom) => {
-    const results = await Promise.allSettled(
-      list.map((it) => shipItem(it.id, logisticsName, shipmentFrom))
-    );
+    const results = await mapPool(list, 6, (it) => shipItem(it.id, logisticsName, shipmentFrom));
     const shipped = [];
     let failed = 0;
     results.forEach((r) => { if (r.status === "fulfilled") shipped.push(r.value); else failed += 1; });
@@ -573,6 +594,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     } else {
       showToast("Failed to mark shipped", "error");
     }
+    return failed;
   };
 
   // Ask before shipping — the tick on each Ship row, the detail-card button, a
@@ -582,18 +604,22 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const requestShip = useCallback((item) => {
     setShipLogistics("");
     setShipFrom("");
+    setShipConfirmIsBatch(false);
     setShipConfirmItems([item]);
   }, []);
   const requestBatchShip = () => {
-    const list = items.filter((i) => i.status === "in_stock" && shipSel.has(i.id));
+    // Only ship what's both selected AND currently visible, so a selection left
+    // over from a previous search filter can never ship a hidden row.
+    const list = filteredShip.filter((i) => shipSel.has(i.id));
     if (!list.length) return showToast("Select items to ship first", "warn");
     setShipLogistics("");
     setShipFrom("");
+    setShipConfirmIsBatch(true);
     setShipConfirmItems(list);
   };
   const confirmShip = async () => {
     const list = shipConfirmItems;
-    if (!list || !list.length) return;
+    if (!list || !list.length || batchBusy) return;
     let logistics = "";
     let from = "";
     // GtradeA ships with a single tap (no carrier / land-sea details).
@@ -603,9 +629,18 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       if (!logistics) return showToast("Enter the name of the logistics.", "error");
       if (!from) return showToast("Choose shipment from — By Land or By Sea.", "error");
     }
+    const wasBatch = shipConfirmIsBatch;
     setShipConfirmItems(null);
-    await handleShipMany(list, logistics, from);
-    if (shipBatchMode) exitShipBatch(); // leave select mode once the batch is done
+    setBatchBusy(true);
+    try {
+      const failed = await handleShipMany(list, logistics, from);
+      // Leave select mode only when this was a batch AND everything shipped — a
+      // single-row ship never exits batch mode, and a partial failure keeps the
+      // failed (still-selected) items visible for a retry.
+      if (wasBatch && !failed) exitShipBatch();
+    } finally {
+      setBatchBusy(false);
+    }
   };
 
   // A scan on the Ship tab: locate the item, then pop the ship confirm for an
@@ -627,6 +662,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         return;
       }
       setShipSelectedId(item.id);
+      setShipConfirmIsBatch(false);
       setShipConfirmItems([item]);
     },
     [findItem, showToast]
@@ -891,28 +927,37 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // Batch delete of dispatched records. Runs the deletes concurrently and drops
   // whatever succeeded from the list, so one failure doesn't block the rest.
   const requestBatchDelete = () => {
-    const list = items.filter((i) => i.status === "shipped" && dispatchSel.has(i.id));
+    // Only what's both selected AND currently visible — never a hidden row left
+    // selected under a previous search filter.
+    const list = filteredDispatched.filter((i) => dispatchSel.has(i.id));
     if (!list.length) return showToast("Select records to delete first", "warn");
     setBatchDeleteItems(list);
   };
   const confirmBatchDelete = async () => {
     const list = batchDeleteItems;
     setBatchDeleteItems(null);
-    if (!list || !list.length) return;
-    const results = await Promise.allSettled(list.map((it) => deleteItem(it.id)));
-    const okIds = [];
-    let failed = 0;
-    results.forEach((r, idx) => { if (r.status === "fulfilled") okIds.push(list[idx].id); else failed += 1; });
-    if (okIds.length) {
-      const okSet = new Set(okIds);
-      setItems((prev) => prev.filter((i) => !okSet.has(i.id)));
-      setDispatchSel((prev) => { const n = new Set(prev); okIds.forEach((id) => n.delete(id)); return n; });
-      if (okSet.has(shipSelectedId)) setShipSelectedId(null);
+    if (!list || !list.length || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const results = await mapPool(list, 6, (it) => deleteItem(it.id));
+      const okIds = [];
+      let failed = 0;
+      results.forEach((r, idx) => { if (r.status === "fulfilled") okIds.push(list[idx].id); else failed += 1; });
+      if (okIds.length) {
+        const okSet = new Set(okIds);
+        setItems((prev) => prev.filter((i) => !okSet.has(i.id)));
+        setDispatchSel((prev) => { const n = new Set(prev); okIds.forEach((id) => n.delete(id)); return n; });
+        if (okSet.has(shipSelectedId)) setShipSelectedId(null);
+      }
+      if (okIds.length && !failed) showToast(okIds.length === 1 ? "1 record deleted" : `${okIds.length} records deleted`, "ok");
+      else if (okIds.length && failed) showToast(`${okIds.length} deleted · ${failed} failed`, "warn");
+      else showToast("Failed to delete", "error");
+      // Keep select mode + the failed ids selected on a partial failure so they're
+      // easy to retry; only leave when everything deleted.
+      if (!failed) exitDispatchBatch();
+    } finally {
+      setBatchBusy(false);
     }
-    if (okIds.length && !failed) showToast(okIds.length === 1 ? "1 record deleted" : `${okIds.length} records deleted`, "ok");
-    else if (okIds.length && failed) showToast(`${okIds.length} deleted · ${failed} failed`, "warn");
-    else showToast("Failed to delete", "error");
-    exitDispatchBatch(); // leave select mode once the batch is done
   };
 
   // "Item stored" sheet actions. Any interaction stops the sheet's auto-dismiss
@@ -985,15 +1030,17 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     );
   }, [items, dispatchSearch]);
 
-  // Selected counts resolved against the live list, so stale ids left in a set
-  // (after an item ships or is deleted) never inflate the count.
+  // Selected counts resolved against the VISIBLE (filtered) list, so the counter,
+  // the select-all header, and the batch action all agree on the same "visible AND
+  // selected" set — a selection hidden by the search never inflates the count or
+  // gets shipped/deleted behind the user's back.
   const shipSelCount = useMemo(
-    () => items.filter((i) => i.status === "in_stock" && shipSel.has(i.id)).length,
-    [items, shipSel]
+    () => filteredShip.filter((i) => shipSel.has(i.id)).length,
+    [filteredShip, shipSel]
   );
   const dispatchSelCount = useMemo(
-    () => items.filter((i) => i.status === "shipped" && dispatchSel.has(i.id)).length,
-    [items, dispatchSel]
+    () => filteredDispatched.filter((i) => dispatchSel.has(i.id)).length,
+    [filteredDispatched, dispatchSel]
   );
 
   // ==================================================== 1688 ORDERS (gtradea)
@@ -1375,10 +1422,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 ) : (
                   <>
                     <span className="text-xs font-semibold text-[#412460]">{shipSelCount} selected</span>
-                    <button type="button" onClick={requestBatchShip} disabled={shipSelCount === 0} className={BTN_PRIMARY}>
-                      <IconCheck className="h-3.5 w-3.5" /> Ship selected
+                    <button type="button" onClick={requestBatchShip} disabled={shipSelCount === 0 || batchBusy} className={BTN_PRIMARY}>
+                      <IconCheck className="h-3.5 w-3.5" /> {batchBusy ? "Shipping…" : "Ship selected"}
                     </button>
-                    <button type="button" onClick={exitShipBatch} className={BTN_GHOST}>
+                    <button type="button" onClick={exitShipBatch} disabled={batchBusy} className={BTN_GHOST}>
                       Cancel
                     </button>
                   </>
@@ -1509,12 +1556,12 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                     <button
                       type="button"
                       onClick={requestBatchDelete}
-                      disabled={dispatchSelCount === 0}
+                      disabled={dispatchSelCount === 0 || batchBusy}
                       className="inline-flex items-center justify-center gap-1.5 rounded-full bg-red-600 px-5 py-2.5 text-xs font-semibold text-white shadow-sm transition-all hover:bg-red-700 active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <IconTrash className="h-3.5 w-3.5" /> Delete selected
+                      <IconTrash className="h-3.5 w-3.5" /> {batchBusy ? "Deleting…" : "Delete selected"}
                     </button>
-                    <button type="button" onClick={exitDispatchBatch} className={BTN_GHOST}>
+                    <button type="button" onClick={exitDispatchBatch} disabled={batchBusy} className={BTN_GHOST}>
                       Cancel
                     </button>
                   </>
