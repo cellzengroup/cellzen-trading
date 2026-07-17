@@ -17,8 +17,28 @@ const BASE = (process.env.GTRADEA_BASE_URL || 'https://gtradea.com').replace(/\/
 const ANON = process.env.GTRADEA_ANON_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0a2R0eWh1Y3lkcGtuemhoaWJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1NjMyODEsImV4cCI6MjA3NjEzOTI4MX0.OLvWKouodCWL1XulvnJjwW-iId1zBw5b7vOIefdN7rg';
 
-const EMAIL = process.env.GTRADEA_EMAIL || '';
-const PASSWORD = process.env.GTRADEA_PASSWORD || '';
+// Dashboard env editors (Render included) store the raw string, so a value pasted
+// straight out of a .env file often arrives as "secret" (quotes included) or with
+// a stray trailing space/newline. Supabase answers all three with the same
+// "Invalid login credentials" 400, which is indistinguishable from a wrong
+// password — so normalise here and say so out loud.
+function cleanEnv(name) {
+  const raw = process.env[name];
+  if (raw == null) return '';
+  let v = String(raw).trim();
+  const unquoted = v.replace(/^(["'])([\s\S]*)\1$/, '$2');
+  if (unquoted !== v) {
+    console.warn(`[gtradeaSync] ${name} was wrapped in quotes — stripping them. Store the bare value (no quotes) in the dashboard.`);
+    v = unquoted.trim();
+  }
+  if (v !== String(raw)) {
+    console.warn(`[gtradeaSync] ${name} had surrounding whitespace/quotes that were trimmed.`);
+  }
+  return v;
+}
+
+const EMAIL = cleanEnv('GTRADEA_EMAIL');
+const PASSWORD = cleanEnv('GTRADEA_PASSWORD');
 const INTERVAL_MS = Math.max(parseInt(process.env.GTRADEA_SYNC_INTERVAL_MS, 10) || 180000, 60000);
 const ENABLED = String(process.env.GTRADEA_SYNC_ENABLED ?? 'true').toLowerCase() !== 'false';
 
@@ -28,13 +48,46 @@ let lastSync = { at: null, ok: null, jobs: 0, items: 0, upserted: 0, error: null
 
 const isConfigured = () => Boolean(SupplierOrder && EMAIL && PASSWORD);
 
+// Node/undici reports DNS, TLS and connection failures as a bare "fetch failed",
+// which tells an operator nothing. Unwrap the underlying cause and name the host.
+async function fetchOrExplain(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (e) {
+    const code = e?.cause?.code || e?.code || e?.message || 'unknown';
+    throw new Error(`cannot reach ${BASE} (${code}) — the server has no outbound access to gtradea, or DNS/TLS failed`);
+  }
+}
+
+// Pull the human-readable reason out of a Supabase/GoTrue error body. Without
+// this every failure looks like a bare status code and can't be told apart.
+async function explainHttp(res) {
+  const text = await res.text().catch(() => '');
+  try {
+    const j = JSON.parse(text);
+    return j.msg || j.error_description || j.message || j.error || text.slice(0, 160);
+  } catch {
+    // Non-JSON body = usually an HTML challenge/error page from a proxy or WAF.
+    return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+  }
+}
+
 async function login() {
-  const res = await fetch(`${BASE}/auth/v1/token?grant_type=password`, {
+  const res = await fetchOrExplain(`${BASE}/auth/v1/token?grant_type=password`, {
     method: 'POST',
     headers: { apikey: ANON, 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
   });
-  if (!res.ok) throw new Error(`gtradea login failed (HTTP ${res.status})`);
+  if (!res.ok) {
+    const why = await explainHttp(res);
+    // 400 invalid_credentials here is almost always the env value, not the account:
+    // a quoted or space-padded password is rejected exactly like a wrong one.
+    const hint =
+      res.status === 400
+        ? ` — check GTRADEA_EMAIL/GTRADEA_PASSWORD in the deploy env: paste the bare value with no quotes and no trailing space (account: ${EMAIL || 'MISSING'})`
+        : '';
+    throw new Error(`gtradea login failed (HTTP ${res.status}${why ? `: ${why}` : ''})${hint}`);
+  }
   const j = await res.json();
   token = {
     accessToken: j.access_token,
@@ -45,7 +98,7 @@ async function login() {
 
 async function refresh() {
   if (!token?.refreshToken) return login();
-  const res = await fetch(`${BASE}/auth/v1/token?grant_type=refresh_token`, {
+  const res = await fetchOrExplain(`${BASE}/auth/v1/token?grant_type=refresh_token`, {
     method: 'POST',
     headers: { apikey: ANON, 'Content-Type': 'application/json' },
     body: JSON.stringify({ refresh_token: token.refreshToken }),
@@ -67,14 +120,17 @@ async function ensureToken() {
 // GET a gtradea API path with the bearer token; one auto re-login on 401.
 async function apiGet(path, retry = true) {
   await ensureToken();
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchOrExplain(`${BASE}${path}`, {
     headers: { Authorization: `Bearer ${token.accessToken}`, apikey: ANON },
   });
   if (res.status === 401 && retry) {
     await login();
     return apiGet(path, false);
   }
-  if (!res.ok) throw new Error(`gtradea GET ${path} failed (HTTP ${res.status})`);
+  if (!res.ok) {
+    const why = await explainHttp(res);
+    throw new Error(`gtradea GET ${path} failed (HTTP ${res.status}${why ? `: ${why}` : ''})`);
+  }
   return res.json();
 }
 
@@ -100,9 +156,19 @@ const normTracking = (v) => {
 };
 
 // Flatten a job's detail into per-item supplier_orders rows.
+// gtradea puts no date on the order object — the procurement job's created_at is
+// the order date (it matches the date encoded in order_number). Fall back to the
+// item's own created_at if a job ever arrives without one.
+const toDate = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+};
+
 function mapDetail(detail) {
   const order = detail.order || {};
   const items = Array.isArray(detail.procurement_items) ? detail.procurement_items : [];
+  const jobCreatedAt = toDate(detail.created_at);
   return items
     .filter((it) => it && it.id)
     .map((it) => {
@@ -128,6 +194,7 @@ function mapDetail(detail) {
         shipping_mode: order.shipping_mode || null,
         order_status: order.status || null,
         order_total: order.total != null ? order.total : null,
+        ordered_at: jobCreatedAt || toDate(it.created_at),
         raw: it,
         synced_at: new Date(),
       };
@@ -194,10 +261,15 @@ function startScheduler() {
     return;
   }
   if (!isConfigured()) {
-    console.log('[gtradeaSync] not configured (set GTRADEA_EMAIL / GTRADEA_PASSWORD) — sync skipped');
+    // Name the exact missing piece — "not configured" alone sends operators
+    // hunting the wrong thing (e.g. re-pasting creds when it's the DB that's off).
+    console.log(
+      `[gtradeaSync] not configured — sync skipped. GTRADEA_EMAIL: ${EMAIL ? 'set' : 'MISSING'}, ` +
+        `GTRADEA_PASSWORD: ${PASSWORD ? 'set' : 'MISSING'}, supplier_orders table: ${SupplierOrder ? 'ready' : 'UNAVAILABLE (no DB)'}`
+    );
     return;
   }
-  console.log(`[gtradeaSync] scheduler on — every ${Math.round(INTERVAL_MS / 1000)}s`);
+  console.log(`[gtradeaSync] scheduler on — every ${Math.round(INTERVAL_MS / 1000)}s, account ${EMAIL}`);
   setTimeout(() => { runSync().catch(() => {}); }, 8000); // first run shortly after boot
   const timer = setInterval(() => { runSync().catch(() => {}); }, INTERVAL_MS);
   if (typeof timer.unref === 'function') timer.unref(); // don't keep the process alive on its own

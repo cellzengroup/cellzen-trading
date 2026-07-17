@@ -181,6 +181,7 @@ export function unwrapSupplierOrder(row) {
     quantity: row.quantity ?? null,
     shippingMode: row.shipping_mode || "",
     orderStatus: row.order_status || "",
+    orderedAt: row.ordered_at || null, // when the order was placed on gtradea
     syncedAt: row.synced_at || null,
     inWarehouse: !!wh.in_warehouse,
     warehouseRack: wh.rack_id || "",

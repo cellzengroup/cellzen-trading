@@ -165,6 +165,33 @@ const fmtDate = (ts) => {
   );
 };
 
+// The single source of truth for a 1688 line item's state — used by both the pill
+// and the "Sort by" control so they can never disagree.
+//   no CN tracking on gtradea -> not_updated
+//   has tracking, scanned in  -> received
+//   has tracking, not scanned -> not_received
+const supplierState = (o) => (!o.cnTracking ? "not_updated" : o.inWarehouse ? "received" : "not_received");
+const SUPPLIER_SORTS = [
+  { value: "date", label: "Date" },
+  { value: "received", label: "Received" },
+  { value: "not_updated", label: "Not Updated" },
+  { value: "not_received", label: "Not Received" },
+];
+
+// Day only, no clock, and deliberately rendered in UTC.
+// A 1688 order's date is a calendar day, not an instant in the viewer's zone.
+// gtradea stamps both the order number (ORD-YYYYMMDD-xxxxxx) and the job
+// timestamp in UTC, so formatting in local time shifts the day for any order
+// placed late in the UTC day — printing "Jul 15" directly beside
+// "ORD-20260714-553812", which reads as a bug. UTC keeps the two columns in
+// agreement for every viewer, in every timezone.
+const fmtDay = (ts) => {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+};
+
 /* ---------------------------------- icons --------------------------------- */
 const svgBase = {
   viewBox: "0 0 24 24",
@@ -1049,6 +1076,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [supplierOrders, setSupplierOrders] = useState([]);
   const [supplierLoading, setSupplierLoading] = useState(false);
   const [supplierSearch, setSupplierSearch] = useState("");
+  const [supplierSort, setSupplierSort] = useState("date"); // date | received | not_updated | not_received
   const [supplierSync, setSupplierSync] = useState(null); // last server sync status
   const [supplierSyncing, setSupplierSyncing] = useState(false);
   const supplierReqId = useRef(0);          // guards against out-of-order responses
@@ -1070,26 +1098,46 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     }
   }, [showToast]);
 
-  // Load when the 1688 tab is open, then poll for near-real-time freshness.
+  // The sync runs server-side and takes ~30s, so "is a sync happening" is the
+  // SERVER's answer (carried on every list response), not local state. Local
+  // `supplierSyncing` only covers the instant between the click and the first
+  // status coming back.
+  const syncInFlight = supplierSyncing || !!supplierSync?.syncing;
+
+  // Load when the 1688 tab is open, then poll. While a sync is in flight, poll
+  // fast so the button and the rows track it live; otherwise idle at 20s.
   useEffect(() => {
     if (!isGtradea || tab !== "1688 Orders") return undefined;
     if (!localStorage.getItem("staff_token")) return undefined;
     loadSupplier();
-    const id = setInterval(loadSupplier, 20000);
+    const id = setInterval(loadSupplier, supplierSync?.syncing ? 2000 : 20000);
     return () => clearInterval(id);
-  }, [isGtradea, tab, loadSupplier]);
+  }, [isGtradea, tab, loadSupplier, supplierSync?.syncing]);
 
-  // "Sync now" — force the server to pull fresh data from gtradea, then reload.
+  // Report the outcome when the server's sync finishes (syncing true -> false).
+  // The POST returns before the work is done, so this is the only place that can
+  // honestly say whether it worked.
+  const prevSyncingRef = useRef(false);
+  useEffect(() => {
+    const now = !!supplierSync?.syncing;
+    if (prevSyncingRef.current && !now && supplierSync) {
+      if (supplierSync.ok) showToast(`Synced ${supplierSync.items ?? 0} item(s) from gtradea`, "ok");
+      else if (supplierSync.error) showToast(supplierSync.error, "error");
+    }
+    prevSyncingRef.current = now;
+  }, [supplierSync, showToast]);
+
+  // "Sync now" — asks the server to start a pull. Returns straight away (202);
+  // the polling above follows it to completion.
   const handleSyncNow = async () => {
     setSupplierSyncing(true);
     try {
-      const result = await syncSupplierOrders();
-      await loadSupplier();
-      showToast(`Synced ${result?.items ?? 0} item(s) from gtradea`, "ok");
+      await syncSupplierOrders();
+      await loadSupplier(); // picks up syncing:true so the button stays honest
     } catch (e) {
       showToast(e.message || "Sync failed", "error");
     } finally {
-      setSupplierSyncing(false);
+      setSupplierSyncing(false); // the server's flag takes over from here
     }
   };
 
@@ -1104,10 +1152,15 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             (o.productName || "").toLowerCase().includes(f) ||
             (o.jobCode || "").toLowerCase().includes(f)
         );
-    // Received (already in the warehouse) float to the top; the rest follow. Sort
-    // is stable, so each group keeps its existing (newest-synced-first) order.
-    return [...base].sort((a, b) => Number(b.inWarehouse) - Number(a.inWarehouse));
-  }, [supplierOrders, supplierSearch]);
+    // "Date" is the default and is deliberately a NO-OP: the server already returns
+    // newest-order-first, so rows keep the same place every poll. A row must not
+    // jump around the table just because its status changed under you.
+    if (supplierSort === "date") return base;
+    // Any other choice floats just that state to the top. Sort is stable, so within
+    // each group the date order is preserved.
+    const hit = (o) => supplierState(o) === supplierSort;
+    return [...base].sort((a, b) => Number(hit(b)) - Number(hit(a)));
+  }, [supplierOrders, supplierSearch, supplierSort]);
 
   // Synchronous auth gate: redirect DURING render (not in an effect) so a
   // logged-out visitor goes straight to the login without the warehouse panel
@@ -1607,7 +1660,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
           <div className={CARD}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <SectionTitle>1688 orders &amp; CN tracking</SectionTitle>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 {supplierSync?.at && (
                   <span className="hidden text-[11px] text-[#2D2D2D]/45 sm:inline">
                     Synced {fmtDate(supplierSync.at)}
@@ -1616,16 +1669,31 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 <button
                   type="button"
                   onClick={handleSyncNow}
-                  disabled={supplierSyncing}
+                  disabled={syncInFlight}
                   className={BTN_GHOST}
                 >
-                  <IconRefresh className={`h-3.5 w-3.5 ${supplierSyncing ? "animate-spin" : ""}`} />
-                  {supplierSyncing ? "Syncing…" : "Sync now"}
+                  <IconRefresh className={`h-3.5 w-3.5 ${syncInFlight ? "animate-spin" : ""}`} />
+                  {syncInFlight ? "Syncing…" : "Sync now"}
                 </button>
+                <label className="flex items-center gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45">Sort by</span>
+                  <select
+                    value={supplierSort}
+                    onChange={(e) => setSupplierSort(e.target.value)}
+                    aria-label="Sort 1688 orders by"
+                    className="rounded-full bg-white py-2.5 pl-3 pr-7 text-xs font-semibold text-[#2D2D2D]/70 ring-1 ring-[#E6E2DB] transition-all focus:outline-none focus:ring-2 focus:ring-[#412460]/30"
+                  >
+                    {SUPPLIER_SORTS.map((s) => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
             </div>
             <p className="mb-4 text-xs text-[#2D2D2D]/45">
-              Pulled automatically from gtradea. A 📦 badge means that CN tracking number is already stored in your warehouse.
+              Pulled automatically from gtradea — "Sync now" fetches live. <span className="font-semibold text-[#412460]">📦 Received</span> means that
+              CN tracking is stored in your warehouse; <span className="font-semibold text-[#B99353]">⏳ Not Updated</span> means gtradea has no CN
+              tracking for that item yet.
             </p>
             <div className="mb-4">
               <SearchInput
@@ -2451,10 +2519,24 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
   );
 }
 
-// Whether this CN tracking number has been received into the warehouse. Once its
-// tracking is scanned onto a shelf, the order reads "Received" in bold purple.
+// Where this 1688 line item stands, in three distinct states:
+//   no CN tracking yet on gtradea -> "Not Updated" (nothing to receive against)
+//   has tracking, not scanned in  -> "Not received"
+//   has tracking, scanned in      -> "Received · CZN…" (bold purple)
+// "Not Updated" matters because an order with no tracking can never match a
+// warehouse item — showing it as "Not received" implies the goods are late when
+// really it's the gtradea record that's incomplete.
 function WarehousePill({ order }) {
-  if (!order.inWarehouse) {
+  const state = supplierState(order);
+  if (state === "not_updated") {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-[#B99353]/12 px-2.5 py-1 text-[11px] font-semibold text-[#B99353]">
+        <span aria-hidden="true">⏳</span>
+        Not Updated
+      </span>
+    );
+  }
+  if (state === "not_received") {
     return <span className="text-[11px] text-[#2D2D2D]/35">Not received</span>;
   }
   return (
@@ -2497,7 +2579,10 @@ function SupplierOrdersTable({ rows, loading }) {
           <li key={o.id} className="rounded-2xl bg-white p-4 ring-1 ring-[#ECE9E3]">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="break-all text-sm font-bold text-[#412460]">{o.orderNumber || "—"}</div>
+                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">
+                  {fmtDay(o.orderedAt)}
+                </div>
+                <div className="mt-0.5 break-all text-sm font-bold text-[#412460]">{o.orderNumber || "—"}</div>
                 <p className="mt-1 break-words text-xs text-[#2D2D2D]/70">{o.productName || "—"}</p>
               </div>
               {canShowImg(o.productImage) ? (
@@ -2529,9 +2614,10 @@ function SupplierOrdersTable({ rows, loading }) {
 
       {/* Desktop: table */}
       <div className="-mx-1 hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[760px] text-left text-sm">
+        <table className="w-full min-w-[860px] text-left text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
+              <th>Date</th>
               <th>Order #</th>
               <th>Product</th>
               <th className="text-center">Qty</th>
@@ -2542,6 +2628,7 @@ function SupplierOrdersTable({ rows, loading }) {
           <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
             {rows.map((o) => (
               <tr key={o.id} className="transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3">
+                <td className="whitespace-nowrap text-xs text-[#2D2D2D]/55">{fmtDay(o.orderedAt)}</td>
                 <td className="whitespace-nowrap font-bold text-[#412460]">{o.orderNumber || "—"}</td>
                 <td className="max-w-[300px]">
                   <div className="flex items-center gap-2">

@@ -43,6 +43,11 @@ const SupplierOrder = sequelize
       shipping_mode: { type: DataTypes.STRING, allowNull: true },  // air | sea | land
       order_status: { type: DataTypes.STRING, allowNull: true },
       order_total: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+      // When the order was placed on gtradea (the procurement job's created_at,
+      // which lines up with the date encoded in order_number, e.g.
+      // ORD-20260717-908966 -> 2026-07-17). NOT the same as synced_at, which is
+      // just when we last polled.
+      ordered_at: { type: DataTypes.DATE, allowNull: true },
       // Full source item payload for future-proofing / audit.
       raw: { type: DataTypes.JSONB, allowNull: false, defaultValue: {} },
       synced_at: { type: DataTypes.DATE, allowNull: true },
@@ -53,6 +58,7 @@ const SupplierOrder = sequelize
         { fields: ['china_tracking_no'] }, // drives the warehouse-match lookup
         { fields: ['order_number'] },
         { fields: ['status'] },
+        { fields: ['ordered_at'] }, // newest-order-first listing
         // Idempotent-poll backstop: one row per gtradea procurement item.
         { name: 'supplier_orders_source_item_unique', unique: true, fields: ['source_item_id'] },
       ],

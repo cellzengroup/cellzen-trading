@@ -1,6 +1,6 @@
 const express = require('express');
 const { Op } = require('sequelize');
-const { SupplierOrder, WarehouseItem } = require('../models');
+const { SupplierOrder, WarehouseItem, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const gtradeaSync = require('../services/gtradeaSync');
 
@@ -45,9 +45,15 @@ router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
         { job_code: { [Op.iLike]: s } },
       ];
     }
+    // Newest ORDER first (ordered_at), not newest poll — synced_at is the same
+    // for every row a sync touches, so it can't order the list meaningfully.
+    // NULLS LAST so pre-backfill rows don't jump to the top.
     const rows = await SupplierOrder.findAll({
       where,
-      order: [['synced_at', 'DESC'], ['order_number', 'DESC']],
+      order: [
+        [sequelize.literal('ordered_at DESC NULLS LAST')],
+        ['order_number', 'DESC'],
+      ],
       limit: 5000,
     });
 
@@ -87,6 +93,7 @@ router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
         quantity: r.quantity,
         shipping_mode: r.shipping_mode,
         order_status: r.order_status,
+        ordered_at: r.ordered_at,
         synced_at: r.synced_at,
         warehouse: m ? { in_warehouse: true, rack_id: m.rack_id, status: m.status, code: m.code } : { in_warehouse: false },
       };
@@ -100,9 +107,18 @@ router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
   }
 });
 
-// POST /sync — pull fresh data from gtradea now (staff/admin). Throttled: 409 if a
-// sync is already running, 429 if one ran in the last few seconds — so it can't be
-// looped to hammer the single shared gtradea account. Returns the summary.
+// POST /sync — kick off a fresh gtradea pull (staff/admin) and answer IMMEDIATELY
+// with 202 + the in-flight status.
+//
+// This deliberately does NOT await the sync. A full pull is ~26-35s (gtradea is
+// slow: 7 jobs x a detail round-trip each). Holding the HTTP request open that
+// long meant the browser — and Render's proxy in production — gave up first and
+// surfaced "Sync failed" / "failed to fetch", even though the sync itself went on
+// to succeed server-side. The client follows progress via the `syncing` flag that
+// both GET / and GET /status return.
+//
+// Throttled: 409 if a sync is already running, 429 within a short double-click
+// window — so it can't be looped to hammer the single shared gtradea account.
 router.post('/sync', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
@@ -113,17 +129,17 @@ router.post('/sync', authenticate, requireStaffOrAdmin, async (req, res) => {
     if (st.syncing) {
       return res.status(409).json({ success: false, message: 'A sync is already running — please wait' });
     }
-    if (st.at && Date.now() - new Date(st.at).getTime() < 15000) {
-      return res.status(429).json({ success: false, message: 'Just synced — wait a few seconds before syncing again' });
+    // Short anti-double-click window only. This used to be 15s, which meant a
+    // manual "Sync now" landing just after a background poll was rejected — the
+    // button looked broken even though the data was fresh. The 409 above is the
+    // real protection against hammering the shared gtradea account.
+    if (st.at && Date.now() - new Date(st.at).getTime() < 3000) {
+      return res.status(429).json({ success: false, message: 'Just synced — give it a second' });
     }
-    const result = await gtradeaSync.runSync();
-    if (result.skipped) {
-      return res.status(409).json({ success: false, message: 'A sync is already running — please wait' });
-    }
-    if (!result.ok) {
-      return res.status(502).json({ success: false, message: result.error || 'Sync failed', data: result });
-    }
-    res.json({ success: true, data: result });
+    // runSync() flips its `syncing` flag synchronously before its first await, so
+    // the status we return below already reads syncing: true.
+    gtradeaSync.runSync().catch((e) => console.error('[gtradeaSync] background sync failed:', e.message));
+    res.status(202).json({ success: true, data: { started: true, ...gtradeaSync.getStatus() } });
   } catch (error) {
     console.error('Sync supplier orders error:', error);
     res.status(500).json({ success: false, message: 'Sync failed' });
