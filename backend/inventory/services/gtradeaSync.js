@@ -39,7 +39,11 @@ function cleanEnv(name) {
 
 const EMAIL = cleanEnv('GTRADEA_EMAIL');
 const PASSWORD = cleanEnv('GTRADEA_PASSWORD');
-const INTERVAL_MS = Math.max(parseInt(process.env.GTRADEA_SYNC_INTERVAL_MS, 10) || 180000, 60000);
+// Unattended cadence. The 1688 tab now also drives an on-demand pull while it's
+// open (kick-on-open + every 60s, server-throttled), so this mainly keeps the
+// local cache warm for cold opens and the warehouse-match badge. 90s (down from
+// 180s) halves the worst-case staleness when nobody is watching.
+const INTERVAL_MS = Math.max(parseInt(process.env.GTRADEA_SYNC_INTERVAL_MS, 10) || 90000, 60000);
 const ENABLED = String(process.env.GTRADEA_SYNC_ENABLED ?? 'true').toLowerCase() !== 'false';
 
 let token = null; // { accessToken, refreshToken, expiresAt(ms epoch) }

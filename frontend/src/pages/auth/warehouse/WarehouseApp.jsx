@@ -1081,6 +1081,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [supplierSyncing, setSupplierSyncing] = useState(false);
   const supplierReqId = useRef(0);          // guards against out-of-order responses
   const supplierLoadedOnce = useRef(false); // full-screen spinner only on first load
+  const manualSyncRef = useRef(false);      // toast a sync's outcome only when the user clicked it
 
   const loadSupplier = useCallback(async () => {
     const reqId = ++supplierReqId.current;
@@ -1114,6 +1115,31 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     return () => clearInterval(id);
   }, [isGtradea, tab, loadSupplier, supplierSync?.syncing]);
 
+  // While the 1688 tab is open, actively PULL from gtradea rather than only
+  // re-reading the local cache: kick a server-side sync the moment the tab
+  // opens, then every 60s. Without this the tab shows only whatever the
+  // background scheduler last fetched (minutes old), so a tracking edit made on
+  // gtradea took minutes to appear here. The server throttles/coalesces these
+  // (409 while a pull runs, 429 right after one), so firing from every open
+  // client is safe — we swallow those "already fresh" replies. The 2s fast-poll
+  // above then surfaces the updated rows live as the pull completes.
+  useEffect(() => {
+    if (!isGtradea || tab !== "1688 Orders") return undefined;
+    if (!localStorage.getItem("staff_token")) return undefined;
+    let cancelled = false;
+    const kick = async () => {
+      try {
+        await syncSupplierOrders();
+        if (!cancelled) loadSupplier(); // grab syncing:true so the fast poll tracks it live
+      } catch {
+        /* already syncing / just synced / offline — the read poll still refreshes the view */
+      }
+    };
+    kick(); // immediately on open — covers the "I just edited gtradea, let me check" case
+    const id = setInterval(kick, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [isGtradea, tab, loadSupplier]);
+
   // Report the outcome when the server's sync finishes (syncing true -> false).
   // The POST returns before the work is done, so this is the only place that can
   // honestly say whether it worked.
@@ -1121,8 +1147,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   useEffect(() => {
     const now = !!supplierSync?.syncing;
     if (prevSyncingRef.current && !now && supplierSync) {
-      if (supplierSync.ok) showToast(`Synced ${supplierSync.items ?? 0} item(s) from gtradea`, "ok");
-      else if (supplierSync.error) showToast(supplierSync.error, "error");
+      // Only announce a sync the user actually clicked — the tab now auto-syncs
+      // every minute, and toasting each of those would be relentless. The header
+      // "Synced …" label + button spinner already reflect the auto-syncs.
+      if (manualSyncRef.current) {
+        if (supplierSync.ok) showToast(`Synced ${supplierSync.items ?? 0} item(s) from gtradea`, "ok");
+        else if (supplierSync.error) showToast(supplierSync.error, "error");
+        manualSyncRef.current = false;
+      }
     }
     prevSyncingRef.current = now;
   }, [supplierSync, showToast]);
@@ -1130,6 +1162,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // "Sync now" — asks the server to start a pull. Returns straight away (202);
   // the polling above follows it to completion.
   const handleSyncNow = async () => {
+    manualSyncRef.current = true; // this one gets a completion toast; auto-syncs stay quiet
     setSupplierSyncing(true);
     try {
       await syncSupplierOrders();
