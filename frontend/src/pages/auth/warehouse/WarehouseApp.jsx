@@ -1131,8 +1131,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       try {
         await syncSupplierOrders();
         if (!cancelled) loadSupplier(); // grab syncing:true so the fast poll tracks it live
-      } catch {
-        /* already syncing / just synced / offline — the read poll still refreshes the view */
+      } catch (e) {
+        // 409 (already syncing) / 429 (just synced) are expected coordination
+        // replies — stay silent. Anything else (5xx, 503 not-configured, network)
+        // is a real problem worth seeing, so log it to the console without
+        // spamming a toast every 60s. The header's "⚠ Sync failing" covers the UI.
+        if (e?.status !== 409 && e?.status !== 429) {
+          console.warn("[1688] auto-sync failed:", e?.message || e);
+        }
       }
     };
     kick(); // immediately on open — covers the "I just edited gtradea, let me check" case
@@ -1694,11 +1700,22 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <SectionTitle>1688 orders &amp; CN tracking</SectionTitle>
               <div className="flex flex-wrap items-center gap-3">
-                {supplierSync?.at && (
-                  <span className="hidden text-[11px] text-[#2D2D2D]/45 sm:inline">
-                    Synced {fmtDate(supplierSync.at)}
-                  </span>
-                )}
+                {supplierSync?.at &&
+                  (supplierSync.ok === false ? (
+                    // Don't reassure with "Synced …" when the last pull actually
+                    // failed — show the failure (it retries automatically). Brand
+                    // warning tone (#B99353), same as the "Not Updated" badge.
+                    <span
+                      className="hidden text-[11px] font-semibold text-[#B99353] sm:inline"
+                      title={supplierSync.error || "Last sync failed — retrying automatically"}
+                    >
+                      ⚠ Sync failing — retrying
+                    </span>
+                  ) : (
+                    <span className="hidden text-[11px] text-[#2D2D2D]/45 sm:inline">
+                      Synced {fmtDate(supplierSync.at)}
+                    </span>
+                  ))}
                 <button
                   type="button"
                   onClick={handleSyncNow}

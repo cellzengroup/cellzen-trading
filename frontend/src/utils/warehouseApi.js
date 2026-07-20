@@ -203,6 +203,12 @@ export async function loadSupplierOrders(search = "") {
 export async function syncSupplierOrders() {
   const res = await authFetch(`/inventory/supplier-orders/sync`, { ...STAFF, method: "POST" });
   const json = await readJson(res);
-  if (!res.ok || !json.success) throw new Error(json.message || "Sync failed");
+  if (!res.ok || !json.success) {
+    // Attach the status so callers can tell an expected coordination reply
+    // (409 already-syncing / 429 just-synced) from a real failure (5xx / 503).
+    const err = new Error(json.message || "Sync failed");
+    err.status = res.status;
+    throw err;
+  }
   return json.data;
 }

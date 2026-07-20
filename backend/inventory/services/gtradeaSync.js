@@ -45,9 +45,22 @@ const PASSWORD = cleanEnv('GTRADEA_PASSWORD');
 // 180s) halves the worst-case staleness when nobody is watching.
 const INTERVAL_MS = Math.max(parseInt(process.env.GTRADEA_SYNC_INTERVAL_MS, 10) || 90000, 60000);
 const ENABLED = String(process.env.GTRADEA_SYNC_ENABLED ?? 'true').toLowerCase() !== 'false';
+// Hard ceiling on any single gtradea request. gtradea is slow, but a healthy call
+// still returns in a few seconds; without a cap a stalled socket parked an await
+// forever and pinned `syncing` true, which silently stopped the whole loop (a
+// day-old order never appeared in the 1688 portal) until the server was restarted.
+// Env-tunable.
+const REQUEST_TIMEOUT_MS = Math.max(parseInt(process.env.GTRADEA_REQUEST_TIMEOUT_MS, 10) || 25000, 5000);
+// Watchdog: a sync still "in flight" past this is treated as wedged and superseded
+// on the next tick, so the loop always recovers on its own. Kept well above the
+// worst-case healthy pass (a handful of requests x REQUEST_TIMEOUT_MS) so it only
+// ever fires on a genuine hang, never on a merely-slow run.
+const SYNC_STALE_MS = Math.max(parseInt(process.env.GTRADEA_SYNC_STALE_MS, 10) || 240000, 120000);
 
 let token = null; // { accessToken, refreshToken, expiresAt(ms epoch) }
 let syncing = false;
+let syncStartedAt = 0; // epoch ms the in-flight run began — drives the stale-run watchdog
+let runSeq = 0;        // monotonic run id so a superseded zombie run can't clobber a fresh one
 let lastSync = { at: null, ok: null, jobs: 0, items: 0, upserted: 0, error: null, ms: null };
 
 const isConfigured = () => Boolean(SupplierOrder && EMAIL && PASSWORD);
@@ -55,9 +68,24 @@ const isConfigured = () => Boolean(SupplierOrder && EMAIL && PASSWORD);
 // Node/undici reports DNS, TLS and connection failures as a bare "fetch failed",
 // which tells an operator nothing. Unwrap the underlying cause and name the host.
 async function fetchOrExplain(url, init) {
+  // Bound every request — INCLUDING the response-body read — with one deadline.
+  // CRITICAL: Node's global fetch() resolves as soon as the response HEADERS
+  // arrive, BEFORE the body is downloaded. An earlier version armed an
+  // AbortController and cleared its timer on fetch() resolve, which stopped
+  // guarding exactly when a body-stalling upstream hurts most: fetch() returns in
+  // <1s, the timer is cleared, then the caller's res.json()/res.text() parks on a
+  // half-sent body forever. AbortSignal.timeout stays armed through that body read
+  // too — undici keeps the signal bound to the response stream — so a stalled body
+  // aborts at the deadline instead of wedging the sync. On timeout we fail fast;
+  // the next tick retries clean.
   try {
-    return await fetch(url, init);
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   } catch (e) {
+    // AbortSignal.timeout rejects with a TimeoutError; a manual abort would be
+    // AbortError — treat both as "gtradea was too slow".
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      throw new Error(`gtradea request timed out after ${REQUEST_TIMEOUT_MS}ms (${BASE}) — server slow or connection stalled`);
+    }
     const code = e?.cause?.code || e?.code || e?.message || 'unknown';
     throw new Error(`cannot reach ${BASE} (${code}) — the server has no outbound access to gtradea, or DNS/TLS failed`);
   }
@@ -76,7 +104,25 @@ async function explainHttp(res) {
   }
 }
 
+// Read a response body, mapping an abort (the request deadline firing DURING the
+// body stream — see fetchOrExplain) to the same friendly timeout error as a
+// headers-phase timeout, so a body stall is reported clearly and never bubbles up
+// as a cryptic "The operation was aborted".
+async function readJson(res) {
+  try {
+    return await res.json();
+  } catch (e) {
+    if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+      throw new Error(`gtradea response body stalled — timed out after ${REQUEST_TIMEOUT_MS}ms (${BASE})`);
+    }
+    throw e;
+  }
+}
+
 async function login() {
+  // Drop any stale/poisoned token before asking for a fresh one, so a failed
+  // login can never leave a half-valid token behind for the next call to reuse.
+  token = null;
   const res = await fetchOrExplain(`${BASE}/auth/v1/token?grant_type=password`, {
     method: 'POST',
     headers: { apikey: ANON, 'Content-Type': 'application/json' },
@@ -92,7 +138,7 @@ async function login() {
         : '';
     throw new Error(`gtradea login failed (HTTP ${res.status}${why ? `: ${why}` : ''})${hint}`);
   }
-  const j = await res.json();
+  const j = await readJson(res);
   token = {
     accessToken: j.access_token,
     refreshToken: j.refresh_token,
@@ -108,7 +154,7 @@ async function refresh() {
     body: JSON.stringify({ refresh_token: token.refreshToken }),
   });
   if (!res.ok) return login(); // refresh chain broke → full login
-  const j = await res.json();
+  const j = await readJson(res);
   token = {
     accessToken: j.access_token,
     refreshToken: j.refresh_token || token.refreshToken,
@@ -135,7 +181,7 @@ async function apiGet(path, retry = true) {
     const why = await explainHttp(res);
     throw new Error(`gtradea GET ${path} failed (HTTP ${res.status}${why ? `: ${why}` : ''})`);
   }
-  return res.json();
+  return readJson(res);
 }
 
 // Run async fn over items with at most `limit` in flight; preserves order.
@@ -211,9 +257,21 @@ async function runSync() {
     lastSync = { at: new Date(), ok: false, jobs: 0, items: 0, upserted: 0, error: 'not configured', ms: 0 };
     return lastSync;
   }
-  if (syncing) return { ...lastSync, ok: null, skipped: true }; // overlap guard — a run is already in progress
+  // Overlap guard WITH a watchdog. Normally a run already in progress means we
+  // skip this tick. But if that run has been "in flight" longer than SYNC_STALE_MS
+  // it is almost certainly wedged (a request or DB call that never settled), so we
+  // log it and supersede it — this is what lets the loop self-heal without a server
+  // restart instead of silently never fetching new orders again.
+  if (syncing) {
+    if (Date.now() - syncStartedAt < SYNC_STALE_MS) {
+      return { ...lastSync, ok: null, skipped: true };
+    }
+    console.warn(`[gtradeaSync] previous sync wedged for ${Math.round((Date.now() - syncStartedAt) / 1000)}s — superseding it`);
+  }
+  const myRun = ++runSeq;
   syncing = true;
-  const started = Date.now();
+  syncStartedAt = Date.now();
+  const started = syncStartedAt;
   try {
     const jobsResp = await apiGet('/api/v1/admin/procurement/jobs');
     const jobs = Array.isArray(jobsResp?.jobs) ? jobsResp.jobs : (Array.isArray(jobsResp) ? jobsResp : []);
@@ -233,6 +291,8 @@ async function runSync() {
     const rows = detailRows.flat();
 
     let upserted = 0;
+    let failed = 0;
+    let firstErr = null;
     for (const row of rows) {
       try {
         const [record, created] = await SupplierOrder.findOrCreate({
@@ -242,19 +302,40 @@ async function runSync() {
         if (!created) await record.update(row);
         upserted++;
       } catch (e) {
-        console.error('[gtradeaSync] upsert failed for item', row.source_item_id, '-', e.message);
+        failed++;
+        if (!firstErr) firstErr = e.message;
       }
     }
+    // Aggregate write failures into ONE line. Logging one console.error per row
+    // turned a systemic DB fault into a ~200-line-per-tick flood that buried every
+    // other message; a single line with the count + first error is enough to act on.
+    if (failed) console.error(`[gtradeaSync] ${failed}/${rows.length} upsert(s) failed (first: ${firstErr})`);
 
-    lastSync = { at: new Date(), ok: true, jobs: jobs.length, items: rows.length, upserted, error: null, ms: Date.now() - started };
-    console.log(`[gtradeaSync] synced ${upserted}/${rows.length} item(s) from ${jobs.length} job(s) in ${lastSync.ms}ms`);
+    // Never paint a total write failure green. If we fetched rows but persisted
+    // NONE, the portal is genuinely not receiving new orders — report ok:false so
+    // the status label, the header, and any future alerting reflect reality instead
+    // of a reassuring "Synced N items" while nothing actually landed.
+    const writeOutage = rows.length > 0 && upserted === 0;
+    lastSync = {
+      at: new Date(),
+      ok: !writeOutage,
+      jobs: jobs.length,
+      items: rows.length,
+      upserted,
+      failed,
+      error: writeOutage ? `all ${rows.length} upsert(s) failed — DB write outage (first: ${firstErr})` : null,
+      ms: Date.now() - started,
+    };
+    console.log(`[gtradeaSync] synced ${upserted}/${rows.length} item(s) from ${jobs.length} job(s) in ${lastSync.ms}ms${failed ? ` — ${failed} failed` : ''}`);
     return lastSync;
   } catch (e) {
     console.error('[gtradeaSync] sync failed:', e.message);
     lastSync = { at: new Date(), ok: false, jobs: 0, items: 0, upserted: 0, error: e.message, ms: Date.now() - started };
     return lastSync;
   } finally {
-    syncing = false;
+    // Only the current run may clear the flag. A zombie run that the watchdog
+    // superseded must not reset it and let a third run overlap the fresh one.
+    if (myRun === runSeq) syncing = false;
   }
 }
 
@@ -280,7 +361,15 @@ function startScheduler() {
 }
 
 function getStatus() {
-  return { ...lastSync, configured: isConfigured(), enabled: ENABLED, intervalMs: INTERVAL_MS, syncing };
+  return {
+    ...lastSync,
+    configured: isConfigured(),
+    enabled: ENABLED,
+    intervalMs: INTERVAL_MS,
+    syncing,
+    // How long the current run has been going — makes a wedged/slow pull visible.
+    runningForMs: syncing && syncStartedAt ? Date.now() - syncStartedAt : null,
+  };
 }
 
 module.exports = { runSync, startScheduler, getStatus, isConfigured };
