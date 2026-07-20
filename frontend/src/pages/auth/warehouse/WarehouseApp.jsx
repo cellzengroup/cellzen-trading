@@ -1082,6 +1082,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const supplierReqId = useRef(0);          // guards against out-of-order responses
   const supplierLoadedOnce = useRef(false); // full-screen spinner only on first load
   const manualSyncRef = useRef(false);      // toast a sync's outcome only when the user clicked it
+  const lastKickRef = useRef(0);            // collapses rapid tab-switch bursts into one pull
 
   const loadSupplier = useCallback(async () => {
     const reqId = ++supplierReqId.current;
@@ -1128,6 +1129,13 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     if (!localStorage.getItem("staff_token")) return undefined;
     let cancelled = false;
     const kick = async () => {
+      // Opening this tab fires a pull. Without this guard, flipping between tabs
+      // (or any remount) fires one per switch, which is what filled the console
+      // with redundant /sync calls. One pull per 10s from a given browser is
+      // plenty — the 60s interval and the server-side loop cover the rest.
+      const now = Date.now();
+      if (now - lastKickRef.current < 10000) return;
+      lastKickRef.current = now;
       try {
         await syncSupplierOrders();
         if (!cancelled) loadSupplier(); // grab syncing:true so the fast poll tracks it live
@@ -1169,11 +1177,21 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // the polling above follows it to completion.
   const handleSyncNow = async () => {
     manualSyncRef.current = true; // this one gets a completion toast; auto-syncs stay quiet
+    lastKickRef.current = Date.now(); // an explicit pull also satisfies the auto-kick window
     setSupplierSyncing(true);
     try {
-      await syncSupplierOrders();
+      const r = await syncSupplierOrders();
+      // The server coalesces: if a pull was already running or finished seconds
+      // ago, no new one starts. Say so and clear the pending-toast flag —
+      // otherwise the next background sync's completion would be announced as
+      // though it were this click.
+      if (r && r.started === false) {
+        manualSyncRef.current = false;
+        showToast(r.reason === "already-running" ? "Sync already running…" : "Already up to date", "ok");
+      }
       await loadSupplier(); // picks up syncing:true so the button stays honest
     } catch (e) {
+      manualSyncRef.current = false;
       showToast(e.message || "Sync failed", "error");
     } finally {
       setSupplierSyncing(false); // the server's flag takes over from here
@@ -1706,10 +1724,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                     // failed — show the failure (it retries automatically). Brand
                     // warning tone (#B99353), same as the "Not Updated" badge.
                     <span
-                      className="hidden text-[11px] font-semibold text-[#B99353] sm:inline"
+                      className="hidden max-w-[24rem] truncate text-[11px] font-semibold text-[#B99353] sm:inline"
                       title={supplierSync.error || "Last sync failed — retrying automatically"}
                     >
-                      ⚠ Sync failing — retrying
+                      ⚠ Sync failing: {supplierSync.error || "unknown error"}
                     </span>
                   ) : (
                     <span className="hidden text-[11px] text-[#2D2D2D]/45 sm:inline">

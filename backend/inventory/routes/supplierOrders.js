@@ -117,8 +117,19 @@ router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
 // to succeed server-side. The client follows progress via the `syncing` flag that
 // both GET / and GET /status return.
 //
-// Throttled: 409 if a sync is already running, 429 within a short double-click
-// window — so it can't be looped to hammer the single shared gtradea account.
+// Coalesced, NOT errored: if a sync is already running or one finished moments
+// ago, the caller's intent ("make sure fresh data is being pulled") is already
+// satisfied, so we answer 200 with started:false instead of 409/429.
+//
+// This used to return 409/429. Because the 1688 tab fires a sync on every tab
+// open (plus every 60s, from every staff member's browser), those benign
+// collisions are routine — and the browser logs every non-2xx as a red "Failed
+// to load resource", so a perfectly healthy, freshly-synced system looked like
+// it was throwing errors in production. The protection against hammering the
+// single shared gtradea account is that we don't START a sync — not the status
+// code, so reporting it as success loses nothing.
+const SYNC_COALESCE_MS = 3000;
+
 router.post('/sync', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
@@ -127,14 +138,10 @@ router.post('/sync', authenticate, requireStaffOrAdmin, async (req, res) => {
     }
     const st = gtradeaSync.getStatus();
     if (st.syncing) {
-      return res.status(409).json({ success: false, message: 'A sync is already running — please wait' });
+      return res.json({ success: true, data: { started: false, reason: 'already-running', ...st } });
     }
-    // Short anti-double-click window only. This used to be 15s, which meant a
-    // manual "Sync now" landing just after a background poll was rejected — the
-    // button looked broken even though the data was fresh. The 409 above is the
-    // real protection against hammering the shared gtradea account.
-    if (st.at && Date.now() - new Date(st.at).getTime() < 3000) {
-      return res.status(429).json({ success: false, message: 'Just synced — give it a second' });
+    if (st.at && Date.now() - new Date(st.at).getTime() < SYNC_COALESCE_MS) {
+      return res.json({ success: true, data: { started: false, reason: 'recently-synced', ...st } });
     }
     // runSync() flips its `syncing` flag synchronously before its first await, so
     // the status we return below already reads syncing: true.
