@@ -1180,7 +1180,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     lastKickRef.current = Date.now(); // an explicit pull also satisfies the auto-kick window
     setSupplierSyncing(true);
     try {
-      const r = await syncSupplierOrders();
+      const r = await syncSupplierOrders(true); // explicit click bypasses the backoff
       // The server coalesces: if a pull was already running or finished seconds
       // ago, no new one starts. Say so and clear the pending-toast flag —
       // otherwise the next background sync's completion would be announced as

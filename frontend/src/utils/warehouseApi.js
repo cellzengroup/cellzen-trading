@@ -200,8 +200,12 @@ export async function loadSupplierOrders(search = "") {
 }
 
 // Trigger an immediate server-side pull from gtradea. Returns the sync summary.
-export async function syncSupplierOrders() {
-  const res = await authFetch(`/inventory/supplier-orders/sync`, { ...STAFF, method: "POST" });
+// `force` marks a user-clicked "Sync now": it bypasses the server's failure
+// backoff. The tab's automatic 60s kick leaves it off so a persistent upstream
+// block stays paused rather than being re-hit by every open browser.
+export async function syncSupplierOrders(force = false) {
+  const qs = force ? "?force=1" : "";
+  const res = await authFetch(`/inventory/supplier-orders/sync${qs}`, { ...STAFF, method: "POST" });
   const json = await readJson(res);
   if (!res.ok || !json.success) {
     // Attach the status so callers can tell an expected coordination reply

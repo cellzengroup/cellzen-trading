@@ -136,16 +136,23 @@ router.post('/sync', authenticate, requireStaffOrAdmin, async (req, res) => {
     if (!gtradeaSync.isConfigured()) {
       return res.status(503).json({ success: false, message: '1688 sync is not configured on the server' });
     }
+    // An explicit user-clicked "Sync now" (?force=1) bypasses the failure backoff;
+    // the tab's automatic 60s kick does not, so a persistent upstream block stays
+    // paused instead of being re-hit by every open browser.
+    const force = String(req.query.force || '') === '1';
     const st = gtradeaSync.getStatus();
     if (st.syncing) {
       return res.json({ success: true, data: { started: false, reason: 'already-running', ...st } });
     }
-    if (st.at && Date.now() - new Date(st.at).getTime() < SYNC_COALESCE_MS) {
+    if (!force && st.backingOffMs) {
+      return res.json({ success: true, data: { started: false, reason: 'backing-off', ...st } });
+    }
+    if (!force && st.at && Date.now() - new Date(st.at).getTime() < SYNC_COALESCE_MS) {
       return res.json({ success: true, data: { started: false, reason: 'recently-synced', ...st } });
     }
     // runSync() flips its `syncing` flag synchronously before its first await, so
     // the status we return below already reads syncing: true.
-    gtradeaSync.runSync().catch((e) => console.error('[gtradeaSync] background sync failed:', e.message));
+    gtradeaSync.runSync({ force }).catch((e) => console.error('[gtradeaSync] background sync failed:', e.message));
     res.status(202).json({ success: true, data: { started: true, ...gtradeaSync.getStatus() } });
   } catch (error) {
     console.error('Sync supplier orders error:', error);

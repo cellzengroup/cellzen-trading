@@ -56,11 +56,34 @@ const REQUEST_TIMEOUT_MS = Math.max(parseInt(process.env.GTRADEA_REQUEST_TIMEOUT
 // worst-case healthy pass (a handful of requests x REQUEST_TIMEOUT_MS) so it only
 // ever fires on a genuine hang, never on a merely-slow run.
 const SYNC_STALE_MS = Math.max(parseInt(process.env.GTRADEA_SYNC_STALE_MS, 10) || 240000, 120000);
+// gtradea sits behind Cloudflare. A bare undici request sends no User-Agent,
+// which trips bot heuristics far more readily than a normal-looking browser
+// request, so send a realistic UA/Accept set on every call. This is a legitimate
+// client using the account holder's own credentials; it does NOT solve
+// challenges. If Cloudflare escalates to a real JS challenge, the only durable
+// fix is allowlisting this server's outbound IP on gtradea's side.
+const BROWSER_HEADERS = {
+  'User-Agent': process.env.GTRADEA_USER_AGENT ||
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  Accept: 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+};
+// When gtradea blocks us (Cloudflare) or keeps failing, retrying every
+// INTERVAL_MS floods the log with hundreds of identical lines and hammers an
+// edge that is already refusing us (which can make Cloudflare escalate).
+// Exponential backoff, capped. A user-clicked "Sync now" bypasses it.
+const MAX_BACKOFF_MS = Math.max(parseInt(process.env.GTRADEA_MAX_BACKOFF_MS, 10) || 1800000, 60000);
+// Only start slowing down after this many CONSECUTIVE failures. A one-off blip
+// (a timeout, a brief 5xx) must still retry at the normal cadence so a new order
+// isn't delayed — backoff is for a persistent block, not a transient hiccup.
+const BACKOFF_AFTER = 3;
 
 let token = null; // { accessToken, refreshToken, expiresAt(ms epoch) }
 let syncing = false;
 let syncStartedAt = 0; // epoch ms the in-flight run began — drives the stale-run watchdog
 let runSeq = 0;        // monotonic run id so a superseded zombie run can't clobber a fresh one
+let consecutiveFailures = 0;
+let backoffUntil = 0;  // epoch ms; scheduler skips until then after repeated failures
 let lastSync = { at: null, ok: null, jobs: 0, items: 0, upserted: 0, error: null, ms: null };
 
 const isConfigured = () => Boolean(SupplierOrder && EMAIL && PASSWORD);
@@ -79,7 +102,11 @@ async function fetchOrExplain(url, init) {
   // aborts at the deadline instead of wedging the sync. On timeout we fail fast;
   // the next tick retries clean.
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    return await fetch(url, {
+      ...init,
+      headers: { ...BROWSER_HEADERS, ...(init?.headers || {}) },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
   } catch (e) {
     // AbortSignal.timeout rejects with a TimeoutError; a manual abort would be
     // AbortError — treat both as "gtradea was too slow".
@@ -93,8 +120,19 @@ async function fetchOrExplain(url, init) {
 
 // Pull the human-readable reason out of a Supabase/GoTrue error body. Without
 // this every failure looks like a bare status code and can't be told apart.
+// Cloudflare's "Just a moment…" interstitial is an HTML challenge page, not an
+// API error. Left unrecognised it dumped 160 chars of its inlined CSS into every
+// log line, which told an operator nothing about the actual problem.
+const isCloudflareChallenge = (res, text) =>
+  res?.headers?.get?.('cf-mitigated') === 'challenge' ||
+  /just a moment|cf-browser-verification|__cf_chl|challenge-platform/i.test(text || '');
+
 async function explainHttp(res) {
   const text = await res.text().catch(() => '');
+  if (isCloudflareChallenge(res, text)) {
+    return "blocked by Cloudflare bot protection — this server's outbound IP is being challenged. " +
+      'Ask gtradea to allowlist the Render outbound IPs (or issue an API token)';
+  }
   try {
     const j = JSON.parse(text);
     return j.msg || j.error_description || j.message || j.error || text.slice(0, 160);
@@ -252,10 +290,16 @@ function mapDetail(detail) {
 }
 
 // Full sync pass: list jobs → fetch each job's detail → upsert every item.
-async function runSync() {
+async function runSync({ force = false } = {}) {
   if (!isConfigured()) {
     lastSync = { at: new Date(), ok: false, jobs: 0, items: 0, upserted: 0, error: 'not configured', ms: 0 };
     return lastSync;
+  }
+  // Backing off after repeated failures (e.g. Cloudflare is refusing us). Skip
+  // without touching gtradea so we don't flood the log or dig the block deeper.
+  // An explicit user-clicked "Sync now" (force) always gets through.
+  if (!force && backoffUntil && Date.now() < backoffUntil) {
+    return { ...lastSync, ok: null, skipped: true, reason: 'backing-off', retryInMs: backoffUntil - Date.now() };
   }
   // Overlap guard WITH a watchdog. Normally a run already in progress means we
   // skip this tick. But if that run has been "in flight" longer than SYNC_STALE_MS
@@ -327,9 +371,23 @@ async function runSync() {
       ms: Date.now() - started,
     };
     console.log(`[gtradeaSync] synced ${upserted}/${rows.length} item(s) from ${jobs.length} job(s) in ${lastSync.ms}ms${failed ? ` — ${failed} failed` : ''}`);
+    consecutiveFailures = 0;
+    backoffUntil = 0;
     return lastSync;
   } catch (e) {
-    console.error('[gtradeaSync] sync failed:', e.message);
+    // Exponential backoff so a persistent block (Cloudflare) doesn't repeat this
+    // same line every 90s forever — it was filling the Render log with hundreds
+    // of identical entries and re-hitting an edge already refusing us.
+    consecutiveFailures++;
+    let wait = 0;
+    if (consecutiveFailures >= BACKOFF_AFTER) {
+      wait = Math.min(INTERVAL_MS * 2 ** Math.min(consecutiveFailures - BACKOFF_AFTER + 1, 6), MAX_BACKOFF_MS);
+      backoffUntil = Date.now() + wait;
+    }
+    console.error(
+      `[gtradeaSync] sync failed (${consecutiveFailures}x): ${e.message}` +
+        (wait ? ` — backing off, next attempt in ${Math.round(wait / 1000)}s` : '')
+    );
     lastSync = { at: new Date(), ok: false, jobs: 0, items: 0, upserted: 0, error: e.message, ms: Date.now() - started };
     return lastSync;
   } finally {
@@ -369,6 +427,9 @@ function getStatus() {
     syncing,
     // How long the current run has been going — makes a wedged/slow pull visible.
     runningForMs: syncing && syncStartedAt ? Date.now() - syncStartedAt : null,
+    // Set while we're deliberately pausing after repeated failures.
+    backingOffMs: backoffUntil && Date.now() < backoffUntil ? backoffUntil - Date.now() : null,
+    consecutiveFailures,
   };
 }
 
