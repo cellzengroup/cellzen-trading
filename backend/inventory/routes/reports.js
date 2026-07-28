@@ -49,9 +49,12 @@ async function embedImages(workbook, sheet, imageUrl1, imageUrl2, col, rowIndex,
   const cellWidthPx = IMG_COL_WIDTH * 7.5;
   let maxH = 0;
 
+  // Fetch all images for this row in parallel instead of one network round-trip at a time.
+  const imgBuffers = await Promise.all(urls.map((u) => downloadImage(u).catch(() => null)));
+
   for (let i = 0; i < urls.length; i++) {
     try {
-      const imgBuffer = await downloadImage(urls[i]);
+      const imgBuffer = imgBuffers[i];
       if (!imgBuffer) continue;
       const ext = path.extname(urls[i].split('?')[0]).replace('.', '').toLowerCase() || 'jpeg';
       const dimensions = imageSize(imgBuffer);
@@ -165,6 +168,21 @@ async function loadTemplate(templateFile, sheetName, headers, colWidths) {
   }
 
   return { workbook, sheet };
+}
+
+// ─── mapWithConcurrency: run async work over items with a bounded worker pool ──
+// Row writes (each involving a Supabase image download) were previously awaited
+// one at a time, so the whole response stayed unsent until every row finished —
+// large exports blew past Render's proxy timeout and came back as a 502.
+async function mapWithConcurrency(items, limit, fn) {
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
 // Helper: set a data cell with font, alignment, border
@@ -359,8 +377,7 @@ router.get('/export/quotation', authenticate, async (req, res) => {
 
     // Helper to write product rows into a sheet starting at startRow
     const writeProducts = async (sheet, products, startRow) => {
-      for (let idx = 0; idx < products.length; idx++) {
-        const p = products[idx];
+      await mapWithConcurrency(products, 8, async (p, idx) => {
         const row = sheet.getRow(startRow + idx);
 
         setCell(row, 1, '');
@@ -374,7 +391,7 @@ router.get('/export/quotation', authenticate, async (req, res) => {
 
         const priceVal = parseFloat(p[price_type] || 0);
         setCell(row, 6, priceVal > 0 ? priceVal.toFixed(2) : '-', { ...dataFont, bold: true, color: { argb: 'FF720E20' } });
-      }
+      });
     };
 
     if (category) {
@@ -453,8 +470,7 @@ router.get('/export/transfers', authenticate, async (req, res) => {
     }
 
     const startRow = 4;
-    for (let idx = 0; idx < transfers.length; idx++) {
-      const tx = transfers[idx];
+    await mapWithConcurrency(transfers, 8, async (tx, idx) => {
       const row = sheet.getRow(startRow + idx);
 
       setCell(row, 1, '');
@@ -465,7 +481,7 @@ router.get('/export/transfers', authenticate, async (req, res) => {
       setCell(row, 3, tx.product?.barcode || '-');
       setCell(row, 4, tx.toLocation?.name || '-', { ...dataFont, bold: true, color: { argb: 'FF720E20' } });
       setCell(row, 5, new Date(tx.createdAt).toLocaleDateString());
-    }
+    });
 
     const locName = location_id
       ? (await Location.findByPk(location_id))?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'Unknown'
@@ -512,8 +528,7 @@ router.get('/export/excel', authenticate, async (req, res) => {
     const { workbook, sheet } = await loadTemplate('SingingBowlTemplates.xlsx', 'Products', headers, colWidths);
 
     const startRow = 4;
-    for (let idx = 0; idx < products.length; idx++) {
-      const product = products[idx];
+    await mapWithConcurrency(products, 8, async (product, idx) => {
       const row = sheet.getRow(startRow + idx);
 
       setCell(row, 1, '');
@@ -529,7 +544,7 @@ router.get('/export/excel', authenticate, async (req, res) => {
       if (location_id) {
         setCell(row, 8, product.quantity);
       }
-    }
+    });
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename=yogini-arts-products.xlsx');
@@ -577,8 +592,7 @@ router.get('/export/sales', authenticate, async (req, res) => {
     const { workbook, sheet } = await loadTemplate('SaleTemplates.xlsx', 'Sales Report', headers, colWidths);
 
     const startRow = 4;
-    for (let idx = 0; idx < sales.length; idx++) {
-      const tx = sales[idx];
+    await mapWithConcurrency(sales, 8, async (tx, idx) => {
       const row = sheet.getRow(startRow + idx);
 
       setCell(row, 1, '');
@@ -593,7 +607,7 @@ router.get('/export/sales', authenticate, async (req, res) => {
       setCell(row, 7, parseFloat(tx.unit_price) || 0, { ...dataFont, bold: true });
       setCell(row, 8, new Date(tx.createdAt).toLocaleDateString());
       setCell(row, 9, tx.createdByUser?.name || '-');
-    }
+    });
 
     const locName = location_id
       ? (await Location.findByPk(location_id))?.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'Unknown'
