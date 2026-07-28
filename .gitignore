@@ -31,6 +31,9 @@ dist-ssr
 # Print bridge — holds the PRINT_AGENT_TOKEN secret; keep it out of git
 print-bridge/config.json
 
+# gtradea bridge — holds the gtradea password + GTRADEA_BRIDGE_TOKEN; keep it out of git
+gtradea-bridge/config.json
+
 # Temporary files
 temp_reference
 

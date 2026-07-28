@@ -1,0 +1,9 @@
+{
+  "name": "cellzen-gtradea-bridge",
+  "version": "1.0.0",
+  "description": "On-site relay that pulls 1688 procurement orders from gtradea (whose Cloudflare blocks the Render server's IP) and posts them to the Cellzen website",
+  "private": true,
+  "type": "commonjs",
+  "bin": { "cellzen-gtradea-bridge": "bridge.js" },
+  "scripts": { "start": "node bridge.js" }
+}

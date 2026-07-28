@@ -36,8 +36,8 @@ const CENTER_X = CANVAS_W / 2; // 240
 // Nudge all content slightly right of centre (to sit better on the label).
 const CONTENT_DX = 8;
 const CX = CENTER_X + CONTENT_DX; // content centre line (all elements centre here)
-const CONTENT_W = 448; // max text width, centred on CX (small side margins)
-const FOOTER_W = 468; // the long support line may use a touch more width
+const CONTENT_W = 462; // max text width, centred on CX (small side margins)
+const FOOTER_W = 470; // the long support line may use a touch more width
 const LETTER_SPACING = 0; // no extra letter tracking on the text lines
 
 // Vertical layout (dots). Image blocks use their TOP; text uses its BASELINE.
@@ -49,15 +49,15 @@ const BARCODE_TOP = 122;
 const BARCODE_MAX_W = 468;
 // The CZN code number, drawn by us under the bars (smaller + letter-spaced).
 const CODE_GAP = 12; // space between the bars and the number
-const CODE_SIZE = 30;
+const CODE_SIZE = 42;
 const CODE_SPACING = 12; // letter spacing on the number
-const SHELF_Y = 336;
-const TRACKING_Y = 374;
-const ICONS_TOP = 394;
-const ICONS_W = 270;
-const FOOTER1_Y = 540;
-const FOOTER2_Y = 572;
-const FOOTER3_Y = 604;
+const SHELF_Y = 350;
+const TRACKING_Y = 388;
+const ICONS_TOP = 410;
+const ICONS_W = 250;
+const FOOTER1_Y = 542;
+const FOOTER2_Y = 574;
+const FOOTER3_Y = 606;
 
 const FONT_STACK = "'Inter',system-ui,-apple-system,'Segoe UI',Arial,sans-serif";
 const SUPPORT_PHONE = "+8613073040201";
@@ -250,12 +250,6 @@ function drawTextAt(ctx, text, y, px, weight, spacing, baseline = "alphabetic") 
   }
 }
 
-// Fit-to-width + draw, centred on CX with letter-spacing.
-function drawCenteredText(ctx, text, baselineY, size, weight = "600", maxWidth = CONTENT_W, spacing = LETTER_SPACING) {
-  const px = fitFont(ctx, text, maxWidth, size, weight, spacing);
-  drawTextAt(ctx, text, baselineY, px, weight, spacing);
-}
-
 // "2026-07-09" / Date → "July 9, 2026", matching the design's footer.
 function formatLabelDate(value) {
   const d = value ? new Date(value) : new Date();
@@ -290,7 +284,7 @@ function packMono(ctx, width, height) {
       if (lum < 128) out[rowByte + (x >> 3)] &= ~(0x80 >> (x & 7)); // clear bit → black
     }
   }
-  return { data: bytesToBase64(out), widthBytes, height };
+  return { data: bytesToBase64(out), widthBytes, width, height };
 }
 
 // ---------------------------------------------------------------- shipment label
@@ -341,8 +335,8 @@ async function renderShipmentLabel(item) {
   // the two, so it governs the shared size (both fit, and they match visually).
   const shelfText = `Shelf Number: ${item.rackId || "-"}`;
   const trackText = `Tracking: ${item.trackingNumber || "-"}`;
-  const sShelf = fitFont(ctx, shelfText, CONTENT_W, 30, "600", LETTER_SPACING);
-  const sTrack = fitFont(ctx, trackText, CONTENT_W, 30, "600", LETTER_SPACING);
+  const sShelf = fitFont(ctx, shelfText, CONTENT_W, 36, "600", LETTER_SPACING);
+  const sTrack = fitFont(ctx, trackText, CONTENT_W, 36, "600", LETTER_SPACING);
   const sCommon = Math.min(sShelf, sTrack);
   drawTextAt(ctx, shelfText, SHELF_Y, sCommon, "600", LETTER_SPACING);
   drawTextAt(ctx, trackText, TRACKING_Y, sCommon, "600", LETTER_SPACING);
@@ -350,10 +344,15 @@ async function renderShipmentLabel(item) {
   // Handling icons (centred) — vector paths, so the canvas is never tainted.
   drawSvgCentered(ctx, LABEL_ICONS_SVG, ICONS_TOP, ICONS_W);
 
-  // Footer.
-  drawCenteredText(ctx, `Recorded by: ${item.createdByName || "-"}`, FOOTER1_Y, 27, "600");
-  drawCenteredText(ctx, `If any doubts please inform ${SUPPORT_PHONE}`, FOOTER2_Y, 27, "500", FOOTER_W);
-  drawCenteredText(ctx, formatLabelDate(item.createdAt), FOOTER3_Y, 27, "500");
+  // Footer — all three lines share one size (the "If any doubts" line is the
+  // longest and fixed-length, so it governs the shared size for all three).
+  const footer1Text = `Recorded by: ${item.createdByName || "-"}`;
+  const footer2Text = `If any doubts please inform ${SUPPORT_PHONE}`;
+  const footer3Text = formatLabelDate(item.createdAt);
+  const sFooter = fitFont(ctx, footer2Text, FOOTER_W, 28, "500", LETTER_SPACING);
+  drawTextAt(ctx, footer1Text, FOOTER1_Y, sFooter, "400", LETTER_SPACING);
+  drawTextAt(ctx, footer2Text, FOOTER2_Y, sFooter, "500", LETTER_SPACING);
+  drawTextAt(ctx, footer3Text, FOOTER3_Y, sFooter, "500", LETTER_SPACING);
 
   const png = canvas.toDataURL("image/png");
   const mono = packMono(ctx, CANVAS_W, CANVAS_H);
@@ -507,7 +506,10 @@ export async function downloadRackLabel(rackId) {
 //   2. Cloud queue   — any other device (incl. phones) queues the SAME bitmap;
 //                      the on-site agent prints it identically seconds later.
 //   3. Browser print — last resort: print the rendered PNG on a 60 x 80 page.
-// Returns "local" | "queued" | "browser".
+// Returns { how: "local" | "queued" | "browser", full: boolean }. `full` is
+// false when the canvas render failed (e.g. no Path2D support) and every path
+// above fell back to a bare barcode — callers should surface that distinctly,
+// since a barcode-only print looks identical to a successful one otherwise.
 export async function printItemLabel(item, copies = 1) {
   const n = Math.max(1, Math.min(parseInt(copies, 10) || 1, 20));
   let rendered = null;
@@ -518,15 +520,16 @@ export async function printItemLabel(item, copies = 1) {
     console.error("Shipment label render failed, falling back to plain barcode:", e);
   }
   const bitmap = rendered ? rendered.mono : null;
+  const full = Boolean(rendered);
 
-  if (await printViaBridge(item.code, "item", n, bitmap)) return "local";
+  if (await printViaBridge(item.code, "item", n, bitmap)) return { how: "local", full };
   try {
     await enqueuePrintJob(item.code, "item", n, bitmap);
-    return "queued";
+    return { how: "queued", full };
   } catch {
     if (rendered) printImageOnLabel(rendered.png, item.code, "cover", n);
     else printImageOnLabel(barcodeDataUrl(item.code), item.code, undefined, n);
-    return "browser";
+    return { how: "browser", full };
   }
 }
 

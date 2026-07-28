@@ -14,6 +14,7 @@ import {
   exportItemsCsv,
   loadSupplierOrders,
   syncSupplierOrders,
+  exportSupplierOrdersXlsx,
 } from "../../../utils/warehouseApi";
 import { downloadItemLabel, downloadRackLabel, printItemLabel } from "../../../utils/warehouseLabels";
 
@@ -701,9 +702,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [printQty, setPrintQty] = useState("1");
   const doPrintLabel = async (item, copies) => {
     try {
-      const how = await printItemLabel(item, copies);
+      const { how, full } = await printItemLabel(item, copies);
       const n = copies > 1 ? `${copies} labels` : "label";
-      if (how === "queued") showToast(`Sent ${n} to the warehouse printer ✓`, "ok");
+      if (!full) {
+        showToast(`Printed ${n} as a plain barcode — the full label design failed to render`, "warn");
+      } else if (how === "queued") showToast(`Sent ${n} to the warehouse printer ✓`, "ok");
       else if (how === "local") showToast(`Printing ${n} ✓`, "ok");
     } catch (e) {
       showToast(e.message || "Print failed", "error");
@@ -1195,6 +1198,20 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       showToast(e.message || "Sync failed", "error");
     } finally {
       setSupplierSyncing(false); // the server's flag takes over from here
+    }
+  };
+
+  // Exports the CURRENT search filter (server re-runs the same query), so the
+  // packing list always matches what's on screen rather than every order ever synced.
+  const [supplierExporting, setSupplierExporting] = useState(false);
+  const handleExportSupplier = async () => {
+    setSupplierExporting(true);
+    try {
+      await exportSupplierOrdersXlsx(supplierSearch);
+    } catch (e) {
+      showToast(e.message || "Export failed", "error");
+    } finally {
+      setSupplierExporting(false);
     }
   };
 
@@ -1763,12 +1780,21 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               CN tracking is stored in your warehouse; <span className="font-semibold text-[#B99353]">⏳ Not Updated</span> means gtradea has no CN
               tracking for that item yet.
             </p>
-            <div className="mb-4">
+            <div className="mb-4 flex flex-wrap items-center gap-3">
               <SearchInput
                 value={supplierSearch}
                 onChange={setSupplierSearch}
                 placeholder="Search order #, CN tracking, or product…"
               />
+              <button
+                type="button"
+                onClick={handleExportSupplier}
+                disabled={supplierExporting}
+                className={BTN_GHOST}
+              >
+                <IconDownload className={`h-3.5 w-3.5 ${supplierExporting ? "animate-pulse" : ""}`} />
+                {supplierExporting ? "Exporting…" : "Export"}
+              </button>
             </div>
             <SupplierOrdersTable rows={filteredSupplier} loading={supplierLoading} />
           </div>

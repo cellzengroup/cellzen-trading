@@ -86,17 +86,36 @@ async function generateItemCode() {
   return `CZN${String(maxSeq + 1).padStart(5, '0')}`;
 }
 
+// A managed Postgres connection (see config/postgres.js) can go stale between
+// requests — Supabase/NAT silently drop idle TCP sockets — and hand back
+// "Connection terminated unexpectedly" on the very next query, even on an
+// otherwise-fresh page load. Sequelize's own `retry` option only covers
+// ACQUIRING a new pool connection, not a query handed a connection that was
+// already checked out and has since gone stale. One retry after a short pause
+// is enough to recover; anything else re-throws unchanged.
+async function withConnectionRetry(fn) {
+  try {
+    return await fn();
+  } catch (error) {
+    const detail = `${error?.name || ''} ${error?.message || ''} ${error?.original?.message || error?.parent?.message || ''}`;
+    const transient = /connection terminated unexpectedly|econnreset|epipe|sequelizeconnection|timeout/i.test(detail);
+    if (!transient) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return fn();
+  }
+}
+
 // ============================================================ RACKS
 
 // GET /racks — every rack (shared), newest first
 router.get('/racks', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const rows = await Rack.findAll({ order: [['createdAt', 'DESC']], limit: 2000 });
+    const rows = await withConnectionRetry(() => Rack.findAll({ order: [['createdAt', 'DESC']], limit: 2000 }));
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, count: rows.length, data: rows });
   } catch (error) {
-    console.error('List racks error:', error);
+    console.error('List racks error:', error?.message, '| original:', error?.original?.message || error?.parent?.message || '(none)');
     res.status(500).json({ success: false, message: 'Unable to load shelves' });
   }
 });

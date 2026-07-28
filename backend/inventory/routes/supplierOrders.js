@@ -1,10 +1,26 @@
 const express = require('express');
+const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
+const ExcelJS = require('exceljs');
+const nlp = require('compromise');
+const { imageSize } = require('image-size');
 const { Op } = require('sequelize');
 const { SupplierOrder, WarehouseItem, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
+const { downloadImage } = require('../../config/supabase');
 const gtradeaSync = require('../services/gtradeaSync');
 
 const router = express.Router();
+
+// The packing-list export reuses the hand-styled template (title band, logo,
+// purple header row) that lives with the other static Invoice assets. Vite
+// copies frontend/public/* into dist/ verbatim at build time, so the prod path
+// mirrors the dev one exactly (same pattern as reports.js's TEMPLATES_DIR).
+const PACKING_TEMPLATE_DIR = fs.existsSync(path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'Invoice'))
+  ? path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'Invoice')
+  : path.join(__dirname, '..', '..', '..', 'dist', 'Invoice');
+const PACKING_TEMPLATE_PATH = path.join(PACKING_TEMPLATE_DIR, 'GtradeA Sent Goods.xlsx');
 
 // Same staff-or-admin gate used across the inventory routes (see warehouse.js).
 // Data is SHARED — every staff/admin sees every 1688 order. No per-user scoping.
@@ -28,82 +44,364 @@ const dbGuard = (res) => {
 // literally instead of being treated as a wildcard.
 const escapeLike = (v) => String(v).replace(/[\\%_]/g, (c) => `\\${c}`);
 
+// Shared by GET / (JSON list) and GET /export.xlsx (packing list) so the two
+// can never disagree on which rows a given search matches.
+async function fetchSupplierOrders(search) {
+  const where = {};
+  if (search) {
+    const s = `%${escapeLike(String(search).trim())}%`;
+    where[Op.or] = [
+      { order_number: { [Op.iLike]: s } },
+      { china_tracking_no: { [Op.iLike]: s } },
+      { product_name: { [Op.iLike]: s } },
+      { job_code: { [Op.iLike]: s } },
+    ];
+  }
+  // Newest ORDER first (ordered_at), not newest poll — synced_at is the same
+  // for every row a sync touches, so it can't order the list meaningfully.
+  // NULLS LAST so pre-backfill rows don't jump to the top.
+  const rows = await SupplierOrder.findAll({
+    where,
+    order: [
+      [sequelize.literal('ordered_at DESC NULLS LAST')],
+      ['order_number', 'DESC'],
+    ],
+    limit: 5000,
+  });
+
+  // Warehouse match: which of these CN tracking numbers are physically stored.
+  const matchMap = {};
+  if (WarehouseItem) {
+    const trackings = [...new Set(rows.map((r) => r.china_tracking_no).filter(Boolean))];
+    if (trackings.length) {
+      const items = await WarehouseItem.findAll({
+        where: { tracking_number: { [Op.in]: trackings } },
+        attributes: ['tracking_number', 'rack_id', 'status', 'code'],
+      });
+      for (const it of items) {
+        const key = String(it.tracking_number || '').toUpperCase();
+        // Prefer an in-stock match over a shipped one for the same tracking.
+        if (!matchMap[key] || it.status === 'in_stock') {
+          matchMap[key] = { rack_id: it.rack_id, status: it.status, code: it.code };
+        }
+      }
+    }
+  }
+
+  return rows.map((r) => {
+    const key = String(r.china_tracking_no || '').toUpperCase();
+    const m = key ? matchMap[key] : null;
+    return {
+      id: r.id,
+      order_number: r.order_number,
+      job_code: r.job_code,
+      china_tracking_no: r.china_tracking_no,
+      nepal_tracking_no: r.nepal_tracking_no,
+      status: r.status,
+      product_name: r.product_name,
+      product_image: r.product_image,
+      supplier_url: r.supplier_url,
+      source_product_id: r.source_product_id,
+      quantity: r.quantity,
+      shipping_mode: r.shipping_mode,
+      order_status: r.order_status,
+      ordered_at: r.ordered_at,
+      synced_at: r.synced_at,
+      warehouse: m ? { in_warehouse: true, rack_id: m.rack_id, status: m.status, code: m.code } : { in_warehouse: false },
+    };
+  });
+}
+
 // GET / — list supplier orders, each annotated with a warehouse match computed
 // by joining china_tracking_no against warehouse_items.tracking_number (both are
 // stored trim+uppercased, so it's an exact value match).
 router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const { search } = req.query;
-    const where = {};
-    if (search) {
-      const s = `%${escapeLike(String(search).trim())}%`;
-      where[Op.or] = [
-        { order_number: { [Op.iLike]: s } },
-        { china_tracking_no: { [Op.iLike]: s } },
-        { product_name: { [Op.iLike]: s } },
-        { job_code: { [Op.iLike]: s } },
-      ];
-    }
-    // Newest ORDER first (ordered_at), not newest poll — synced_at is the same
-    // for every row a sync touches, so it can't order the list meaningfully.
-    // NULLS LAST so pre-backfill rows don't jump to the top.
-    const rows = await SupplierOrder.findAll({
-      where,
-      order: [
-        [sequelize.literal('ordered_at DESC NULLS LAST')],
-        ['order_number', 'DESC'],
-      ],
-      limit: 5000,
-    });
-
-    // Warehouse match: which of these CN tracking numbers are physically stored.
-    const matchMap = {};
-    if (WarehouseItem) {
-      const trackings = [...new Set(rows.map((r) => r.china_tracking_no).filter(Boolean))];
-      if (trackings.length) {
-        const items = await WarehouseItem.findAll({
-          where: { tracking_number: { [Op.in]: trackings } },
-          attributes: ['tracking_number', 'rack_id', 'status', 'code'],
-        });
-        for (const it of items) {
-          const key = String(it.tracking_number || '').toUpperCase();
-          // Prefer an in-stock match over a shipped one for the same tracking.
-          if (!matchMap[key] || it.status === 'in_stock') {
-            matchMap[key] = { rack_id: it.rack_id, status: it.status, code: it.code };
-          }
-        }
-      }
-    }
-
-    const data = rows.map((r) => {
-      const key = String(r.china_tracking_no || '').toUpperCase();
-      const m = key ? matchMap[key] : null;
-      return {
-        id: r.id,
-        order_number: r.order_number,
-        job_code: r.job_code,
-        china_tracking_no: r.china_tracking_no,
-        nepal_tracking_no: r.nepal_tracking_no,
-        status: r.status,
-        product_name: r.product_name,
-        product_image: r.product_image,
-        supplier_url: r.supplier_url,
-        source_product_id: r.source_product_id,
-        quantity: r.quantity,
-        shipping_mode: r.shipping_mode,
-        order_status: r.order_status,
-        ordered_at: r.ordered_at,
-        synced_at: r.synced_at,
-        warehouse: m ? { in_warehouse: true, rack_id: m.rack_id, status: m.status, code: m.code } : { in_warehouse: false },
-      };
-    });
-
+    const data = await fetchSupplierOrders(req.query.search);
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, count: data.length, data, lastSync: gtradeaSync.getStatus() });
   } catch (error) {
     console.error('List supplier orders error:', error);
     res.status(500).json({ success: false, message: 'Unable to load 1688 orders' });
+  }
+});
+
+// A stable, deterministic "model number" for orders that gtradea has none for.
+// Same order (same order number + product) always produces the same number, so
+// re-exporting the packing list twice doesn't relabel a product a staff member
+// already wrote on a physical box.
+function deriveModelNumber(o) {
+  const seed = `${o.order_number || ''}|${o.product_name || ''}|${o.id || ''}`;
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  return `GT${1000 + (hash % 9000)}`;
+}
+
+// gtradea's product_name is really the full 1688 listing TITLE — a long,
+// keyword-stuffed marketing string ("European and American Cross-Border Gold
+// and Silver Two-Tone Earring Set, High-End and Elegant Earrings for Women,
+// Niche Design, ..."), not a short product name. That full title is exactly
+// right for the Product Description column, but the Product Name column
+// needs a short, human name. A plain "first/last N words" cut is unreliable —
+// the real product type sits at the END of the title in some listings and at
+// the START in others. What IS reliable: sellers keyword-stuff by repeating
+// the actual product-type word(s) more than once across the title (e.g.
+// "Stand" 3x, "Earring"/"Earrings" 2x, "Hand Ledger Tape" verbatim 2x) — so we
+// POS-tag the title with compromise and collect every noun that recurs;
+// that's a much stronger signal than position. Short, single-clause titles
+// (<=3 words, e.g. "Mobile Phone Stand") need none of this and are just
+// sentence-cased as-is.
+function pluralizeWord(word) {
+  const bare = word.replace(/[^a-zA-Z]/g, '');
+  if (/[sxz]$/i.test(bare) || /(ch|sh)$/i.test(bare)) return `${word}es`;
+  if (/[^aeiou]y$/i.test(bare)) return `${word.slice(0, -1)}ies`;
+  if (/s$/i.test(bare)) return word; // already looks plural
+  return `${word}s`;
+}
+// Strip (Color: ...) / [silver] spec tags — noise for name extraction.
+const stripSpecTags = (title) => String(title || '')
+  .replace(/\([^)]*\)/g, ' ')
+  .replace(/\[[^\]]*\]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+// Drop a trailing use-case clause ("... for the bottled jar", "... for
+// Women") so a tail-word fallback lands on the head noun ("water pump")
+// instead of the object of "for" ("bottled jar").
+function stripTrailingPrepClause(clause) {
+  const m = clause.match(/^(.*?)\s+(?:for|with|in|of|to|on)\s+.+$/i);
+  return m && m[1].trim() ? m[1].trim() : clause;
+}
+// POS-tag every token of a cleaned title via compromise; returns parallel
+// arrays so callers can test "is this token (index i) a noun?" cheaply.
+function tagTokens(cleanTitle) {
+  const tokens = [];
+  const isNoun = [];
+  for (const sentence of nlp(cleanTitle).json()) {
+    for (const term of sentence.terms) {
+      tokens.push(term.text);
+      isNoun.push(term.tags.includes('Noun'));
+    }
+  }
+  const normTokens = tokens.map((t) => t.toLowerCase().replace(/[^a-z0-9]/g, ''));
+  return { tokens, isNoun, normTokens };
+}
+const sentenceCase = (phrase) => {
+  const lower = String(phrase || '').toLowerCase();
+  return lower ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower;
+};
+
+function deriveShortProductName(rawName) {
+  const s = stripSpecTags(rawName);
+  if (!s) return '-';
+  const clause1 = stripTrailingPrepClause(s.split(',')[0].trim());
+  const words1 = clause1.split(/\s+/).filter(Boolean);
+  if (words1.length > 0 && words1.length <= 3) return sentenceCase(clause1);
+
+  // Long / comma-less title — find every noun that the seller repeated
+  // somewhere else in the title (2+ occurrences, singular/plural collapsed).
+  // That's what actually names the product in keyword-stuffed listings — NOT
+  // just the first noun that happens to repeat: a title can stutter the same
+  // word 2-3 times in a row ("relief relief relief") AND separately repeat the
+  // real head noun far apart ("...material paper...backing paper"). Counting
+  // distinct repeated stems (not first-match position) catches both at once
+  // and naturally collapses the stutter to a single mention.
+  const { tokens, isNoun, normTokens } = tagTokens(s);
+  const counts = new Map();
+  tokens.forEach((t, i) => {
+    if (!isNoun[i] || !normTokens[i]) return;
+    const entry = counts.get(normTokens[i]);
+    if (entry) entry.count += 1;
+    else counts.set(normTokens[i], { count: 1, firstIdx: i, text: t });
+  });
+  const repeated = [...counts.values()]
+    .filter((v) => v.count >= 2)
+    .sort((a, b) => a.firstIdx - b.firstIdx);
+
+  if (repeated.length >= 2) return sentenceCase(repeated.map((r) => r.text).join(' '));
+  if (repeated.length === 1) {
+    // A single repeated noun ("Earring") isn't a complete name by itself —
+    // pair it with the word right after its first occurrence ("Set").
+    const head = repeated[0];
+    const next = tokens[head.firstIdx + 1];
+    return sentenceCase(next ? `${head.text} ${pluralizeWord(next)}` : pluralizeWord(head.text));
+  }
+
+  // Nothing repeats — fall back to the tail of clause 1 (best-effort).
+  const core = words1.slice(-2);
+  core[core.length - 1] = pluralizeWord(core[core.length - 1]);
+  return sentenceCase(core.join(' '));
+}
+
+const PACKING_HEADERS = ['MARKA', 'Ctn. No', 'Order ID', 'Goods No.', 'Product Image', 'Product Name', 'Brand name', 'Model Number', 'Product Description', 'Quantity', 'Unit', 'KG', 'CBM'];
+const PACKING_COL_WIDTHS = [16, 15, 24, 16, 28, 24, 18, 24, 58, 14, 14, 14, 14];
+const PACKING_IMG_COL = 5; // 1-indexed column — Product Image
+const PACKING_ROW_HEIGHT = 126; // pt (~168px) — data rows, sized up from the template's 45pt
+const PACKING_IMG_MAX = 140; // px — thumbnail fits inside the taller data row without blowing it up
+const PACKING_THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+// GET /export.xlsx — packing list for the (optionally search-filtered) 1688
+// orders, styled after frontend/public/Invoice/GtradeA Sent Goods.xlsx: title
+// band, Cellzen logo, purple header row, one row per order with its product
+// photo embedded. Brand/model/description are gtradea data gaps we backfill
+// with sane placeholders (see the per-row build below) rather than leaving the
+// columns blank, since the sheet is used as a physical packing reference.
+router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const orders = await fetchSupplierOrders(req.query.search);
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Packing List');
+    PACKING_COL_WIDTHS.forEach((w, i) => { sheet.getColumn(i + 1).width = w; });
+
+    // Row 1 — title band
+    sheet.mergeCells(1, 1, 1, PACKING_HEADERS.length);
+    const titleCell = sheet.getCell(1, 1);
+    titleCell.value = 'Packing List of 1688 Orders';
+    titleCell.font = { size: 17, bold: true, name: 'Arial', color: { argb: 'FF2D2D2D' } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E4DD' } };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    sheet.getRow(1).height = 48;
+
+    // Row 2 — logo band, logo pulled straight from the template file so the
+    // export always carries whatever mark is currently in that file.
+    sheet.mergeCells(2, 1, 2, PACKING_HEADERS.length);
+    sheet.getRow(2).height = 105;
+    if (fs.existsSync(PACKING_TEMPLATE_PATH)) {
+      try {
+        const templateWb = new ExcelJS.Workbook();
+        await templateWb.xlsx.readFile(PACKING_TEMPLATE_PATH);
+        const tplSheet = templateWb.getWorksheet(1);
+        const tplImages = tplSheet ? tplSheet.getImages() : [];
+        if (tplImages.length) {
+          const imgData = templateWb.getImage(tplImages[0].imageId);
+          const logoId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
+          sheet.addImage(logoId, {
+            tl: { col: 5, row: 1, nativeCol: 5, nativeRow: 1, nativeColOff: 839416, nativeRowOff: 150000 },
+            br: { col: 7, row: 1, nativeCol: 7, nativeRow: 1, nativeColOff: 85760, nativeRowOff: 1050000 },
+            editAs: 'oneCell',
+          });
+        }
+      } catch (e) {
+        console.error('[1688 export] could not load logo template:', e?.message || e);
+      }
+    }
+
+    // Row 3 — header
+    const headerRow = sheet.getRow(3);
+    PACKING_HEADERS.forEach((h, i) => {
+      const cell = headerRow.getCell(i + 1);
+      cell.value = h;
+      cell.font = { size: 13, name: 'Arial', color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF512D70' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    });
+    headerRow.height = 40;
+
+    // Data rows
+    let totalQty = 0;
+    let r = 4;
+    for (let i = 0; i < orders.length; i++) {
+      const o = orders[i];
+      const row = sheet.getRow(r);
+      const qty = Number(o.quantity) || 0;
+      totalQty += qty;
+
+      const setCell = (col, value, extraFont) => {
+        const cell = row.getCell(col);
+        cell.value = value === '' || value == null ? null : value;
+        cell.font = { size: 11, name: 'Arial', ...extraFont };
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.border = PACKING_THIN_BORDER;
+      };
+
+      setCell(1, 'CZN-GT'); // Marka — fixed shipping mark for every carton in this batch
+      setCell(2, null); // Ctn. No — filled in by hand once cartons are packed
+      setCell(3, o.order_number || '-');
+      setCell(4, o.warehouse && o.warehouse.in_warehouse ? o.warehouse.code : null); // Goods No. — the REAL warehouse item code assigned when this box was scanned in (same one shown as "Received · CZN…" on the 1688 tab), not a made-up sequence. Blank until it's actually received.
+      setCell(5, null); // Product Image cell — the photo is embedded below
+      setCell(6, deriveShortProductName(o.product_name), { bold: true });
+      setCell(7, 'GT'); // gtradea doesn't track a real brand — generic house brand
+      setCell(8, deriveModelNumber(o));
+      setCell(9, o.product_name || '-'); // full 1688 listing title — no qty/unit mixed in
+      setCell(10, qty || null);
+      setCell(11, 'pcs');
+      setCell(12, null); // KG — filled in by hand at packing time
+      setCell(13, null); // CBM — filled in by hand at packing time
+      row.height = PACKING_ROW_HEIGHT;
+
+      if (o.product_image) {
+        try {
+          const buf = await downloadImage(o.product_image);
+          if (buf) {
+            const ext = (path.extname(o.product_image.split('?')[0]).replace('.', '') || 'jpeg').toLowerCase();
+            const dim = imageSize(buf);
+            const scale = Math.min(PACKING_IMG_MAX / dim.width, PACKING_IMG_MAX / dim.height, 1);
+            const w = Math.round(dim.width * scale);
+            const h = Math.round(dim.height * scale);
+            const imgId = workbook.addImage({ buffer: buf, extension: ext === 'jpg' ? 'jpeg' : ext });
+            const PX_TO_EMU = 9525;
+            const colWidthPx = PACKING_COL_WIDTHS[PACKING_IMG_COL - 1] * 7.5;
+            const rowHeightPx = PACKING_ROW_HEIGHT * 1.333;
+            const padX = Math.round(Math.max(0, (colWidthPx - w) / 2) * PX_TO_EMU);
+            const padY = Math.round(Math.max(0, (rowHeightPx - h) / 2) * PX_TO_EMU);
+            sheet.addImage(imgId, {
+              tl: { col: PACKING_IMG_COL - 1, row: r - 1, nativeCol: PACKING_IMG_COL - 1, nativeRow: r - 1, nativeColOff: padX, nativeRowOff: padY },
+              br: { col: PACKING_IMG_COL - 1, row: r - 1, nativeCol: PACKING_IMG_COL - 1, nativeRow: r - 1, nativeColOff: padX + w * PX_TO_EMU, nativeRowOff: padY + h * PX_TO_EMU },
+              editAs: 'oneCell',
+            });
+          }
+        } catch (e) {
+          console.error('[1688 export] product image embed failed:', e?.message || e);
+        }
+      }
+
+      r += 1;
+    }
+
+    // Merge the Order ID cell down across consecutive line items that belong
+    // to the same order AND the same CN tracking number — that's one shipment
+    // split into several product rows, so its order number should read once
+    // per shipment instead of repeating on every line.
+    let groupStart = 0;
+    for (let i = 1; i <= orders.length; i++) {
+      const sameShipment = i < orders.length
+        && orders[i].order_number && orders[i].china_tracking_no
+        && orders[i].order_number === orders[groupStart].order_number
+        && orders[i].china_tracking_no === orders[groupStart].china_tracking_no;
+      if (!sameShipment) {
+        if (i - groupStart > 1) {
+          sheet.mergeCells(4 + groupStart, 3, 4 + i - 1, 3);
+          sheet.getCell(4 + groupStart, 3).alignment = { horizontal: 'center', vertical: 'middle' };
+        }
+        groupStart = i;
+      }
+    }
+
+    // Total row
+    const totalRow = sheet.getRow(r);
+    totalRow.height = 40;
+    const setTotalCell = (col, value) => {
+      const cell = totalRow.getCell(col);
+      cell.value = value;
+      cell.font = { size: 12, bold: true, name: 'Arial' };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E4DD' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    };
+    setTotalCell(8, 'Total');
+    setTotalCell(9, 'Total');
+    setTotalCell(10, totalQty);
+    setTotalCell(11, 'pcs');
+
+    const filename = `CZN_GtradeA_PackingList_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error('Export 1688 packing list error:', error);
+    res.status(500).json({ success: false, message: 'Export failed' });
   }
 });
 
@@ -133,14 +431,23 @@ const SYNC_COALESCE_MS = 3000;
 router.post('/sync', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    if (!gtradeaSync.isConfigured()) {
-      return res.status(503).json({ success: false, message: '1688 sync is not configured on the server' });
-    }
     // An explicit user-clicked "Sync now" (?force=1) bypasses the failure backoff;
     // the tab's automatic 60s kick does not, so a persistent upstream block stays
     // paused instead of being re-hit by every open browser.
     const force = String(req.query.force || '') === '1';
     const st = gtradeaSync.getStatus();
+    // Bridge mode: the server's own pull is switched off (GTRADEA_SYNC_ENABLED
+    // =false) because this IP is blocked upstream and the on-site bridge feeds
+    // /ingest instead. Checked BEFORE isConfigured(): in bridge mode the gtradea
+    // credentials live in the bridge's config.json, NOT in this server's env, so
+    // the "not configured" branch would otherwise fire a misleading 503 while the
+    // bridge is happily relaying orders.
+    if (!st.enabled) {
+      return res.json({ success: true, data: { started: false, reason: 'bridge-mode', ...st } });
+    }
+    if (!gtradeaSync.isConfigured()) {
+      return res.status(503).json({ success: false, message: '1688 sync is not configured on the server' });
+    }
     if (st.syncing) {
       return res.json({ success: true, data: { started: false, reason: 'already-running', ...st } });
     }
@@ -157,6 +464,44 @@ router.post('/sync', authenticate, requireStaffOrAdmin, async (req, res) => {
   } catch (error) {
     console.error('Sync supplier orders error:', error);
     res.status(500).json({ success: false, message: 'Sync failed' });
+  }
+});
+
+// The on-site gtradea bridge is NOT a logged-in user — it authenticates with a
+// shared secret set as GTRADEA_BRIDGE_TOKEN in the backend env AND in the
+// bridge's config.json. Constant-time compared to avoid leaks. Same pattern as
+// the print agent (see warehouse.js authenticateAgent).
+const authenticateBridge = (req, res, next) => {
+  const expected = process.env.GTRADEA_BRIDGE_TOKEN;
+  if (!expected) {
+    return res.status(503).json({ success: false, message: 'gtradea bridge is not configured' });
+  }
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : '';
+  const a = Buffer.from(token);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ success: false, message: 'Invalid bridge token' });
+  }
+  return next();
+};
+
+// POST /ingest — the on-site bridge relays raw gtradea job-detail payloads from
+// a network Cloudflare doesn't challenge. We map + upsert them exactly as a
+// direct pull would, so the 1688 tab behaves identically either way.
+// Body: { details: [ <job detail payload>, … ] }
+router.post('/ingest', authenticateBridge, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const details = req.body && req.body.details;
+    if (!Array.isArray(details)) {
+      return res.status(400).json({ success: false, message: 'Body must be { details: [...] }' });
+    }
+    const result = await gtradeaSync.ingestDetails(details);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    console.error('gtradea bridge ingest error:', error);
+    res.status(500).json({ success: false, message: 'Ingest failed' });
   }
 });
 

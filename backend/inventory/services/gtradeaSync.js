@@ -289,6 +289,70 @@ function mapDetail(detail) {
     });
 }
 
+// Upsert already-mapped rows and record the outcome. Shared by the direct
+// poller and by the on-site bridge relay (see ingestDetails), so both report
+// status identically and the 1688 tab can't tell which one fed it.
+async function persistRows(rows, { jobs, started, via }) {
+  let upserted = 0;
+  let failed = 0;
+  let firstErr = null;
+  for (const row of rows) {
+    try {
+      const [record, created] = await SupplierOrder.findOrCreate({
+        where: { source_item_id: row.source_item_id },
+        defaults: row,
+      });
+      if (!created) await record.update(row);
+      upserted++;
+    } catch (e) {
+      failed++;
+      if (!firstErr) firstErr = e.message;
+    }
+  }
+  // Aggregate write failures into ONE line. Logging one console.error per row
+  // turned a systemic DB fault into a ~200-line-per-tick flood that buried every
+  // other message; a single line with the count + first error is enough to act on.
+  if (failed) console.error(`[gtradeaSync] ${failed}/${rows.length} upsert(s) failed (first: ${firstErr})`);
+
+  // Never paint a total write failure green. If we fetched rows but persisted
+  // NONE, the portal is genuinely not receiving new orders — report ok:false so
+  // the status label, the header, and any future alerting reflect reality instead
+  // of a reassuring "Synced N items" while nothing actually landed.
+  const writeOutage = rows.length > 0 && upserted === 0;
+  lastSync = {
+    at: new Date(),
+    ok: !writeOutage,
+    jobs,
+    items: rows.length,
+    upserted,
+    failed,
+    via,
+    error: writeOutage ? `all ${rows.length} upsert(s) failed — DB write outage (first: ${firstErr})` : null,
+    ms: Date.now() - started,
+  };
+  console.log(`[gtradeaSync] synced ${upserted}/${rows.length} item(s) from ${jobs} job(s) via ${via} in ${lastSync.ms}ms${failed ? ` — ${failed} failed` : ''}`);
+  return lastSync;
+}
+
+// Ingest RAW job-detail payloads relayed by the on-site bridge. Used when this
+// server's own IP is blocked by the Cloudflare in front of gtradea: the bridge
+// runs on a network that isn't challenged, fetches the same payloads, and posts
+// them here. Mapping + upsert are identical to a direct pull.
+async function ingestDetails(details) {
+  if (!SupplierOrder) throw new Error('supplier_orders table unavailable');
+  const started = Date.now();
+  const list = Array.isArray(details) ? details.filter(Boolean) : [];
+  const rows = list.flatMap((d) => {
+    try {
+      return mapDetail(d);
+    } catch (e) {
+      console.error('[gtradeaSync] bridge payload could not be mapped:', e.message);
+      return [];
+    }
+  });
+  return persistRows(rows, { jobs: list.length, started, via: 'bridge' });
+}
+
 // Full sync pass: list jobs → fetch each job's detail → upsert every item.
 async function runSync({ force = false } = {}) {
   if (!isConfigured()) {
@@ -334,46 +398,10 @@ async function runSync({ force = false } = {}) {
     });
     const rows = detailRows.flat();
 
-    let upserted = 0;
-    let failed = 0;
-    let firstErr = null;
-    for (const row of rows) {
-      try {
-        const [record, created] = await SupplierOrder.findOrCreate({
-          where: { source_item_id: row.source_item_id },
-          defaults: row,
-        });
-        if (!created) await record.update(row);
-        upserted++;
-      } catch (e) {
-        failed++;
-        if (!firstErr) firstErr = e.message;
-      }
-    }
-    // Aggregate write failures into ONE line. Logging one console.error per row
-    // turned a systemic DB fault into a ~200-line-per-tick flood that buried every
-    // other message; a single line with the count + first error is enough to act on.
-    if (failed) console.error(`[gtradeaSync] ${failed}/${rows.length} upsert(s) failed (first: ${firstErr})`);
-
-    // Never paint a total write failure green. If we fetched rows but persisted
-    // NONE, the portal is genuinely not receiving new orders — report ok:false so
-    // the status label, the header, and any future alerting reflect reality instead
-    // of a reassuring "Synced N items" while nothing actually landed.
-    const writeOutage = rows.length > 0 && upserted === 0;
-    lastSync = {
-      at: new Date(),
-      ok: !writeOutage,
-      jobs: jobs.length,
-      items: rows.length,
-      upserted,
-      failed,
-      error: writeOutage ? `all ${rows.length} upsert(s) failed — DB write outage (first: ${firstErr})` : null,
-      ms: Date.now() - started,
-    };
-    console.log(`[gtradeaSync] synced ${upserted}/${rows.length} item(s) from ${jobs.length} job(s) in ${lastSync.ms}ms${failed ? ` — ${failed} failed` : ''}`);
+    const result = await persistRows(rows, { jobs: jobs.length, started, via: 'direct' });
     consecutiveFailures = 0;
     backoffUntil = 0;
-    return lastSync;
+    return result;
   } catch (e) {
     // Exponential backoff so a persistent block (Cloudflare) doesn't repeat this
     // same line every 90s forever — it was filling the Render log with hundreds
@@ -433,4 +461,4 @@ function getStatus() {
   };
 }
 
-module.exports = { runSync, startScheduler, getStatus, isConfigured };
+module.exports = { runSync, startScheduler, getStatus, isConfigured, ingestDetails };

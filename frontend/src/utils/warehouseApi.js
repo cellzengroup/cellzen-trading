@@ -216,3 +216,21 @@ export async function syncSupplierOrders(force = false) {
   }
   return json.data;
 }
+
+// Download the packing list (same search filter as the on-screen table) as a
+// styled .xlsx — title band, logo, purple header row, one row per order with
+// its product photo. Same auth-gated GET -> blob -> anchor click as exportItemsCsv.
+export async function exportSupplierOrdersXlsx(search = "") {
+  const qs = search ? `?search=${encodeURIComponent(search)}` : "";
+  const res = await authFetch(`/inventory/supplier-orders/export.xlsx${qs}`, { ...STAFF, cache: "no-store" });
+  if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `CZN_GtradeA_PackingList_${new Date().toISOString().slice(0, 10).replace(/-/g, "")}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
