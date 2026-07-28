@@ -43,6 +43,10 @@ const SupplierOrder = sequelize
       shipping_mode: { type: DataTypes.STRING, allowNull: true },  // air | sea | land
       order_status: { type: DataTypes.STRING, allowNull: true },
       order_total: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+      // How much of order_total has actually been paid to the supplier so far
+      // (gtradea's order.advance_amount) — NOT the same as order_total, which is
+      // the full order value regardless of payment progress.
+      paid_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
       // When the order was placed on gtradea (the procurement job's created_at,
       // which lines up with the date encoded in order_number, e.g.
       // ORD-20260717-908966 -> 2026-07-17). NOT the same as synced_at, which is

@@ -55,9 +55,14 @@ const WarehouseItem = sequelize
         type: DataTypes.STRING,
         allowNull: true, // e.g. "RK Logistics" — free text with suggestions
       },
+      // The shipment mode: "By Air" | "By Land". Set as soon as the item exists
+      // (defaults here), changeable when the label is printed, and carried
+      // through unchanged when the item ships — printing and shipping always
+      // agree because they read/write this one column.
       shipment_from: {
         type: DataTypes.STRING,
-        allowNull: true, // "By Land" | "By Sea"
+        allowNull: true,
+        defaultValue: 'By Air',
       },
       // Which warehouse section stored this item: 'cellzen' (default, free-form
       // tracking) or 'gtradea' (tracking MUST match a 1688 supplier order; the

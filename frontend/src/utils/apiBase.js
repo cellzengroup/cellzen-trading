@@ -54,7 +54,7 @@ export async function resilientFetch(path, init = {}) {
   if (cachedWorkingBase) {
     try {
       return await fetch(`${cachedWorkingBase}${path}`, init);
-    } catch (err) {
+    } catch {
       // Network error on the cached base — clear the cache and re-try the
       // full candidate list. (Don't propagate stale routing decisions.)
       cachedWorkingBase = null;
@@ -153,11 +153,10 @@ export async function apiGetJson(path, init = {}) {
 export async function apiPostJson(path, body, init = {}) {
   const headers = { "Content-Type": "application/json", ...(init.headers || {}) };
   const res = await resilientFetch(path, {
+    ...init,
     method: "POST",
     headers,
     body: typeof body === "string" ? body : JSON.stringify(body),
-    ...init,
-    headers,
   });
   const data = await res.json().catch(() => ({}));
   return { res, data };

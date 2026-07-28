@@ -197,6 +197,14 @@ const startServer = async () => {
     console.error('gtradea sync scheduler not started:', e.message);
   }
 
+  // Start the daily retention sweep for the 1688 / Dispatched panels (see
+  // ./inventory/services/retention.js). Never blocks server startup.
+  try {
+    require('./inventory/services/retention').startScheduler();
+  } catch (e) {
+    console.error('retention scheduler not started:', e.message);
+  }
+
   const server = app.listen(config.PORT, () => {
     console.log(`\n🚀 Server running on port ${config.PORT}`);
     console.log(`📱 Environment: ${config.NODE_ENV}`);

@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { Op } = require('sequelize');
 const { Rack, WarehouseItem, PrintJob, SupplierOrder, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
+const { withConnectionRetry } = require('../dbRetry');
 
 const router = express.Router();
 
@@ -86,25 +87,6 @@ async function generateItemCode() {
   return `CZN${String(maxSeq + 1).padStart(5, '0')}`;
 }
 
-// A managed Postgres connection (see config/postgres.js) can go stale between
-// requests — Supabase/NAT silently drop idle TCP sockets — and hand back
-// "Connection terminated unexpectedly" on the very next query, even on an
-// otherwise-fresh page load. Sequelize's own `retry` option only covers
-// ACQUIRING a new pool connection, not a query handed a connection that was
-// already checked out and has since gone stale. One retry after a short pause
-// is enough to recover; anything else re-throws unchanged.
-async function withConnectionRetry(fn) {
-  try {
-    return await fn();
-  } catch (error) {
-    const detail = `${error?.name || ''} ${error?.message || ''} ${error?.original?.message || error?.parent?.message || ''}`;
-    const transient = /connection terminated unexpectedly|econnreset|epipe|sequelizeconnection|timeout/i.test(detail);
-    if (!transient) throw error;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    return fn();
-  }
-}
-
 // ============================================================ RACKS
 
 // GET /racks — every rack (shared), newest first
@@ -170,7 +152,7 @@ router.delete('/racks/:id', authenticate, requireStaffOrAdmin, async (req, res) 
 router.get('/items/export.csv', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const rows = await WarehouseItem.findAll({ order: [['createdAt', 'DESC']] });
+    const rows = await WarehouseItem.findAll({ order: [['createdAt', 'DESC'], ['id', 'ASC']] });
     // RFC-4180 quoting PLUS CSV formula-injection guard: a value beginning with
     // = + - @ (or tab/CR) is prefixed with a single quote so spreadsheets don't
     // evaluate attacker-supplied tracking/rack text as a formula (CWE-1236).
@@ -214,36 +196,44 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
         { rack_id: { [Op.iLike]: s } },
       ];
     }
-    const rows = await WarehouseItem.findAll({ where, order: [['createdAt', 'DESC']], limit: 5000 });
+    const rows = await withConnectionRetry(async () => {
+      // id as a tiebreaker: two items put away in the same millisecond tie on
+      // createdAt alone, and without a unique tiebreak Postgres doesn't promise
+      // the same tie order across polls — rows could visibly swap places on
+      // refresh. id is unique and never changes, so it pins down one order.
+      const found = await WarehouseItem.findAll({ where, order: [['createdAt', 'DESC'], ['id', 'ASC']], limit: 5000 });
 
-    // For GtradeA items, resolve the linked 1688 order # + product from the live
-    // supplier_orders (matched by CN tracking) whenever it wasn't captured at
-    // put-away time — so the order # always shows once the item's tracking is a
-    // known 1688 order.
-    if (SupplierOrder) {
-      const need = rows.filter((r) => r.source === 'gtradea' && r.tracking_number && (!r.order_number || !r.product_name));
-      if (need.length) {
-        const trackings = [...new Set(need.map((r) => r.tracking_number))];
-        const orders = await SupplierOrder.findAll({
-          where: { china_tracking_no: { [Op.in]: trackings } },
-          attributes: ['china_tracking_no', 'order_number', 'product_name'],
-        });
-        const map = {};
-        for (const o of orders) { if (!map[o.china_tracking_no]) map[o.china_tracking_no] = o; }
-        for (const r of rows) {
-          const m = r.source === 'gtradea' ? map[r.tracking_number] : null;
-          if (m) {
-            if (!r.order_number) r.order_number = m.order_number;
-            if (!r.product_name) r.product_name = m.product_name;
+      // For GtradeA items, resolve the linked 1688 order # + product from the live
+      // supplier_orders (matched by CN tracking) whenever it wasn't captured at
+      // put-away time — so the order # always shows once the item's tracking is a
+      // known 1688 order.
+      if (SupplierOrder) {
+        const need = found.filter((r) => r.source === 'gtradea' && r.tracking_number && (!r.order_number || !r.product_name));
+        if (need.length) {
+          const trackings = [...new Set(need.map((r) => r.tracking_number))];
+          const orders = await SupplierOrder.findAll({
+            where: { china_tracking_no: { [Op.in]: trackings } },
+            attributes: ['china_tracking_no', 'order_number', 'product_name'],
+          });
+          const map = {};
+          for (const o of orders) { if (!map[o.china_tracking_no]) map[o.china_tracking_no] = o; }
+          for (const r of found) {
+            const m = r.source === 'gtradea' ? map[r.tracking_number] : null;
+            if (m) {
+              if (!r.order_number) r.order_number = m.order_number;
+              if (!r.product_name) r.product_name = m.product_name;
+            }
           }
         }
       }
-    }
+
+      return found;
+    });
 
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, count: rows.length, data: rows });
   } catch (error) {
-    console.error('List items error:', error);
+    console.error('List items error:', error?.message, '| original:', error?.original?.message || error?.parent?.message || '(none)');
     res.status(500).json({ success: false, message: 'Unable to load items' });
   }
 });
@@ -340,6 +330,30 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
   }
 });
 
+// POST /items/:id/shipment-mode — record which way an item ships ("By Air" |
+// "By Land"). Callable any time before it actually ships (the print dialog
+// calls this the moment staff pick a mode for the label), so /ship below can
+// just inherit whatever was set here instead of asking again.
+router.post('/items/:id/shipment-mode', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    if (!UUID_RE.test(String(req.params.id))) {
+      return res.status(404).json({ success: false, message: 'Item not found' });
+    }
+    const item = await WarehouseItem.findByPk(req.params.id);
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    const mode = String(req.body?.shipmentMode ?? req.body?.shipment_mode ?? '').trim();
+    if (mode !== 'By Air' && mode !== 'By Land') {
+      return res.status(400).json({ success: false, message: 'Shipment mode must be "By Air" or "By Land"' });
+    }
+    await item.update({ shipment_from: mode });
+    res.json({ success: true, data: item });
+  } catch (error) {
+    console.error('Update shipment mode error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update shipment mode' });
+  }
+});
+
 // POST /items/:id/ship — mark shipped (records who + when for the audit trail)
 router.post('/items/:id/ship', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
@@ -352,21 +366,20 @@ router.post('/items/:id/ship', authenticate, requireStaffOrAdmin, async (req, re
     if (item.status === 'shipped') {
       return res.status(409).json({ success: false, message: 'Item is already shipped', data: item });
     }
-    // Cellzen requires the carrier + land/sea at ship time; GtradeA ships with a
-    // single tap (those details aren't tracked for 1688 goods).
+    // Every shipment (Cellzen or GtradeA) records the carrier. The shipment mode
+    // is NOT taken from the request — it's whatever was already set on the item
+    // (via /shipment-mode, normally when the label was printed), so an item
+    // printed "By Land" always ships "By Land" regardless of what a client sends.
     const logisticsName = String(req.body?.logisticsName ?? req.body?.logistics_name ?? '').trim();
-    const shipmentFrom = String(req.body?.shipmentFrom ?? req.body?.shipment_from ?? '').trim();
-    if (item.source !== 'gtradea') {
-      if (!logisticsName) return res.status(400).json({ success: false, message: 'Name of the logistics is required' });
-      if (!shipmentFrom) return res.status(400).json({ success: false, message: 'Shipment from is required' });
-    }
+    if (!logisticsName) return res.status(400).json({ success: false, message: 'Name of the logistics is required' });
+    const shipmentMode = item.shipment_from === 'By Air' || item.shipment_from === 'By Land' ? item.shipment_from : 'By Air';
     await item.update({
       status: 'shipped',
       shipped_at: new Date(),
       shipped_by_user_id: req.user.id,
       shipped_by_name: req.user.name || null,
-      logistics_name: logisticsName ? logisticsName.slice(0, 120) : null,
-      shipment_from: shipmentFrom ? shipmentFrom.slice(0, 60) : null,
+      logistics_name: logisticsName.slice(0, 120),
+      shipment_from: shipmentMode,
     });
     res.json({ success: true, data: item });
   } catch (error) {

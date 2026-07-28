@@ -8,8 +8,10 @@ const { imageSize } = require('image-size');
 const { Op } = require('sequelize');
 const { SupplierOrder, WarehouseItem, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
+const { withConnectionRetry } = require('../dbRetry');
 const { downloadImage } = require('../../config/supabase');
 const gtradeaSync = require('../services/gtradeaSync');
+const { extractProductNames } = require('../services/productNameNer');
 
 const router = express.Router();
 
@@ -57,58 +59,72 @@ async function fetchSupplierOrders(search) {
       { job_code: { [Op.iLike]: s } },
     ];
   }
-  // Newest ORDER first (ordered_at), not newest poll — synced_at is the same
-  // for every row a sync touches, so it can't order the list meaningfully.
-  // NULLS LAST so pre-backfill rows don't jump to the top.
-  const rows = await SupplierOrder.findAll({
-    where,
-    order: [
-      [sequelize.literal('ordered_at DESC NULLS LAST')],
-      ['order_number', 'DESC'],
-    ],
-    limit: 5000,
-  });
 
-  // Warehouse match: which of these CN tracking numbers are physically stored.
-  const matchMap = {};
-  if (WarehouseItem) {
-    const trackings = [...new Set(rows.map((r) => r.china_tracking_no).filter(Boolean))];
-    if (trackings.length) {
-      const items = await WarehouseItem.findAll({
-        where: { tracking_number: { [Op.in]: trackings } },
-        attributes: ['tracking_number', 'rack_id', 'status', 'code'],
-      });
-      for (const it of items) {
-        const key = String(it.tracking_number || '').toUpperCase();
-        // Prefer an in-stock match over a shipped one for the same tracking.
-        if (!matchMap[key] || it.status === 'in_stock') {
-          matchMap[key] = { rack_id: it.rack_id, status: it.status, code: it.code };
+  // Wrapped as one unit: a pooled connection that's gone stale (see
+  // ../dbRetry.js) can surface on either query below, even on a fresh page
+  // load — retrying the pair together keeps the read-and-enrich atomic.
+  return withConnectionRetry(async () => {
+    // Newest ORDER first (ordered_at), not newest poll — synced_at is the same
+    // for every row a sync touches, so it can't order the list meaningfully.
+    // NULLS LAST so pre-backfill rows don't jump to the top. Every item within
+    // one 1688 order shares the same order_number AND ordered_at (both come
+    // from the parent order, not the item), so those two alone tie completely
+    // for a multi-item order — Postgres doesn't promise a stable tie order
+    // across repeated queries/upserts, which showed up as rows visibly
+    // swapping places on every poll/refresh. `id` is unique and never changes,
+    // so it pins down one exact order and rows stop moving.
+    const rows = await SupplierOrder.findAll({
+      where,
+      order: [
+        [sequelize.literal('ordered_at DESC NULLS LAST')],
+        ['order_number', 'DESC'],
+        ['id', 'ASC'],
+      ],
+      limit: 5000,
+    });
+
+    // Warehouse match: which of these CN tracking numbers are physically stored.
+    const matchMap = {};
+    if (WarehouseItem) {
+      const trackings = [...new Set(rows.map((r) => r.china_tracking_no).filter(Boolean))];
+      if (trackings.length) {
+        const items = await WarehouseItem.findAll({
+          where: { tracking_number: { [Op.in]: trackings } },
+          attributes: ['tracking_number', 'rack_id', 'status', 'code', 'shipped_at'],
+        });
+        for (const it of items) {
+          const key = String(it.tracking_number || '').toUpperCase();
+          // Prefer an in-stock match over a shipped one for the same tracking.
+          if (!matchMap[key] || it.status === 'in_stock') {
+            matchMap[key] = { rack_id: it.rack_id, status: it.status, code: it.code, shipped_at: it.shipped_at };
+          }
         }
       }
     }
-  }
 
-  return rows.map((r) => {
-    const key = String(r.china_tracking_no || '').toUpperCase();
-    const m = key ? matchMap[key] : null;
-    return {
-      id: r.id,
-      order_number: r.order_number,
-      job_code: r.job_code,
-      china_tracking_no: r.china_tracking_no,
-      nepal_tracking_no: r.nepal_tracking_no,
-      status: r.status,
-      product_name: r.product_name,
-      product_image: r.product_image,
-      supplier_url: r.supplier_url,
-      source_product_id: r.source_product_id,
-      quantity: r.quantity,
-      shipping_mode: r.shipping_mode,
-      order_status: r.order_status,
-      ordered_at: r.ordered_at,
-      synced_at: r.synced_at,
-      warehouse: m ? { in_warehouse: true, rack_id: m.rack_id, status: m.status, code: m.code } : { in_warehouse: false },
-    };
+    return rows.map((r) => {
+      const key = String(r.china_tracking_no || '').toUpperCase();
+      const m = key ? matchMap[key] : null;
+      return {
+        id: r.id,
+        order_number: r.order_number,
+        job_code: r.job_code,
+        china_tracking_no: r.china_tracking_no,
+        nepal_tracking_no: r.nepal_tracking_no,
+        status: r.status,
+        product_name: r.product_name,
+        product_image: r.product_image,
+        supplier_url: r.supplier_url,
+        source_product_id: r.source_product_id,
+        quantity: r.quantity,
+        shipping_mode: r.shipping_mode,
+        order_status: r.order_status,
+        paid_amount: r.paid_amount,
+        ordered_at: r.ordered_at,
+        synced_at: r.synced_at,
+        warehouse: m ? { in_warehouse: true, rack_id: m.rack_id, status: m.status, code: m.code, shipped_at: m.shipped_at } : { in_warehouse: false },
+      };
+    });
   });
 }
 
@@ -138,6 +154,12 @@ function deriveModelNumber(o) {
   return `GT${1000 + (hash % 9000)}`;
 }
 
+// FALLBACK ONLY — the export route's primary path is productNameNer.js
+// (a real NER model), used whenever it's available and confident. This
+// heuristic exists for when it isn't (model unavailable on this platform, or
+// it genuinely found nothing) — a rough guess is still better than a blank
+// customs-facing cell.
+//
 // gtradea's product_name is really the full 1688 listing TITLE — a long,
 // keyword-stuffed marketing string ("European and American Cross-Border Gold
 // and Silver Two-Tone Earring Set, High-End and Elegant Earrings for Women,
@@ -233,8 +255,9 @@ function deriveShortProductName(rawName) {
   return sentenceCase(core.join(' '));
 }
 
-const PACKING_HEADERS = ['MARKA', 'Ctn. No', 'Order ID', 'Goods No.', 'Product Image', 'Product Name', 'Brand name', 'Model Number', 'Product Description', 'Quantity', 'Unit', 'KG', 'CBM'];
-const PACKING_COL_WIDTHS = [16, 15, 24, 16, 28, 24, 18, 24, 58, 14, 14, 14, 14];
+const PACKING_HEADERS = ['MARKA', 'Ctn. No', 'Order ID', 'Goods No.', 'Product Image', 'Product Name', 'Brand name', 'Model Number', 'Product Description', 'Quantity', 'Unit', 'KG', 'CBM', 'Paid Amount'];
+const PACKING_COL_WIDTHS = [16, 15, 24, 16, 28, 24, 18, 24, 58, 14, 14, 14, 14, 16];
+const PACKING_PAID_COL = 14; // 1-indexed — order-level, so it merges the same way Order ID does
 const PACKING_IMG_COL = 5; // 1-indexed column — Product Image
 const PACKING_ROW_HEIGHT = 126; // pt (~168px) — data rows, sized up from the template's 45pt
 const PACKING_IMG_MAX = 140; // px — thumbnail fits inside the taller data row without blowing it up
@@ -250,6 +273,12 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
   try {
     if (dbGuard(res)) return;
     const orders = await fetchSupplierOrders(req.query.search);
+
+    // One batched NER call for every row's product name (see productNameNer.js
+    // for why: a wrong name here is a customs problem, not just a cosmetic
+    // one). `nerNames[i]` is null wherever the model wasn't confident enough
+    // or wasn't available at all — those rows fall back to the heuristic.
+    const nerNames = await extractProductNames(orders.map((o) => o.product_name || ''));
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Packing List');
@@ -321,7 +350,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       setCell(3, o.order_number || '-');
       setCell(4, o.warehouse && o.warehouse.in_warehouse ? o.warehouse.code : null); // Goods No. — the REAL warehouse item code assigned when this box was scanned in (same one shown as "Received · CZN…" on the 1688 tab), not a made-up sequence. Blank until it's actually received.
       setCell(5, null); // Product Image cell — the photo is embedded below
-      setCell(6, deriveShortProductName(o.product_name), { bold: true });
+      setCell(6, nerNames[i] || deriveShortProductName(o.product_name), { bold: true });
       setCell(7, 'GT'); // gtradea doesn't track a real brand — generic house brand
       setCell(8, deriveModelNumber(o));
       setCell(9, o.product_name || '-'); // full 1688 listing title — no qty/unit mixed in
@@ -329,6 +358,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       setCell(11, 'pcs');
       setCell(12, null); // KG — filled in by hand at packing time
       setCell(13, null); // CBM — filled in by hand at packing time
+      setCell(14, o.paid_amount != null ? Number(o.paid_amount) : null); // Paid Amount — from gtradea's procurement/China-ops view, packing list only (not shown on the 1688 tab)
       row.height = PACKING_ROW_HEIGHT;
 
       if (o.product_image) {
@@ -360,11 +390,13 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       r += 1;
     }
 
-    // Merge the Order ID cell down across consecutive line items that belong
-    // to the same order AND the same CN tracking number — that's one shipment
-    // split into several product rows, so its order number should read once
-    // per shipment instead of repeating on every line.
+    // Merge the Order ID + Paid Amount cells down across consecutive line items
+    // that belong to the same order AND the same CN tracking number — that's one
+    // shipment split into several product rows, so its order number and paid
+    // amount (both order-level, not per-item) should read once per shipment
+    // instead of repeating on every line.
     let groupStart = 0;
+    let totalPaid = 0;
     for (let i = 1; i <= orders.length; i++) {
       const sameShipment = i < orders.length
         && orders[i].order_number && orders[i].china_tracking_no
@@ -372,9 +404,16 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
         && orders[i].china_tracking_no === orders[groupStart].china_tracking_no;
       if (!sameShipment) {
         if (i - groupStart > 1) {
-          sheet.mergeCells(4 + groupStart, 3, 4 + i - 1, 3);
-          sheet.getCell(4 + groupStart, 3).alignment = { horizontal: 'center', vertical: 'middle' };
+          [3, PACKING_PAID_COL].forEach((col) => {
+            sheet.mergeCells(4 + groupStart, col, 4 + i - 1, col);
+            sheet.getCell(4 + groupStart, col).alignment = { horizontal: 'center', vertical: 'middle' };
+          });
         }
+        // Paid amount is per ORDER, not per line item — count each order once
+        // regardless of how many product rows it spans, so the total isn't
+        // inflated by multi-item shipments.
+        const paid = Number(orders[groupStart].paid_amount);
+        if (Number.isFinite(paid)) totalPaid += paid;
         groupStart = i;
       }
     }
@@ -393,6 +432,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     setTotalCell(9, 'Total');
     setTotalCell(10, totalQty);
     setTotalCell(11, 'pcs');
+    setTotalCell(PACKING_PAID_COL, totalPaid ? Math.round(totalPaid * 100) / 100 : null);
 
     const filename = `CZN_GtradeA_PackingList_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

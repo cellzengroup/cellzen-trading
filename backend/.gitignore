@@ -27,6 +27,10 @@ Thumbs.db
 dist/
 build/
 
+# Downloaded ML model weights (fetched lazily on first use — see
+# inventory/services/productNameNer.js — never commit these)
+.cache/
+
 
 
 

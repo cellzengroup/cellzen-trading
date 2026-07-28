@@ -26,11 +26,8 @@ const BLACK = "#000000"; // shipment-label content prints as solid black
 const DOTS_PER_MM = 8;
 const LABEL_W_MM = 60;
 const LABEL_H_MM = 80;
-const MARGIN_MM = 2.5; // → a 55 x 75 mm content safe-area, centred on the label
 const CANVAS_W = LABEL_W_MM * DOTS_PER_MM; // 480
 const CANVAS_H = LABEL_H_MM * DOTS_PER_MM; // 640
-const MARGIN = MARGIN_MM * DOTS_PER_MM; // 20
-const SAFE_W = CANVAS_W - 2 * MARGIN; // 440
 const CENTER_X = CANVAS_W / 2; // 240
 
 // Nudge all content slightly right of centre (to sit better on the label).
@@ -52,6 +49,19 @@ const CODE_GAP = 12; // space between the bars and the number
 const CODE_SIZE = 42;
 const CODE_SPACING = 12; // letter spacing on the number
 const SHELF_Y = 350;
+
+// Optional "SHIPMENT: BY AIR/LAND" banner, drawn full-bleed under the logo when
+// a shipment mode is picked at print time. Everything below it (down through
+// SHELF_Y) has to keep fitting in the same space, so the barcode band shrinks
+// to make room instead of pushing Shelf/Tracking/icons/footer around.
+const MODE_BAR_TOP = 128;
+const MODE_BAR_H = 32;
+const MODE_BAR_FONT = 19;
+const MODE_BAR_SPACING = 2;
+const BARCODE_TOP_WITH_MODE = MODE_BAR_TOP + MODE_BAR_H + 14;
+const BARCODE_HEIGHT_WITH_MODE = 7; // vs. 12 for the normal (no-banner) barcode
+const CODE_GAP_WITH_MODE = 10;
+const CODE_SIZE_WITH_MODE = 32; // vs. 42 for the normal barcode's number
 const TRACKING_Y = 388;
 const ICONS_TOP = 410;
 const ICONS_W = 250;
@@ -149,10 +159,13 @@ function barcodeDataUrl(text) {
 // A Code-128 barcode + human-readable text for the shipment label. `scale` is
 // device px per module; the canvas is drawn 1:1 so a module = `scale` printer
 // dots — keep it an integer so the bars land on dot boundaries and scan cleanly.
-function shipmentBarcodeCanvas(text, scale) {
+// `barHeight` is the bwip-js bar height (BARS ONLY — the CZN number is drawn
+// separately below); it's shrunk when the shipment-mode banner is showing so
+// the whole barcode band still fits above Shelf/Tracking.
+function shipmentBarcodeCanvas(text, scale, barHeight = 12) {
   return barcodeCanvas(text, {
     scale,
-    height: 12,        // BARS ONLY — the CZN number is drawn separately below
+    height: barHeight,
     includetext: false,
     paddingwidth: 2,   // ~464 dots wide at scale 4 — wide, with a quiet zone
     paddingheight: 0,
@@ -250,6 +263,38 @@ function drawTextAt(ctx, text, y, px, weight, spacing, baseline = "alphabetic") 
   }
 }
 
+// Normalize a shipment-mode value to "air" | "land" | null (any other/empty
+// input means no banner). Accepts either the short form ("air"/"land") or the
+// full display string stored on the item ("By Air"/"By Land").
+function normalizeShipmentMode(mode) {
+  const m = String(mode || "").trim().toLowerCase();
+  if (m.includes("land")) return "land";
+  if (m.includes("air")) return "air";
+  return null;
+}
+
+// Full-bleed black banner ("SHIPMENT: BY AIR" / "SHIPMENT: BY LAND") drawn
+// under the logo. Runs edge-to-edge (unlike the rest of the content, which
+// sits inside the safe margin) to match the approved design. Text is white on
+// black, so this draws directly rather than via drawTextAt (which is always
+// black-on-white).
+function drawShipmentModeBar(ctx, mode) {
+  const label = mode === "air" ? "SHIPMENT: BY AIR" : "SHIPMENT: BY LAND";
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, MODE_BAR_TOP, CANVAS_W, MODE_BAR_H);
+
+  ctx.font = `700 ${MODE_BAR_FONT}px ${FONT_STACK}`;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#FFFFFF";
+  const y = MODE_BAR_TOP + MODE_BAR_H / 2;
+  let x = CX - spacedWidth(ctx, label, MODE_BAR_SPACING) / 2;
+  for (const ch of label) {
+    ctx.fillText(ch, x, y);
+    x += ctx.measureText(ch).width + MODE_BAR_SPACING;
+  }
+}
+
 // "2026-07-09" / Date → "July 9, 2026", matching the design's footer.
 function formatLabelDate(value) {
   const d = value ? new Date(value) : new Date();
@@ -288,9 +333,13 @@ function packMono(ctx, width, height) {
 }
 
 // ---------------------------------------------------------------- shipment label
-// Render the full 60 x 80 mm shipment label. Returns { png, mono } where `mono`
-// is the packed 1-bit bitmap payload for the print bridge / queue.
-async function renderShipmentLabel(item) {
+// Render the full 60 x 80 mm shipment label. `shipmentMode` is the optional
+// "air" | "land" pick from the print dialog — when set, a full-bleed
+// "SHIPMENT: BY AIR/LAND" banner is drawn under the logo and the barcode band
+// shrinks to make room for it. Returns { png, mono } where `mono` is the
+// packed 1-bit bitmap payload for the print bridge / queue.
+async function renderShipmentLabel(item, shipmentMode = null) {
+  const mode = normalizeShipmentMode(shipmentMode);
   // Load Inter (from Supabase) + wait for fonts, but hard-bound the whole step so
   // a slow/offline network can never hang label rendering — we fall back to a
   // system sans (see FONT_STACK) and still print.
@@ -315,21 +364,30 @@ async function renderShipmentLabel(item) {
   // Logo (centred) — vector paths, so the canvas is never tainted.
   drawSvgCentered(ctx, CELLZEN_LOGO_SVG, LOGO_TOP, LOGO_W);
 
+  // Optional shipment-mode banner under the logo.
+  if (mode) drawShipmentModeBar(ctx, mode);
+
   // Barcode — widest module scale that fits the label width, drawn at natural
   // width (1:1) so bars land on dot boundaries and scan cleanly. Scale 4 fills
   // the full 60 mm for a typical code; longer codes step down to keep fitting.
-  let bc = shipmentBarcodeCanvas(item.code, 4);
-  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(item.code, 3);
-  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(item.code, 2);
+  // With a shipment-mode banner showing, the bars render shorter and start
+  // lower so the whole band still clears Shelf/Tracking below it.
+  const barcodeTop = mode ? BARCODE_TOP_WITH_MODE : BARCODE_TOP;
+  const barHeight = mode ? BARCODE_HEIGHT_WITH_MODE : 12;
+  const codeGap = mode ? CODE_GAP_WITH_MODE : CODE_GAP;
+  const codeSize = mode ? CODE_SIZE_WITH_MODE : CODE_SIZE;
+  let bc = shipmentBarcodeCanvas(item.code, 4, barHeight);
+  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(item.code, 3, barHeight);
+  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(item.code, 2, barHeight);
   let bw = bc.width;
   let bh = bc.height;
   if (bw > BARCODE_MAX_W) { bh = Math.round(bh * (BARCODE_MAX_W / bw)); bw = BARCODE_MAX_W; } // rare clamp
   const bcx = Math.round(CX - bw / 2);
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(bc, bcx, BARCODE_TOP, bw, bh);
+  ctx.drawImage(bc, bcx, barcodeTop, bw, bh);
   ctx.imageSmoothingEnabled = true;
   // The CZN number under the bars — our own render: smaller + letter-spaced.
-  drawTextAt(ctx, item.code, BARCODE_TOP + bh + CODE_GAP, CODE_SIZE, "500", CODE_SPACING, "top");
+  drawTextAt(ctx, item.code, barcodeTop + bh + codeGap, codeSize, "500", CODE_SPACING, "top");
 
   // Shelf + tracking — SAME font size on both lines. Tracking is the longer of
   // the two, so it governs the shared size (both fit, and they match visually).
@@ -492,8 +550,8 @@ async function printViaBridge(code, kind, copies = 1, bitmap = null) {
 }
 
 // ---------------------------------------------------------------- public API
-export async function downloadItemLabel(item) {
-  const { png } = await renderShipmentLabel(item);
+export async function downloadItemLabel(item, shipmentMode = null) {
+  const { png } = await renderShipmentLabel(item, shipmentMode);
   triggerDownload(png, `${item.code}_label.png`);
 }
 
@@ -510,11 +568,11 @@ export async function downloadRackLabel(rackId) {
 // false when the canvas render failed (e.g. no Path2D support) and every path
 // above fell back to a bare barcode — callers should surface that distinctly,
 // since a barcode-only print looks identical to a successful one otherwise.
-export async function printItemLabel(item, copies = 1) {
+export async function printItemLabel(item, copies = 1, shipmentMode = null) {
   const n = Math.max(1, Math.min(parseInt(copies, 10) || 1, 20));
   let rendered = null;
   try {
-    rendered = await renderShipmentLabel(item);
+    rendered = await renderShipmentLabel(item, shipmentMode);
   } catch (e) {
     // If this ever fires we drop to a plain barcode — log it so the cause is visible.
     console.error("Shipment label render failed, falling back to plain barcode:", e);

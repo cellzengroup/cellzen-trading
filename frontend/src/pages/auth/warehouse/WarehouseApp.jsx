@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import WarehouseScanner from "./WarehouseScanner";
@@ -10,6 +10,7 @@ import {
   loadItems,
   putAwayItem,
   shipItem,
+  updateItemShipmentMode,
   deleteItem,
   exportItemsCsv,
   loadSupplierOrders,
@@ -168,13 +169,19 @@ const fmtDate = (ts) => {
 
 // The single source of truth for a 1688 line item's state — used by both the pill
 // and the "Sort by" control so they can never disagree.
-//   no CN tracking on gtradea -> not_updated
-//   has tracking, scanned in  -> received
-//   has tracking, not scanned -> not_received
-const supplierState = (o) => (!o.cnTracking ? "not_updated" : o.inWarehouse ? "received" : "not_received");
+//   no CN tracking on gtradea         -> not_updated
+//   has tracking, not scanned in      -> not_received
+//   has tracking, scanned in, in stock -> received
+//   has tracking, scanned in, shipped -> dispatched
+const supplierState = (o) => {
+  if (!o.cnTracking) return "not_updated";
+  if (!o.inWarehouse) return "not_received";
+  return o.warehouseStatus === "shipped" ? "dispatched" : "received";
+};
 const SUPPLIER_SORTS = [
   { value: "date", label: "Date" },
   { value: "received", label: "Received" },
+  { value: "dispatched", label: "Dispatched" },
   { value: "not_updated", label: "Not Updated" },
   { value: "not_received", label: "Not Received" },
 ];
@@ -191,6 +198,16 @@ const fmtDay = (ts) => {
   const d = new Date(ts);
   if (isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+};
+
+// Full month name, e.g. "July 24, 2026" — used under the "Dispatched" pill.
+// shipped_at is OUR server's timestamp (not a gtradea date), so this reads in
+// the viewer's local time like the rest of the Ship/Dispatched panel does.
+const fmtLongDay = (ts) => {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
 };
 
 /* ---------------------------------- icons --------------------------------- */
@@ -216,16 +233,19 @@ const IconKeyboard = (p) => (<svg {...svgBase} {...p}><rect x="2" y="6" width="2
 const IconClose = (p) => (<svg {...svgBase} strokeWidth="2.2" {...p}><path d="M18 6 6 18M6 6l12 12" /></svg>);
 
 /* ------------------------------ small pieces ------------------------------ */
-function StatusBadge({ status }) {
-  const shipped = status === "shipped";
+// Replaces the old in-stock/shipped Status pill — shipped vs. in-stock is
+// already obvious from which tab (Ship vs. Dispatched) an item is in, so this
+// column instead surfaces the one thing that isn't: how it ships.
+function ShipmentBadge({ mode }) {
+  const air = mode !== "By Land";
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
-        shipped ? "bg-red-50 text-red-600" : "bg-emerald-50 text-emerald-600"
+        air ? "bg-sky-50 text-sky-600" : "bg-amber-50 text-amber-700"
       }`}
     >
-      <span className={`h-1.5 w-1.5 rounded-full ${shipped ? "bg-red-500" : "bg-emerald-500"}`} />
-      {shipped ? "Shipped" : "In Stock"}
+      <span className={`h-1.5 w-1.5 rounded-full ${air ? "bg-sky-500" : "bg-amber-500"}`} />
+      {air ? "By Air" : "By Land"}
     </span>
   );
 }
@@ -372,7 +392,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [mode]);
 
   // Load data once when authed. Logged-out visitors are handled by the
   // synchronous redirect guard below (before the RENDER return), so the
@@ -393,7 +413,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     const onExpired = () => navigate(`/staff-login?next=${homePath}`, { replace: true });
     window.addEventListener("auth:expired", onExpired);
     return () => window.removeEventListener("auth:expired", onExpired);
-  }, [navigate]);
+  }, [navigate, homePath]);
 
   // On a phone, jump straight into the scanner when the app opens (Store is the
   // default tab) instead of showing the put-away prompt first.
@@ -465,7 +485,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         showToast(e.message || "Failed to store item", e.status === 409 ? "warn" : "error");
       }
     },
-    [showToast, upsertRack, showSaved]
+    [mode, showToast, upsertRack, showSaved]
   );
 
   const handleStoreDecode = useCallback(
@@ -559,7 +579,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [shipConfirmIsBatch, setShipConfirmIsBatch] = useState(false); // was the confirm opened by the batch button?
   const [batchBusy, setBatchBusy] = useState(false); // a batch ship/delete is in flight
   const [shipLogistics, setShipLogistics] = useState(""); // required at ship time
-  const [shipFrom, setShipFrom] = useState(""); // "By Land" | "By Sea", required
+  // No separate "shipment mode" input at ship time anymore — each item already
+  // carries the mode it was printed with (item.shipmentFrom), and /ship inherits
+  // that server-side, so By Air/By Land is never re-asked (or allowed to drift
+  // from what the label says) here.
   // Batch selection — hidden by default; the "Batch Ship" / "Batch Delete" button
   // turns on select mode, which reveals the row checkboxes. Ship (in-stock) and
   // Dispatched (shipped) keep independent modes + selection sets.
@@ -601,11 +624,13 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     [findItem, showToast]
   );
 
-  // Ship one or many items with the same logistics details. Runs the calls
-  // concurrently and reconciles the list from whatever succeeded, so one failure
-  // doesn't abort the rest of a batch.
-  const handleShipMany = async (list, logisticsName, shipmentFrom) => {
-    const results = await mapPool(list, 6, (it) => shipItem(it.id, logisticsName, shipmentFrom));
+  // Ship one or many items under the same logistics carrier. Each item ships
+  // with its OWN recorded shipment mode (set when its label was printed) — the
+  // backend inherits it automatically, so nothing shipment-mode-related is
+  // passed in here. Runs concurrently and reconciles the list from whatever
+  // succeeded, so one failure doesn't abort the rest of a batch.
+  const handleShipMany = async (list, logisticsName) => {
+    const results = await mapPool(list, 6, (it) => shipItem(it.id, logisticsName));
     const shipped = [];
     let failed = 0;
     results.forEach((r) => { if (r.status === "fulfilled") shipped.push(r.value); else failed += 1; });
@@ -628,10 +653,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // Ask before shipping — the tick on each Ship row, the detail-card button, a
   // Ship-tab scan, and the "Ship selected" batch button all open this confirm, so
   // a box is never shipped by accident. The confirm also collects the required
-  // logistics + shipment-from details, applied to every item in the batch.
+  // logistics carrier, applied to every item in the batch — Cellzen and GtradeA
+  // both require it.
   const requestShip = useCallback((item) => {
     setShipLogistics("");
-    setShipFrom("");
     setShipConfirmIsBatch(false);
     setShipConfirmItems([item]);
   }, []);
@@ -641,27 +666,19 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     const list = filteredShip.filter((i) => shipSel.has(i.id));
     if (!list.length) return showToast("Select items to ship first", "warn");
     setShipLogistics("");
-    setShipFrom("");
     setShipConfirmIsBatch(true);
     setShipConfirmItems(list);
   };
   const confirmShip = async () => {
     const list = shipConfirmItems;
     if (!list || !list.length || batchBusy) return;
-    let logistics = "";
-    let from = "";
-    // GtradeA ships with a single tap (no carrier / land-sea details).
-    if (!isGtradea) {
-      logistics = shipLogistics.trim();
-      from = shipFrom.trim();
-      if (!logistics) return showToast("Enter the name of the logistics.", "error");
-      if (!from) return showToast("Choose shipment from — By Land or By Sea.", "error");
-    }
+    const logistics = shipLogistics.trim();
+    if (!logistics) return showToast("Enter the name of the logistics.", "error");
     const wasBatch = shipConfirmIsBatch;
     setShipConfirmItems(null);
     setBatchBusy(true);
     try {
-      const failed = await handleShipMany(list, logistics, from);
+      const failed = await handleShipMany(list, logistics);
       // Leave select mode only when this was a batch AND everything shipped — a
       // single-row ship never exits batch mode, and a partial failure keeps the
       // failed (still-selected) items visible for a retry.
@@ -700,9 +717,20 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // tracking number but have several packages, so you can print e.g. 12.
   const [printQtyTarget, setPrintQtyTarget] = useState(null); // item awaiting a copy count
   const [printQty, setPrintQty] = useState("1");
-  const doPrintLabel = async (item, copies) => {
+  const [printShipMode, setPrintShipMode] = useState("By Air"); // "By Air" | "By Land" — mirrors item.shipmentFrom
+  const doPrintLabel = async (item, copies, shipMode) => {
     try {
-      const { how, full } = await printItemLabel(item, copies);
+      // Persist the chosen mode BEFORE printing, so the label's banner and the
+      // item's recorded mode (what /ship inherits later) never disagree.
+      if (shipMode && shipMode !== item.shipmentFrom) {
+        try {
+          const updated = await updateItemShipmentMode(item.id, shipMode);
+          setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+        } catch (e) {
+          showToast(e.message || "Failed to save shipment mode", "warn");
+        }
+      }
+      const { how, full } = await printItemLabel(item, copies, shipMode);
       const n = copies > 1 ? `${copies} labels` : "label";
       if (!full) {
         showToast(`Printed ${n} as a plain barcode — the full label design failed to render`, "warn");
@@ -712,12 +740,17 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       showToast(e.message || "Print failed", "error");
     }
   };
-  const handlePrintLabel = (item) => { setPrintQty("1"); setPrintQtyTarget(item); };
+  const handlePrintLabel = (item) => {
+    setPrintQty("1");
+    setPrintShipMode(item.shipmentFrom === "By Land" ? "By Land" : "By Air");
+    setPrintQtyTarget(item);
+  };
   const confirmPrintQty = async () => {
     const item = printQtyTarget;
     const copies = Math.max(1, Math.min(parseInt(printQty, 10) || 1, 20));
+    const shipMode = printShipMode;
     setPrintQtyTarget(null);
-    if (item) await doPrintLabel(item, copies);
+    if (item) await doPrintLabel(item, copies, shipMode);
   };
   const handleDownloadLabel = (item) =>
     downloadItemLabel(item).catch((e) => showToast(e.message || "Download failed", "error"));
@@ -768,15 +801,9 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   <dd className="min-w-0 break-all font-semibold">{item.logisticsName}</dd>
                 </div>
               )}
-              {item.status === "shipped" && item.shipmentFrom && (
-                <div className="flex gap-2">
-                  <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Ship via</dt>
-                  <dd className="min-w-0 font-semibold">{item.shipmentFrom}</dd>
-                </div>
-              )}
             </dl>
             <div className="mt-3">
-              <StatusBadge status={item.status} />
+              <ShipmentBadge mode={item.shipmentFrom} />
             </div>
           </div>
           {/* Barcode: full-width card below the details on phones, fixed beside them on ≥sm */}
@@ -801,9 +828,6 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       </div>
     </div>
   );
-
-  // ==================================================== SHARED CAMERA
-  const openScanner = useCallback(() => setScanOpen(true), []);
 
   // In the Racks tab a scanned code is treated as a shelf label to add.
   const handleScanAddShelf = useCallback(
@@ -1426,7 +1450,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               </p>
               {feed.length === 0 ? (
                 <p className="rounded-2xl bg-[#F6F4F0] px-4 py-5 text-center text-xs text-[#2D2D2D]/40">
-                  Scan a shelf, then scan boxes — they'll appear here.
+                  Scan a shelf, then scan boxes — they&apos;ll appear here.
                 </p>
               ) : (
                 <>
@@ -1776,9 +1800,9 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               </div>
             </div>
             <p className="mb-4 text-xs text-[#2D2D2D]/45">
-              Pulled automatically from gtradea — "Sync now" fetches live. <span className="font-semibold text-[#412460]">📦 Received</span> means that
-              CN tracking is stored in your warehouse; <span className="font-semibold text-[#B99353]">⏳ Not Updated</span> means gtradea has no CN
-              tracking for that item yet.
+              Pulled automatically from gtradea — &quot;Sync now&quot; fetches live. <span className="font-semibold text-[#412460]">📦 Received</span> means that
+              CN tracking is in stock in your warehouse; <span className="font-semibold text-red-600">🚚 Dispatched</span> means it&apos;s since shipped out
+              (shown with the date); <span className="font-semibold text-[#B99353]">⏳ Not Updated</span> means gtradea has no CN tracking for that item yet.
             </p>
             <div className="mb-4 flex flex-wrap items-center gap-3">
               <SearchInput
@@ -1832,7 +1856,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             </span>
             <h3 className="text-base font-bold">Delete {itemDeleteTarget.code}?</h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              Removes this dispatched record ({itemDeleteTarget.trackingNumber}). This can't be undone.
+              Removes this dispatched record ({itemDeleteTarget.trackingNumber}). This can&apos;t be undone.
             </p>
             <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setItemDeleteTarget(null)} className={BTN_GHOST}>
@@ -1859,7 +1883,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             </span>
             <h3 className="text-base font-bold">Delete {batchDeleteItems.length} record{batchDeleteItems.length > 1 ? "s" : ""}?</h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              Removes {batchDeleteItems.length > 1 ? "these dispatched records" : "this dispatched record"}. This can't be undone.
+              Removes {batchDeleteItems.length > 1 ? "these dispatched records" : "this dispatched record"}. This can&apos;t be undone.
             </p>
             <div className="mt-4 max-h-40 overflow-y-auto rounded-2xl bg-[#F6F4F0] p-3 text-xs">
               <ul className="space-y-1.5">
@@ -1895,7 +1919,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               <IconTrash className="h-5 w-5" />
             </span>
             <h3 className="text-base font-bold">Delete shelf {rackDeleteTarget}?</h3>
-            <p className="mt-1 text-xs text-[#2D2D2D]/55">This can't be undone.</p>
+            <p className="mt-1 text-xs text-[#2D2D2D]/55">This can&apos;t be undone.</p>
             <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setRackDeleteTarget(null)} className={BTN_GHOST}>
                 Cancel
@@ -1936,9 +1960,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               <div className="mt-4 max-h-40 overflow-y-auto rounded-2xl bg-[#F6F4F0] p-3 text-xs">
                 <ul className="space-y-1.5">
                   {shipConfirmItems.map((it) => (
-                    <li key={it.id} className="flex justify-between gap-3">
+                    <li key={it.id} className="flex items-center justify-between gap-3">
                       <span className="shrink-0 font-semibold text-[#412460]">{it.code}</span>
-                      <span className="min-w-0 truncate text-right text-[#2D2D2D]/60">{it.trackingNumber || "—"}</span>
+                      <span className="min-w-0 flex-1 truncate text-[#2D2D2D]/60">{it.trackingNumber || "—"}</span>
+                      <ShipmentBadge mode={it.shipmentFrom} />
                     </li>
                   ))}
                 </ul>
@@ -1953,41 +1978,32 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   <dt className="text-[#2D2D2D]/50">Shelf</dt>
                   <dd className="font-semibold">{shipConfirmItems[0].rackId || "—"}</dd>
                 </div>
+                <div className="flex items-center justify-between gap-3">
+                  <dt className="text-[#2D2D2D]/50">Shipment mode</dt>
+                  <dd><ShipmentBadge mode={shipConfirmItems[0].shipmentFrom} /></dd>
+                </div>
               </dl>
             )}
+            <p className="mt-2 text-[11px] text-[#2D2D2D]/40">
+              {shipConfirmItems.length > 1 ? "Each ships via the mode set when its label was printed." : "Set when the label was printed — reprint the label to change it."}
+            </p>
 
-            {!isGtradea && (
-              <div className="mt-4 space-y-3">
-                <div>
-                  <label className={LABEL}>
-                    Name of the logistics <span className="text-red-500">*</span>
-                  </label>
-                  <div className="mt-1.5">
-                    <SearchSelect
-                      value={shipLogistics}
-                      onChange={setShipLogistics}
-                      options={["RK Logistics", "FR Logistics"]}
-                      placeholder="Search or type, e.g. RK Logistics"
-                      allowCustom
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className={LABEL}>
-                    Shipment from <span className="text-red-500">*</span>
-                  </label>
-                  <div className="mt-1.5">
-                    <SearchSelect
-                      value={shipFrom}
-                      onChange={setShipFrom}
-                      options={["By Land", "By Sea"]}
-                      placeholder="Search or choose — By Land / By Sea"
-                      allowCustom={false}
-                    />
-                  </div>
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className={LABEL}>
+                  Name of the logistics <span className="text-red-500">*</span>
+                </label>
+                <div className="mt-1.5">
+                  <SearchSelect
+                    value={shipLogistics}
+                    onChange={setShipLogistics}
+                    options={["RK Logistics", "FR Logistics"]}
+                    placeholder="Search or type, e.g. RK Logistics"
+                    allowCustom
+                  />
                 </div>
               </div>
-            )}
+            </div>
 
             <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setShipConfirmItems(null)} className={BTN_GHOST}>
@@ -2043,6 +2059,18 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               >
                 +
               </button>
+            </div>
+            <div className="mt-4">
+              <label className={LABEL}>Shipment mode</label>
+              <select
+                value={printShipMode}
+                onChange={(e) => setPrintShipMode(e.target.value)}
+                className={`${FIELD} mt-1.5`}
+              >
+                <option value="By Air">By Air</option>
+                <option value="By Land">By Land</option>
+              </select>
+              <p className="mt-1.5 text-[11px] text-[#2D2D2D]/40">This item ships the same way when marked shipped.</p>
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setPrintQtyTarget(null)} className={BTN_GHOST}>
@@ -2109,7 +2137,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                     : scanHint}
                 </p>
                 {tab === "Store" && (
-                  <p className="mt-1 text-center text-xs text-white/45">Then scan each box's tracking barcode</p>
+                  <p className="mt-1 text-center text-xs text-white/45">Then scan each box&apos;s tracking barcode</p>
                 )}
               </div>
             )}
@@ -2335,7 +2363,7 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
                 <div className="break-all text-base font-bold leading-tight text-[#412460]">{it.code}</div>
                 <p className="mt-1 break-all text-xs font-medium text-[#2D2D2D]/70">{it.trackingNumber || "—"}</p>
               </div>
-              <StatusBadge status={it.status} />
+              <ShipmentBadge mode={it.shipmentFrom} />
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
               <span className="inline-flex items-center gap-1.5">
@@ -2406,7 +2434,7 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
               <th>Code</th>
               <th>Tracking</th>
               <th>Shelf</th>
-              <th>Status</th>
+              <th>Shipment</th>
               {withDate && <th>Stored</th>}
               <th className="text-center">Remarks</th>
             </tr>
@@ -2431,7 +2459,7 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
                   </span>
                 </td>
                 <td>
-                  <StatusBadge status={it.status} />
+                  <ShipmentBadge mode={it.shipmentFrom} />
                 </td>
                 {withDate && <td className="whitespace-nowrap text-xs text-[#2D2D2D]/50">{fmtDate(it.createdAt)}</td>}
                 <td className="text-center">
@@ -2520,7 +2548,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                 <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">Order #</div>
                 <div className="break-all text-base font-bold leading-tight text-[#412460]">{it.orderNumber || "—"}</div>
               </div>
-              <StatusBadge status={it.status} />
+              <ShipmentBadge mode={it.shipmentFrom} />
             </div>
             <dl className="mt-3 space-y-1.5 text-xs">
               <div className="flex justify-between gap-3">
@@ -2578,7 +2606,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
               <th>Shelf</th>
               <th>Order #</th>
               <th>Tracking</th>
-              <th>Status</th>
+              <th>Shipment</th>
               <th className="text-center">Actions</th>
             </tr>
           </thead>
@@ -2594,7 +2622,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                 <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{it.rackId || "—"}</span></td>
                 <td className="whitespace-nowrap font-semibold text-[#2D2D2D]/80">{it.orderNumber || "—"}</td>
                 <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={it.trackingNumber}>{it.trackingNumber || "—"}</td>
-                <td><StatusBadge status={it.status} /></td>
+                <td><ShipmentBadge mode={it.shipmentFrom} /></td>
                 <td className="text-center">
                   <div className="flex items-center justify-center gap-1">
                     {onPrint && (<button type="button" title="Print label" onClick={(e) => { e.stopPropagation(); onPrint(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconPrinter className="h-4 w-4" /></button>)}
@@ -2613,13 +2641,17 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
   );
 }
 
-// Where this 1688 line item stands, in three distinct states:
-//   no CN tracking yet on gtradea -> "Not Updated" (nothing to receive against)
-//   has tracking, not scanned in  -> "Not received"
-//   has tracking, scanned in      -> "Received · CZN…" (bold purple)
+// Where this 1688 line item stands, in four distinct states:
+//   no CN tracking yet on gtradea    -> "Not Updated" (nothing to receive against)
+//   has tracking, not scanned in     -> "Not received"
+//   has tracking, scanned in         -> "Received · CZN…" (bold purple)
+//   has tracking, scanned in, shipped -> "Dispatched" + the day it shipped
 // "Not Updated" matters because an order with no tracking can never match a
 // warehouse item — showing it as "Not received" implies the goods are late when
-// really it's the gtradea record that's incomplete.
+// really it's the gtradea record that's incomplete. Once the matched warehouse
+// item ships, the pill flips from Received to Dispatched (bold red, matching
+// the rest of the shipped-state colour language) so the 1688 panel doesn't
+// keep telling staff the goods are still sitting in stock.
 function WarehousePill({ order }) {
   const state = supplierState(order);
   if (state === "not_updated") {
@@ -2632,6 +2664,13 @@ function WarehousePill({ order }) {
   }
   if (state === "not_received") {
     return <span className="text-[11px] text-[#2D2D2D]/35">Not received</span>;
+  }
+  if (state === "dispatched") {
+    return (
+      <span className="text-[11px] font-bold text-red-600">
+        <span aria-hidden="true">🚚</span> Dispatched · {fmtLongDay(order.warehouseShippedAt)}
+      </span>
+    );
   }
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-[#412460]/10 px-2.5 py-1 text-[11px] font-bold text-[#412460]">
@@ -2661,7 +2700,7 @@ function SupplierOrdersTable({ rows, loading }) {
   if (!rows || rows.length === 0) {
     return (
       <EmptyState>
-        No 1688 orders yet. They appear here automatically once gtradea has procurement data — or tap "Sync now".
+        No 1688 orders yet. They appear here automatically once gtradea has procurement data — or tap &quot;Sync now&quot;.
       </EmptyState>
     );
   }

@@ -222,6 +222,30 @@ async function apiGet(path, retry = true) {
   return readJson(res);
 }
 
+// The "Pay 1688 Supplier Orders" panel's data — how much was ACTUALLY paid for
+// each individual 1688/Alibaba order (sumPaymentCents), keyed by that supplier
+// order's id. This is NOT the same figure as a procurement job's order.total /
+// order.advance_amount: one gtradea job can bundle several 1688 orders, so the
+// job-level advance is their combined total, not any single item's real cost.
+// Each procurement item carries its own `supplier_order_id` (see mapDetail)
+// that keys into this map. Returns null (not an empty Map) on failure, so
+// callers can tell "nothing paid" apart from "couldn't ask" and skip filling
+// in a misleading number.
+async function fetchSupplierOrderPayments() {
+  try {
+    const resp = await apiGet('/api/v1/admin/procurement/supplier-orders');
+    const list = Array.isArray(resp?.supplierOrders) ? resp.supplierOrders : [];
+    const map = new Map();
+    for (const so of list) {
+      if (so && so.id) map.set(so.id, Number(so.sumPaymentCents || 0) / 100);
+    }
+    return map;
+  } catch (e) {
+    console.error('[gtradeaSync] failed to fetch 1688 supplier-order payments:', e.message);
+    return null;
+  }
+}
+
 // Run async fn over items with at most `limit` in flight; preserves order.
 async function mapLimit(items, limit, fn) {
   const results = new Array(items.length);
@@ -253,7 +277,15 @@ const toDate = (v) => {
   return isNaN(d.getTime()) ? null : d;
 };
 
-function mapDetail(detail) {
+// `paymentMap` (id -> amount paid, from fetchSupplierOrderPayments) is keyed
+// by each ITEM's own supplier_order_id — one gtradea job/order_number can
+// bundle several distinct 1688 orders, each paid separately, so the paid
+// amount has to be looked up per item, not taken from the job-level order
+// object. Pass null when the payment list couldn't be fetched (bridge relay
+// path, or a failed live call) — paid_amount is then left blank rather than
+// silently substituting the job's combined advance_amount, which would be
+// the wrong (inflated, shared-across-orders) figure.
+function mapDetail(detail, paymentMap) {
   const order = detail.order || {};
   const items = Array.isArray(detail.procurement_items) ? detail.procurement_items : [];
   const jobCreatedAt = toDate(detail.created_at);
@@ -264,6 +296,14 @@ function mapDetail(detail) {
       // Coerce only real values — null / '' mean "unknown", not 0.
       const rawQty = oi.quantity;
       const qty = (rawQty == null || rawQty === '') ? NaN : Number(rawQty);
+      // Sequelize's .update() treats `undefined` as "leave this column alone"
+      // (unlike `null`, which overwrites). So when paymentMap itself is
+      // missing — the bridge relay path never fetches one, or the live list
+      // call failed — paidAmount stays undefined and a previously-synced
+      // paid_amount survives untouched instead of being blanked out this pass.
+      const paidAmount = paymentMap
+        ? (it.supplier_order_id && paymentMap.has(it.supplier_order_id) ? paymentMap.get(it.supplier_order_id) : null)
+        : undefined;
       return {
         source: 'gtradea',
         source_item_id: String(it.id),
@@ -282,6 +322,9 @@ function mapDetail(detail) {
         shipping_mode: order.shipping_mode || null,
         order_status: order.status || null,
         order_total: order.total != null ? order.total : null,
+        // How much was actually paid for THIS item's own 1688 order (the "Pay
+        // 1688 Supplier Orders" panel's Total), not the job-level advance.
+        paid_amount: paidAmount,
         ordered_at: jobCreatedAt || toDate(it.created_at),
         raw: it,
         synced_at: new Date(),
@@ -383,6 +426,9 @@ async function runSync({ force = false } = {}) {
   try {
     const jobsResp = await apiGet('/api/v1/admin/procurement/jobs');
     const jobs = Array.isArray(jobsResp?.jobs) ? jobsResp.jobs : (Array.isArray(jobsResp) ? jobsResp : []);
+    // One list call for every 1688 order's real paid amount (see
+    // fetchSupplierOrderPayments) — fetched once per pass, not per job.
+    const paymentMap = await fetchSupplierOrderPayments();
 
     // Fetch job details with bounded concurrency (gtradea is slow; sequential
     // fetches over many jobs could outrun the request/proxy timeout).
@@ -390,7 +436,7 @@ async function runSync({ force = false } = {}) {
     const detailRows = await mapLimit(withId, 5, async (job) => {
       try {
         const detail = await apiGet(`/api/v1/admin/procurement/jobs/${encodeURIComponent(job.id)}/detail`);
-        return mapDetail(detail);
+        return mapDetail(detail, paymentMap);
       } catch (e) {
         console.error('[gtradeaSync] detail fetch failed for job', job.id, '-', e.message);
         return [];

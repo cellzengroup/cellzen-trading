@@ -24,7 +24,7 @@ export function unwrapItem(row) {
     shippedAt: row.shipped_at || null,
     shippedByName: row.shipped_by_name || null,
     logisticsName: row.logistics_name || "",
-    shipmentFrom: row.shipment_from || "",
+    shipmentFrom: row.shipment_from || "By Air", // shipment mode; always one of "By Air" | "By Land"
     source: row.source || "cellzen",
     orderNumber: row.order_number || "",
     productName: row.product_name || "",
@@ -102,17 +102,33 @@ export async function putAwayItem(rackId, trackingNumber, source) {
   return unwrapItem(json.data);
 }
 
-// Mark an item shipped. `logisticsName` and `shipmentFrom` are required by the
-// backend (the carrier + whether it goes by land or sea).
-export async function shipItem(id, logisticsName, shipmentFrom) {
+// Mark an item shipped. `logisticsName` is required; the shipment mode is NOT
+// sent here — the backend carries over whatever was already recorded on the
+// item (normally set via updateItemShipmentMode when the label was printed).
+export async function shipItem(id, logisticsName) {
   const res = await authFetch(`/inventory/warehouse/items/${encodeURIComponent(id)}/ship`, {
     ...STAFF,
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ logisticsName, shipmentFrom }),
+    body: JSON.stringify({ logisticsName }),
   });
   const json = await readJson(res);
   if (!res.ok || !json.success) throw new Error(json.message || "Failed to mark shipped");
+  return unwrapItem(json.data);
+}
+
+// Record an item's shipment mode ("By Air" | "By Land") — called when the
+// print dialog's shipment-mode dropdown is confirmed, so /ship later inherits
+// the same value instead of asking again.
+export async function updateItemShipmentMode(id, shipmentMode) {
+  const res = await authFetch(`/inventory/warehouse/items/${encodeURIComponent(id)}/shipment-mode`, {
+    ...STAFF,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shipmentMode }),
+  });
+  const json = await readJson(res);
+  if (!res.ok || !json.success) throw new Error(json.message || "Failed to update shipment mode");
   return unwrapItem(json.data);
 }
 
@@ -187,6 +203,7 @@ export function unwrapSupplierOrder(row) {
     warehouseRack: wh.rack_id || "",
     warehouseStatus: wh.status || "",
     warehouseCode: wh.code || "",
+    warehouseShippedAt: wh.shipped_at || null,
   };
 }
 
