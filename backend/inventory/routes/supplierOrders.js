@@ -255,6 +255,22 @@ function deriveShortProductName(rawName) {
   return sentenceCase(core.join(' '));
 }
 
+// Run async work over items with a bounded worker pool. Product-image
+// downloads were previously awaited one row at a time, so the whole response
+// stayed unsent until every row finished — with up to 5000 orders that blew
+// past Render's proxy timeout and came back as a 502 (same fix already
+// applied to reports.js's exports; see mapWithConcurrency there).
+async function mapWithConcurrency(items, limit, fn) {
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      await fn(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
 const PACKING_HEADERS = ['MARKA', 'Ctn. No', 'Order ID', 'Goods No.', 'Product Image', 'Product Name', 'Brand name', 'Model Number', 'Product Description', 'Quantity', 'Unit', 'KG', 'CBM', 'Paid Amount'];
 const PACKING_COL_WIDTHS = [16, 15, 24, 16, 28, 24, 18, 24, 58, 14, 14, 14, 14, 16];
 const PACKING_PAID_COL = 14; // 1-indexed — order-level, so it merges the same way Order ID does
@@ -262,6 +278,27 @@ const PACKING_IMG_COL = 5; // 1-indexed column — Product Image
 const PACKING_ROW_HEIGHT = 126; // pt (~168px) — data rows, sized up from the template's 45pt
 const PACKING_IMG_MAX = 140; // px — thumbnail fits inside the taller data row without blowing it up
 const PACKING_THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+// The packing list only ever shows these photos as a ~140px thumbnail
+// (PACKING_IMG_MAX), so embedding gtradea's original product photo — often a
+// multi-MB listing image — just bloats both the in-memory workbook and the
+// downloaded file for no visible benefit. Re-encode down to a small JPEG
+// before embedding instead. `sharp` isn't a direct dependency of this project
+// (it rides in transitively via the NER model stack), so this lazily
+// requires it and falls back to the original buffer if it's unavailable —
+// same defensive pattern productNameNer.js uses for onnxruntime-node.
+async function shrinkImageForExport(buffer) {
+  try {
+    const sharp = require('sharp');
+    const out = await sharp(buffer)
+      .resize({ width: PACKING_IMG_MAX * 2, withoutEnlargement: true })
+      .jpeg({ quality: 70 })
+      .toBuffer();
+    return { buffer: out, ext: 'jpeg' };
+  } catch (e) {
+    return { buffer, ext: null };
+  }
+}
 
 // GET /export.xlsx — packing list for the (optionally search-filtered) 1688
 // orders, styled after frontend/public/Invoice/GtradeA Sent Goods.xlsx: title
@@ -279,6 +316,20 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     // one). `nerNames[i]` is null wherever the model wasn't confident enough
     // or wasn't available at all — those rows fall back to the heuristic.
     const nerNames = await extractProductNames(orders.map((o) => o.product_name || ''));
+
+    // Fetch every row's product image in parallel (bounded to 8 at a time)
+    // instead of one network round-trip at a time inside the row loop below —
+    // see mapWithConcurrency above for why that mattered.
+    const imageBuffers = new Array(orders.length).fill(null);
+    await mapWithConcurrency(orders, 8, async (o, i) => {
+      if (!o.product_image) return;
+      try {
+        const raw = await downloadImage(o.product_image);
+        if (raw) imageBuffers[i] = await shrinkImageForExport(raw);
+      } catch (e) {
+        console.error('[1688 export] product image download failed:', e?.message || e);
+      }
+    });
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Packing List');
@@ -361,27 +412,26 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       setCell(14, o.paid_amount != null ? Number(o.paid_amount) : null); // Paid Amount — from gtradea's procurement/China-ops view, packing list only (not shown on the 1688 tab)
       row.height = PACKING_ROW_HEIGHT;
 
-      if (o.product_image) {
+      const img = imageBuffers[i];
+      if (img) {
         try {
-          const buf = await downloadImage(o.product_image);
-          if (buf) {
-            const ext = (path.extname(o.product_image.split('?')[0]).replace('.', '') || 'jpeg').toLowerCase();
-            const dim = imageSize(buf);
-            const scale = Math.min(PACKING_IMG_MAX / dim.width, PACKING_IMG_MAX / dim.height, 1);
-            const w = Math.round(dim.width * scale);
-            const h = Math.round(dim.height * scale);
-            const imgId = workbook.addImage({ buffer: buf, extension: ext === 'jpg' ? 'jpeg' : ext });
-            const PX_TO_EMU = 9525;
-            const colWidthPx = PACKING_COL_WIDTHS[PACKING_IMG_COL - 1] * 7.5;
-            const rowHeightPx = PACKING_ROW_HEIGHT * 1.333;
-            const padX = Math.round(Math.max(0, (colWidthPx - w) / 2) * PX_TO_EMU);
-            const padY = Math.round(Math.max(0, (rowHeightPx - h) / 2) * PX_TO_EMU);
-            sheet.addImage(imgId, {
-              tl: { col: PACKING_IMG_COL - 1, row: r - 1, nativeCol: PACKING_IMG_COL - 1, nativeRow: r - 1, nativeColOff: padX, nativeRowOff: padY },
-              br: { col: PACKING_IMG_COL - 1, row: r - 1, nativeCol: PACKING_IMG_COL - 1, nativeRow: r - 1, nativeColOff: padX + w * PX_TO_EMU, nativeRowOff: padY + h * PX_TO_EMU },
-              editAs: 'oneCell',
-            });
-          }
+          const buf = img.buffer;
+          const ext = img.ext || (path.extname(o.product_image.split('?')[0]).replace('.', '') || 'jpeg').toLowerCase();
+          const dim = imageSize(buf);
+          const scale = Math.min(PACKING_IMG_MAX / dim.width, PACKING_IMG_MAX / dim.height, 1);
+          const w = Math.round(dim.width * scale);
+          const h = Math.round(dim.height * scale);
+          const imgId = workbook.addImage({ buffer: buf, extension: ext === 'jpg' ? 'jpeg' : ext });
+          const PX_TO_EMU = 9525;
+          const colWidthPx = PACKING_COL_WIDTHS[PACKING_IMG_COL - 1] * 7.5;
+          const rowHeightPx = PACKING_ROW_HEIGHT * 1.333;
+          const padX = Math.round(Math.max(0, (colWidthPx - w) / 2) * PX_TO_EMU);
+          const padY = Math.round(Math.max(0, (rowHeightPx - h) / 2) * PX_TO_EMU);
+          sheet.addImage(imgId, {
+            tl: { col: PACKING_IMG_COL - 1, row: r - 1, nativeCol: PACKING_IMG_COL - 1, nativeRow: r - 1, nativeColOff: padX, nativeRowOff: padY },
+            br: { col: PACKING_IMG_COL - 1, row: r - 1, nativeCol: PACKING_IMG_COL - 1, nativeRow: r - 1, nativeColOff: padX + w * PX_TO_EMU, nativeRowOff: padY + h * PX_TO_EMU },
+            editAs: 'oneCell',
+          });
         } catch (e) {
           console.error('[1688 export] product image embed failed:', e?.message || e);
         }

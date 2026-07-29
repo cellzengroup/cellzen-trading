@@ -160,6 +160,11 @@ async function deleteImage(publicUrl) {
  * Download an image by its URL and return the buffer.
  * Handles: Supabase storage URLs, any http(s) URL, and legacy local /uploads/ paths.
  */
+// Bulk exports (packing lists, reports) fan out many of these concurrently —
+// one stalled remote host with no timeout would otherwise wedge a worker (and,
+// via the export's proxy-timeout budget, the whole response) indefinitely.
+const DOWNLOAD_TIMEOUT_MS = 15000;
+
 async function downloadImage(publicUrl) {
   if (!publicUrl) return null;
 
@@ -169,7 +174,7 @@ async function downloadImage(publicUrl) {
     const idx = publicUrl.indexOf(marker);
     if (idx !== -1) {
       const filePath = publicUrl.substring(idx + marker.length);
-      const { data, error } = await supabase.storage.from(BUCKET).download(filePath);
+      const { data, error } = await supabase.storage.from(BUCKET).download(filePath, {}, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
       if (error || !data) return null;
       return Buffer.from(await data.arrayBuffer());
     }
@@ -178,7 +183,7 @@ async function downloadImage(publicUrl) {
   // Fallback: fetch any http(s) URL
   if (publicUrl.startsWith('http')) {
     try {
-      const response = await fetch(publicUrl);
+      const response = await fetch(publicUrl, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
       if (!response.ok) return null;
       return Buffer.from(await response.arrayBuffer());
     } catch { return null; }
