@@ -43,7 +43,7 @@ const DEFAULTS = {
   gtradeaAnonKey:
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0a2R0eWh1Y3lkcGtuemhoaWJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1NjMyODEsImV4cCI6MjA3NjEzOTI4MX0.OLvWKouodCWL1XulvnJjwW-iId1zBw5b7vOIefdN7rg",
   // --- Cellzen website (the destination) ---
-  apiBaseUrl: "",          // e.g. https://cellzen-trading.onrender.com
+  apiBaseUrl: "",          // e.g. https://cellzengroup.com
   bridgeToken: "",         // must match GTRADEA_BRIDGE_TOKEN in the backend env
   // --- cadence ---
   pollMs: 90000,           // how often to pull from gtradea (ms)

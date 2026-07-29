@@ -24,8 +24,8 @@ export default defineConfig({
       },
     },
     allowedHosts: [
-      'cellzen-trading.onrender.com',
-      '.onrender.com',
+      'l78jmacr.up.railway.app',
+      '.up.railway.app',
       'www.cellzengroup.com',
       'cellzengroup.com',
       'localhost',

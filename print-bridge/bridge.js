@@ -48,8 +48,8 @@ const DEFAULTS = {
   bitmapXOffset: 0,     // nudge the whole label image right (+) / left (-), in dots
   bitmapYOffset: 0,     // nudge the whole label image down (+) / up (-), in dots
   bitmapInvert: false,  // set true only if the label prints as a black rectangle
-  allowOrigin: "*",     // CORS: your Render origin, or "*" for any
-  apiBaseUrl: "",       // site origin for phone printing, e.g. https://cellzen-trading.onrender.com
+  allowOrigin: "*",     // CORS: your production origin, or "*" for any
+  apiBaseUrl: "",       // site origin for phone printing, e.g. https://cellzengroup.com
   agentToken: "",       // must match PRINT_AGENT_TOKEN in the backend env
   pollMs: 2500,         // how often to check the cloud queue for new jobs (ms)
 };

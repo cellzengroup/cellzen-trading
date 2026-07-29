@@ -7,6 +7,7 @@
 
 const KNOWN_PROD_BASES = [
   "https://cellzen-trading.onrender.com/api",
+  "https://l78jmacr.up.railway.app/api",
   "https://www.cellzengroup.com/api",
   "https://cellzengroup.com/api",
 ];

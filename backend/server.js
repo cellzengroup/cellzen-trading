@@ -32,6 +32,7 @@ app.use(compression({ threshold: 1024 }));
 const isProduction = process.env.NODE_ENV === 'production';
 const defaultProdOrigins = [
   'https://cellzen-trading.onrender.com',
+  'https://l78jmacr.up.railway.app',
   'https://www.cellzengroup.com',
   'https://cellzengroup.com',
   'http://www.cellzengroup.com',
@@ -63,6 +64,7 @@ const corsOrigin = (origin, callback) => {
     const host = new URL(origin).hostname;
     if (host === 'cellzengroup.com' || host.endsWith('.cellzengroup.com')) return callback(null, true);
     if (host.endsWith('.onrender.com')) return callback(null, true);
+    if (host.endsWith('.up.railway.app')) return callback(null, true);
   } catch {
     // fall through to reject
   }
