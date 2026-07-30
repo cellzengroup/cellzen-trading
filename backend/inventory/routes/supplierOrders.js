@@ -90,13 +90,13 @@ async function fetchSupplierOrders(search) {
       if (trackings.length) {
         const items = await WarehouseItem.findAll({
           where: { tracking_number: { [Op.in]: trackings } },
-          attributes: ['tracking_number', 'rack_id', 'status', 'code', 'shipped_at'],
+          attributes: ['tracking_number', 'rack_id', 'status', 'code', 'pr_code', 'shipped_at'],
         });
         for (const it of items) {
           const key = String(it.tracking_number || '').toUpperCase();
           // Prefer an in-stock match over a shipped one for the same tracking.
           if (!matchMap[key] || it.status === 'in_stock') {
-            matchMap[key] = { rack_id: it.rack_id, status: it.status, code: it.code, shipped_at: it.shipped_at };
+            matchMap[key] = { rack_id: it.rack_id, status: it.status, code: it.code, pr_code: it.pr_code, shipped_at: it.shipped_at };
           }
         }
       }
@@ -122,7 +122,7 @@ async function fetchSupplierOrders(search) {
         paid_amount: r.paid_amount,
         ordered_at: r.ordered_at,
         synced_at: r.synced_at,
-        warehouse: m ? { in_warehouse: true, rack_id: m.rack_id, status: m.status, code: m.code, shipped_at: m.shipped_at } : { in_warehouse: false },
+        warehouse: m ? { in_warehouse: true, rack_id: m.rack_id, status: m.status, code: m.code, pr_code: m.pr_code, shipped_at: m.shipped_at } : { in_warehouse: false },
       };
     });
   });
@@ -404,7 +404,12 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       setCell(1, 'CZN-GT'); // Marka — fixed shipping mark for every carton in this batch
       setCell(2, null); // Ctn. No — filled in by hand once cartons are packed
       setCell(3, o.order_number || '-');
-      setCell(4, o.warehouse && o.warehouse.in_warehouse ? o.warehouse.code : null); // Goods No. — the REAL warehouse item code assigned when this box was scanned in (same one shown as "Received · CZN…" on the 1688 tab), not a made-up sequence. Blank until it's actually received.
+      // Goods No. — the id physically printed on the box's label: the gtradea PR
+      // id (PR-1029), same as the GtradeA panel's "Received · PR-…" pill. Falls
+      // back to the internal CZN code only for a box stored before gtradea
+      // published a job code for its order. Blank until it's actually received —
+      // never a made-up sequence.
+      setCell(4, o.warehouse && o.warehouse.in_warehouse ? (o.warehouse.pr_code || o.job_code || o.warehouse.code) : null);
       setCell(5, null); // Product Image cell — the photo is embedded below
       setCell(6, nerNames[i] || deriveShortProductName(o.product_name), { bold: true });
       setCell(7, 'GT'); // gtradea doesn't track a real brand — generic house brand

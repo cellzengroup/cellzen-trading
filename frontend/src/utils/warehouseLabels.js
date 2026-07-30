@@ -1,8 +1,10 @@
 // Warehouse label + barcode generation.
 //
 // Shipment (item) labels use the approved 60 x 80 mm design: CELLZEN logo, a
-// Code-128 barcode, Shelf / Tracking lines, the handling-icon row, and the
-// footer. The whole label is rendered ONCE onto a canvas at exact printer
+// Code-128 barcode of the item's goods code (the gtradea PR id where there is
+// one — see goodsCode() in warehouseApi.js), the Shelf / Order / Tracking
+// number lines, the handling-icon row, and the footer.
+// The whole label is rendered ONCE onto a canvas at exact printer
 // resolution (480 x 640 dots = 60 x 80 mm at 8 dots/mm ≈ 203 dpi). That single
 // image is the source of truth:
 //   - Download  → the canvas as a PNG.
@@ -12,8 +14,9 @@
 // Rack/shelf labels are unchanged: a simple native barcode (no logo/icons).
 
 import { toCanvas } from "bwip-js";
-import { enqueuePrintJob } from "./warehouseApi";
+import { enqueuePrintJob, goodsCode } from "./warehouseApi";
 import { CELLZEN_LOGO_SVG, LABEL_ICONS_SVG } from "./labelAssets";
+import { GTRADEA_LABEL_ART, ART_W, ART_H } from "./gtradeaLabelArt";
 
 const INK = "#2D2D2D";
 const PURPLE = "#412460";
@@ -38,32 +41,42 @@ const FOOTER_W = 470; // the long support line may use a touch more width
 const LETTER_SPACING = 0; // no extra letter tracking on the text lines
 
 // Vertical layout (dots). Image blocks use their TOP; text uses its BASELINE.
-// The barcode band holds the bars + a gap + the CZN number; Shelf/Tracking sit
-// just below it.
+// The barcode band holds the bars + a gap + the goods number; the Shelf / Order /
+// Tracking block sits just below it.
 const LOGO_TOP = 16;
 const LOGO_W = 270;
 const BARCODE_TOP = 122;
 const BARCODE_MAX_W = 468;
-// The CZN code number, drawn by us under the bars (smaller + letter-spaced).
+const BARCODE_HEIGHT = 10; // bwip-js bar height (BARS ONLY) with no mode banner
+// The goods number, drawn by us under the bars (smaller + letter-spaced).
 const CODE_GAP = 12; // space between the bars and the number
 const CODE_SIZE = 42;
 const CODE_SPACING = 12; // letter spacing on the number
-const SHELF_Y = 350;
 
 // Optional "SHIPMENT: BY AIR/LAND" banner, drawn full-bleed under the logo when
-// a shipment mode is picked at print time. Everything below it (down through
-// SHELF_Y) has to keep fitting in the same space, so the barcode band shrinks
-// to make room instead of pushing Shelf/Tracking/icons/footer around.
+// a shipment mode is picked at print time. Everything below it (down through the
+// info block) has to keep fitting in the same space, so the barcode band shrinks
+// to make room instead of pushing the info lines / icons / footer around.
 const MODE_BAR_TOP = 128;
 const MODE_BAR_H = 32;
 const MODE_BAR_FONT = 19;
 const MODE_BAR_SPACING = 2;
 const BARCODE_TOP_WITH_MODE = MODE_BAR_TOP + MODE_BAR_H + 14;
-const BARCODE_HEIGHT_WITH_MODE = 7; // vs. 12 for the normal (no-banner) barcode
+const BARCODE_HEIGHT_WITH_MODE = 7; // vs. BARCODE_HEIGHT for the normal barcode
 const CODE_GAP_WITH_MODE = 10;
-const CODE_SIZE_WITH_MODE = 32; // vs. 42 for the normal barcode's number
-const TRACKING_Y = 388;
-const ICONS_TOP = 410;
+const CODE_SIZE_WITH_MODE = 32; // vs. CODE_SIZE for the normal barcode's number
+
+// The info block — "Shelf Number:", "Order Number:", "Tracking Number:" — laid
+// out as one stack between the barcode band and the handling icons.
+// INFO_TOP_Y is the FIRST line's baseline; each further line sits
+// INFO_LINE_GAP below it. All lines share ONE font size (the longest line
+// governs it) so they read as a set. A cellzen item has no 1688 order number,
+// so its block is two lines and simply ends higher — the icons and footer stay
+// put either way.
+const INFO_TOP_Y = 330;
+const INFO_LINE_GAP = 35;
+const INFO_FONT_MAX = 30;
+const ICONS_TOP = 422;
 const ICONS_W = 250;
 const FOOTER1_Y = 542;
 const FOOTER2_Y = 574;
@@ -159,10 +172,10 @@ function barcodeDataUrl(text) {
 // A Code-128 barcode + human-readable text for the shipment label. `scale` is
 // device px per module; the canvas is drawn 1:1 so a module = `scale` printer
 // dots — keep it an integer so the bars land on dot boundaries and scan cleanly.
-// `barHeight` is the bwip-js bar height (BARS ONLY — the CZN number is drawn
+// `barHeight` is the bwip-js bar height (BARS ONLY — the goods number is drawn
 // separately below); it's shrunk when the shipment-mode banner is showing so
-// the whole barcode band still fits above Shelf/Tracking.
-function shipmentBarcodeCanvas(text, scale, barHeight = 12) {
+// the whole barcode band still fits above the info lines.
+function shipmentBarcodeCanvas(text, scale, barHeight = BARCODE_HEIGHT) {
   return barcodeCanvas(text, {
     scale,
     height: barHeight,
@@ -302,6 +315,17 @@ function formatLabelDate(value) {
   return d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 }
 
+// → "July 30, 2026 05:48 PM" — the GtradeA design's footer stamp. Built from two
+// calls rather than one toLocaleString: en-US would splice in "at" and drop the
+// leading zero on the hour, and the design has neither.
+function formatLabelStamp(value) {
+  const d = value ? new Date(value) : new Date();
+  if (isNaN(d.getTime())) return "";
+  const day = d.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+  const time = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true });
+  return `${day} ${time}`;
+}
+
 // ---------------------------------------------------------------- mono packing
 function bytesToBase64(bytes) {
   let binary = "";
@@ -332,17 +356,10 @@ function packMono(ctx, width, height) {
   return { data: bytesToBase64(out), widthBytes, width, height };
 }
 
-// ---------------------------------------------------------------- shipment label
-// Render the full 60 x 80 mm shipment label. `shipmentMode` is the optional
-// "air" | "land" pick from the print dialog — when set, a full-bleed
-// "SHIPMENT: BY AIR/LAND" banner is drawn under the logo and the barcode band
-// shrinks to make room for it. Returns { png, mono } where `mono` is the
-// packed 1-bit bitmap payload for the print bridge / queue.
-async function renderShipmentLabel(item, shipmentMode = null) {
-  const mode = normalizeShipmentMode(shipmentMode);
-  // Load Inter (from Supabase) + wait for fonts, but hard-bound the whole step so
-  // a slow/offline network can never hang label rendering — we fall back to a
-  // system sans (see FONT_STACK) and still print.
+// Wait for Inter, but hard-bound the whole step so a slow/offline network can
+// never hang label rendering — we fall back to a system sans (see FONT_STACK)
+// and still print. Shared by both label designs.
+async function loadLabelFonts() {
   try {
     await Promise.race([
       (async () => {
@@ -352,6 +369,205 @@ async function renderShipmentLabel(item, shipmentMode = null) {
       new Promise((resolve) => setTimeout(resolve, 5000)),
     ]);
   } catch { /* fall back to system sans */ }
+}
+
+// ============================================================ GtradeA label
+// The approved GtradeA design (frontend/public/Images/barcode.svg). Its fixed
+// artwork — mark, fragile panel, rules, the "Shelf No:"/"Order No:"/"Tracking
+// No:" wording, "HANDLE WITH CARE", "www.gtradea.com" — is drawn straight from
+// the design's own vector paths (see gtradeaLabelArt.js), so it is exact by
+// construction rather than retyped as canvas coordinates. Only the six values
+// that change per box are set as live text.
+
+// Art direction applied ON TOP of the design file — kept here, rather than
+// edited into the generated artwork, so what deviates from the source SVG is
+// visible in one place and the art can be regenerated at any time.
+// Values are ARTBOARD units: 1 unit ≈ 0.84 printer dots ≈ 0.105 mm.
+//
+// ART_SHIFT_X moves the whole design across the stock; positive is right. It is
+// CLAMPED below so it can never cut the artwork off: the designer put the
+// rotated "HANDLE WITH CARE" at x 563.2 on a 569-wide artboard, i.e. 5.8 units
+// (4.9 printer dots) from the edge, so the design is already flush right and
+// there is only about 3 units of travel. Asking for more silently gives you the
+// most that still prints whole, rather than a label with the text sliced off.
+const ART_SHIFT_X = 3;
+const ART_RIGHT_INK = 563.2; // rightmost ink in the design, measured from the file
+const ART_EDGE_KEEP = 2;     // printer dots of white to preserve at the trim
+
+// Groups tagged in gtradeaLabelArt.js, nudged as units.
+const ART_GROUPS = {
+  head: { dy: 30 },  // gtradea mark + "Shelf No:" block, dropped off the top trim
+  code: { dy: 12 },  // barcode + PR number, dropped a little
+};
+
+// One transform maps the whole 569 x 726 artboard onto the label stock: the
+// largest uniform scale that fits, centred. Uniform, never stretched — the
+// artboard is a slightly different shape to the stock, and squashing it would
+// show up immediately on the round mark.
+function artTransform() {
+  const scale = Math.min(CANVAS_W / ART_W, CANVAS_H / ART_H);
+  const base = (CANVAS_W - ART_W * scale) / 2;
+  // Never let the shift push the design's rightmost ink past the trim.
+  const maxShift = (CANVAS_W - ART_EDGE_KEEP - base) / scale - ART_RIGHT_INK;
+  return {
+    scale,
+    dx: base + Math.min(ART_SHIFT_X, maxShift) * scale,
+    dy: (CANVAS_H - ART_H * scale) / 2,
+  };
+}
+
+// Shift a tagged group inside the artboard coordinate space. The caller has
+// already established that space, so this is a plain translate on top.
+function applyGroup(ctx, group) {
+  const g = group && ART_GROUPS[group];
+  if (g) ctx.translate(g.dx || 0, g.dy || 0);
+}
+
+// Fixed artwork, painted in the design's order. Fills collapse to pure black or
+// pure white: the stock is monochrome thermal, and the glass icon is knocked
+// OUT of the fragile panel, so its white has to survive as white.
+function drawLabelArt(ctx, { scale, dx, dy }) {
+  for (const el of GTRADEA_LABEL_ART) {
+    ctx.save();
+    ctx.translate(dx, dy);
+    ctx.scale(scale, scale);
+    applyGroup(ctx, el.group);
+    const f = String(el.fill || "").toLowerCase();
+    ctx.fillStyle = f === "white" || f === "#ffffff" || f === "#fff" ? "#FFFFFF" : "#000000";
+    if (el.rect) ctx.fillRect(el.rect[0], el.rect[1], el.rect[2], el.rect[3]);
+    else ctx.fill(new Path2D(el.d)); // nonzero winding — matches the source SVG
+    ctx.restore();
+  }
+}
+
+// The six values that change per box, measured off the design file. `x` is the
+// ink's left edge and `top`/`bottom` its ink box, all in artboard coordinates.
+//
+// `ref` is the exact string the designer set, and it alone decides the type
+// size. Sizing from the live value instead would make the type jump about —
+// "July 30" has a descender and "March 4" doesn't, so the same field would come
+// out at two different sizes on two different days.
+//
+// `right` is the hard edge the text may not cross (the next element, or the
+// trim). `center` centres the field on that x instead of setting it flush left.
+// `group` ties the field to an ART_GROUPS nudge so it travels with its artwork —
+// the shelf code has to move with the "Shelf No:" label above it.
+const GT_FIELDS = {
+  shelf:    { x: 385.6, top: 49.4,  bottom: 73.5,  right: 559, weight: "700", ref: "GT-01-003", group: "head" },
+  pr:       { x: 118,   top: 341.4, bottom: 365.5, right: 521, weight: "700", ref: "PR-1028", center: 189, group: "code" },
+  order:    { x: 37.5,  top: 493.6, bottom: 515.5, right: 521, weight: "700", ref: "ORD-20260730-195740" },
+  tracking: { x: 37.4,  top: 594.6, bottom: 616.5, right: 521, weight: "700", ref: "435291915403962" },
+  stamp:    { x: 36.7,  top: 710.2, bottom: 725.3, right: 393, weight: "400", ref: "July 30, 2026 05:48 PM" },
+  mode:     { x: 422.5, top: 688.7, bottom: 704,   right: 517, weight: "700", ref: "VIA AIR", center: 460, ink: "#FFFFFF" },
+};
+
+// Ink height of `text` at `px` — what the design's bounding boxes actually
+// measure, as opposed to the em size, which no two typefaces agree on.
+function inkHeight(ctx, text, px, weight) {
+  ctx.font = `${weight} ${px}px ${FONT_STACK}`;
+  const m = ctx.measureText(text);
+  return m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
+}
+
+// Set one field. Ink height scales linearly with the type size, so measuring the
+// reference string once at 100px gives the exact size in a single step. The
+// BASELINE is then fixed for the field; if the live value is too long for its
+// slot the size comes down but the baseline stays put, so a long tracking number
+// still sits on the same line as a short one.
+function drawField(ctx, field, text, t) {
+  if (!text) return;
+  const target = field.bottom - field.top;
+  let px = (100 * target) / inkHeight(ctx, field.ref, 100, field.weight);
+  ctx.font = `${field.weight} ${px}px ${FONT_STACK}`;
+  const baseline = field.top + ctx.measureText(field.ref).actualBoundingBoxAscent;
+
+  const room = field.right - field.x;
+  let w = ctx.measureText(text).width;
+  if (w > room) {
+    px *= room / w;
+    ctx.font = `${field.weight} ${px}px ${FONT_STACK}`;
+    w = ctx.measureText(text).width;
+  }
+
+  ctx.fillStyle = field.ink || "#000000";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  const x = field.center != null ? field.center - w / 2 : field.x;
+  ctx.save();
+  ctx.translate(t.dx, t.dy);
+  ctx.scale(t.scale, t.scale);
+  applyGroup(ctx, field.group);
+  ctx.fillText(text, x, baseline);
+  ctx.restore();
+}
+
+// The design's placeholder barcode image is replaced by a real Code-128 of the
+// PR number, generated at printer resolution. It is drawn 1:1 at the widest
+// whole-module scale that fits the design's barcode box, so bars land on dot
+// boundaries and scan; the box in the design is 310 artboard units wide, which
+// is why this steps down through the scales rather than stretching to fill.
+const GT_BARCODE_BOX = { x: 34, y: 151, w: 310, h: 181 };
+
+function drawLabelBarcode(ctx, code, t) {
+  if (!code) return;
+  const boxW = GT_BARCODE_BOX.w * t.scale;
+  const boxH = GT_BARCODE_BOX.h * t.scale;
+  // bwip-js takes bar height in mm at 72dpi, then multiplies by the scale —
+  // solve it back so the bars come out the height of the design's box.
+  let bc = null;
+  for (const s of [4, 3, 2]) {
+    const mm = boxH / (2.8346 * s);
+    const candidate = shipmentBarcodeCanvas(code, s, mm);
+    if (candidate.width <= boxW || s === 2) { bc = candidate; break; }
+  }
+  const w = Math.min(bc.width, boxW);
+  const x = t.dx + (GT_BARCODE_BOX.x * t.scale) + (boxW - w) / 2;
+  // Carries the same nudge as the PR number below it, so bars and number stay
+  // locked together as one block.
+  const y = t.dy + ((GT_BARCODE_BOX.y + ART_GROUPS.code.dy) * t.scale) + (boxH - bc.height) / 2;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(bc, Math.round(x), Math.round(y), w, bc.height);
+  ctx.imageSmoothingEnabled = true;
+}
+
+async function renderGtradeaLabel(item, shipmentMode = null) {
+  await loadLabelFonts();
+
+  const canvas = document.createElement("canvas");
+  canvas.width = CANVAS_W;
+  canvas.height = CANVAS_H;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  const t = artTransform();
+  drawLabelArt(ctx, t);
+  drawLabelBarcode(ctx, goodsCode(item), t);
+
+  // The shipment panel always reads one way or the other — it's part of the
+  // fixed artwork, so it can never be left blank. Fall back to the mode already
+  // recorded on the item when the print dialog didn't pick one.
+  const mode = normalizeShipmentMode(shipmentMode) || normalizeShipmentMode(item.shipmentFrom) || "air";
+
+  drawField(ctx, GT_FIELDS.shelf, item.rackId || "-", t);
+  drawField(ctx, GT_FIELDS.pr, goodsCode(item), t);
+  drawField(ctx, GT_FIELDS.order, item.orderNumber || "-", t);
+  drawField(ctx, GT_FIELDS.tracking, item.trackingNumber || "-", t);
+  drawField(ctx, GT_FIELDS.stamp, formatLabelStamp(item.createdAt), t);
+  drawField(ctx, GT_FIELDS.mode, mode === "land" ? "VIA LAND" : "VIA AIR", t);
+
+  return { png: canvas.toDataURL("image/png"), mono: packMono(ctx, CANVAS_W, CANVAS_H) };
+}
+
+// ---------------------------------------------------------------- shipment label
+// Render the full 60 x 80 mm shipment label. `shipmentMode` is the optional
+// "air" | "land" pick from the print dialog — when set, a full-bleed
+// "SHIPMENT: BY AIR/LAND" banner is drawn under the logo and the barcode band
+// shrinks to make room for it. Returns { png, mono } where `mono` is the
+// packed 1-bit bitmap payload for the print bridge / queue.
+async function renderCellzenLabel(item, shipmentMode = null) {
+  const mode = normalizeShipmentMode(shipmentMode);
+  await loadLabelFonts();
 
   const canvas = document.createElement("canvas");
   canvas.width = CANVAS_W;
@@ -371,14 +587,18 @@ async function renderShipmentLabel(item, shipmentMode = null) {
   // width (1:1) so bars land on dot boundaries and scan cleanly. Scale 4 fills
   // the full 60 mm for a typical code; longer codes step down to keep fitting.
   // With a shipment-mode banner showing, the bars render shorter and start
-  // lower so the whole band still clears Shelf/Tracking below it.
+  // lower so the whole band still clears the info lines below it.
   const barcodeTop = mode ? BARCODE_TOP_WITH_MODE : BARCODE_TOP;
-  const barHeight = mode ? BARCODE_HEIGHT_WITH_MODE : 12;
+  const barHeight = mode ? BARCODE_HEIGHT_WITH_MODE : BARCODE_HEIGHT;
   const codeGap = mode ? CODE_GAP_WITH_MODE : CODE_GAP;
   const codeSize = mode ? CODE_SIZE_WITH_MODE : CODE_SIZE;
-  let bc = shipmentBarcodeCanvas(item.code, 4, barHeight);
-  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(item.code, 3, barHeight);
-  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(item.code, 2, barHeight);
+  // What the barcode encodes and the number under it reads: the gtradea PR id
+  // (PR-1029) when the item has one, else the internal CZN goods number. Scanning
+  // this label anywhere in the app resolves back to the item either way.
+  const code = goodsCode(item);
+  let bc = shipmentBarcodeCanvas(code, 4, barHeight);
+  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(code, 3, barHeight);
+  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(code, 2, barHeight);
   let bw = bc.width;
   let bh = bc.height;
   if (bw > BARCODE_MAX_W) { bh = Math.round(bh * (BARCODE_MAX_W / bw)); bw = BARCODE_MAX_W; } // rare clamp
@@ -386,18 +606,25 @@ async function renderShipmentLabel(item, shipmentMode = null) {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(bc, bcx, barcodeTop, bw, bh);
   ctx.imageSmoothingEnabled = true;
-  // The CZN number under the bars — our own render: smaller + letter-spaced.
-  drawTextAt(ctx, item.code, barcodeTop + bh + codeGap, codeSize, "500", CODE_SPACING, "top");
+  // The goods number under the bars — our own render: smaller + letter-spaced.
+  drawTextAt(ctx, code, barcodeTop + bh + codeGap, codeSize, "500", CODE_SPACING, "top");
 
-  // Shelf + tracking — SAME font size on both lines. Tracking is the longer of
-  // the two, so it governs the shared size (both fit, and they match visually).
-  const shelfText = `Shelf Number: ${item.rackId || "-"}`;
-  const trackText = `Tracking: ${item.trackingNumber || "-"}`;
-  const sShelf = fitFont(ctx, shelfText, CONTENT_W, 36, "600", LETTER_SPACING);
-  const sTrack = fitFont(ctx, trackText, CONTENT_W, 36, "600", LETTER_SPACING);
-  const sCommon = Math.min(sShelf, sTrack);
-  drawTextAt(ctx, shelfText, SHELF_Y, sCommon, "600", LETTER_SPACING);
-  drawTextAt(ctx, trackText, TRACKING_Y, sCommon, "600", LETTER_SPACING);
+  // Info block — Shelf / Order / Tracking, all at ONE shared font size so they
+  // read as a set. The longest line governs that size (every line then fits).
+  // The order line is skipped entirely for an item with no 1688 order (cellzen),
+  // rather than printing an empty "Order Number: -".
+  const infoLines = [
+    `Shelf Number: ${item.rackId || "-"}`,
+    ...(item.orderNumber ? [`Order Number: ${item.orderNumber}`] : []),
+    `Tracking Number: ${item.trackingNumber || "-"}`,
+  ];
+  const infoSize = infoLines.reduce(
+    (smallest, line) => Math.min(smallest, fitFont(ctx, line, CONTENT_W, INFO_FONT_MAX, "600", LETTER_SPACING)),
+    INFO_FONT_MAX
+  );
+  infoLines.forEach((line, i) => {
+    drawTextAt(ctx, line, INFO_TOP_Y + i * INFO_LINE_GAP, infoSize, "600", LETTER_SPACING);
+  });
 
   // Handling icons (centred) — vector paths, so the canvas is never tainted.
   drawSvgCentered(ctx, LABEL_ICONS_SVG, ICONS_TOP, ICONS_W);
@@ -415,6 +642,16 @@ async function renderShipmentLabel(item, shipmentMode = null) {
   const png = canvas.toDataURL("image/png");
   const mono = packMono(ctx, CANVAS_W, CANVAS_H);
   return { png, mono };
+}
+
+// Which label a box gets: 1688 goods carry the GtradeA design (gtradea mark,
+// PR number, www.gtradea.com); everything in the Cellzen section keeps the
+// CELLZEN label it has always had. Same signature for both, so every caller —
+// download, local bridge, cloud queue, browser fallback — is unchanged.
+function renderShipmentLabel(item, shipmentMode = null) {
+  return item?.source === "gtradea"
+    ? renderGtradeaLabel(item, shipmentMode)
+    : renderCellzenLabel(item, shipmentMode);
 }
 
 // ---------------------------------------------------------------- rack label
@@ -552,7 +789,7 @@ async function printViaBridge(code, kind, copies = 1, bitmap = null) {
 // ---------------------------------------------------------------- public API
 export async function downloadItemLabel(item, shipmentMode = null) {
   const { png } = await renderShipmentLabel(item, shipmentMode);
-  triggerDownload(png, `${item.code}_label.png`);
+  triggerDownload(png, `${goodsCode(item)}_label.png`);
 }
 
 export async function downloadRackLabel(rackId) {
@@ -579,14 +816,17 @@ export async function printItemLabel(item, copies = 1, shipmentMode = null) {
   }
   const bitmap = rendered ? rendered.mono : null;
   const full = Boolean(rendered);
+  // The code travels with the job so the queue, the bridge's log, and the
+  // barcode-only fallback all name the label by the same id the label prints.
+  const code = goodsCode(item);
 
-  if (await printViaBridge(item.code, "item", n, bitmap)) return { how: "local", full };
+  if (await printViaBridge(code, "item", n, bitmap)) return { how: "local", full };
   try {
-    await enqueuePrintJob(item.code, "item", n, bitmap);
+    await enqueuePrintJob(code, "item", n, bitmap);
     return { how: "queued", full };
   } catch {
-    if (rendered) printImageOnLabel(rendered.png, item.code, "cover", n);
-    else printImageOnLabel(barcodeDataUrl(item.code), item.code, undefined, n);
+    if (rendered) printImageOnLabel(rendered.png, code, "cover", n);
+    else printImageOnLabel(barcodeDataUrl(code), code, undefined, n);
     return { how: "browser", full };
   }
 }

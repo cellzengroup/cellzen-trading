@@ -28,8 +28,19 @@ export function unwrapItem(row) {
     source: row.source || "cellzen",
     orderNumber: row.order_number || "",
     productName: row.product_name || "",
+    prCode: row.pr_code || "", // gtradea PR id (PR-1029) — see goodsCode() below
   };
 }
+
+// The id staff actually see for an item: the gtradea PR id when there is one,
+// otherwise the internal CZN goods number. This is what the label prints, what
+// its barcode encodes, and what the GtradeA panel / detail cards show — so a box
+// on the shelf carries the same id as the PR row on gtradea.
+//
+// A FUNCTION rather than a field on unwrapItem: items also come back from the
+// localStorage instant-paint cache, and a cache written by an older build has no
+// prCode at all — falling back through `code` here keeps those rows rendering.
+export const goodsCode = (item) => item?.prCode || item?.code || "";
 
 export function unwrapRack(row) {
   if (!row) return null;

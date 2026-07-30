@@ -78,6 +78,17 @@ const WarehouseItem = sequelize
         type: DataTypes.STRING,
         allowNull: true, // 1688 ORD-… linked at put-away (gtradea items only)
       },
+      // The gtradea PROCUREMENT REQUEST id (supplier_orders.job_code, e.g.
+      // PR-1029) for the matched 1688 order. This — not the internal `code`
+      // above — is what the printed label, its barcode, and the GtradeA panel
+      // show, so a box on the shelf carries the same id staff see on gtradea.
+      // Denormalized at put-away (and resolved on read for pre-existing rows)
+      // so printing never has to wait on a second lookup. Null for cellzen
+      // items and for a 1688 order gtradea hasn't given a job code.
+      pr_code: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
       product_name: {
         type: DataTypes.TEXT,
         allowNull: true, // denormalized product name from the matched 1688 order

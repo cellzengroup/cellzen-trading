@@ -16,14 +16,30 @@ import {
   loadSupplierOrders,
   syncSupplierOrders,
   exportSupplierOrdersXlsx,
+  goodsCode,
 } from "../../../utils/warehouseApi";
 import { downloadItemLabel, downloadRackLabel, printItemLabel } from "../../../utils/warehouseLabels";
 
-// A scanned code is a SHELF label when it matches a location-code shape like
-// CZN01-01-0001 (letters+digits - digits - digits). Everything else is a
-// tracking number. (Spec regex.)
-const RACK_CODE_PATTERN = /^[A-Za-z]{1,6}\d{1,4}-\d{1,4}-\d{1,6}$/;
+// A scanned code is a SHELF label when it matches a location-code shape:
+// letters - digits - digits, where the letters may carry a leading number of
+// their own. That's GT-01-0001 in the GtradeA section and CZN01-01-0001 in the
+// older Cellzen one — one pattern covers both, so shelves already on the wall
+// keep scanning. Everything else is a tracking number.
+// Must stay in step with SHELF_PATTERN in backend/inventory/routes/warehouse.js.
+const RACK_CODE_PATTERN = /^[A-Za-z]{1,6}\d{0,4}-\d{1,4}-\d{1,6}$/;
 const isShelf = (text) => RACK_CODE_PATTERN.test(String(text || "").trim());
+
+// Does an item match the free-text search `f` (already lowercased)? One predicate
+// for the Dashboard / Ship / Dispatched lists so they can never disagree on what
+// a search matches. The gtradea PR id and 1688 order # are in here alongside the
+// internal CZN code — those are what the GtradeA panel shows and what's printed
+// on the box, so they're what staff type.
+const itemMatches = (i, f) =>
+  (i.prCode || "").toLowerCase().includes(f) ||
+  (i.code || "").toLowerCase().includes(f) ||
+  (i.orderNumber || "").toLowerCase().includes(f) ||
+  (i.trackingNumber || "").toLowerCase().includes(f) ||
+  (i.rackId || "").toLowerCase().includes(f);
 
 const CELLZEN_TABS = ["Store", "Ship", "Racks", "Dashboard", "Dispatched"];
 const GTRADEA_TABS = ["Store", "Ship", "Racks", "Dispatched", "1688 Orders"];
@@ -182,33 +198,32 @@ const SUPPLIER_SORTS = [
   { value: "date", label: "Date" },
   { value: "received", label: "Received" },
   { value: "dispatched", label: "Dispatched" },
-  { value: "not_updated", label: "Not Updated" },
-  { value: "not_received", label: "Not Received" },
+  { value: "not_updated", label: "Not Yet" },
+  { value: "not_received", label: "Pending" },
 ];
 
-// Day only, no clock, and deliberately rendered in UTC.
-// A 1688 order's date is a calendar day, not an instant in the viewer's zone.
-// gtradea stamps both the order number (ORD-YYYYMMDD-xxxxxx) and the job
-// timestamp in UTC, so formatting in local time shifts the day for any order
-// placed late in the UTC day — printing "Jul 15" directly beside
-// "ORD-20260714-553812", which reads as a bug. UTC keeps the two columns in
-// agreement for every viewer, in every timezone.
-const fmtDay = (ts) => {
+// Every date in the 1688 panel: short and numeric, e.g. 7/30/2026. Field order
+// follows the viewer's own locale, so it reads the way their machine writes dates.
+//
+// `utc` is the one thing the two callers below disagree on, and it matters. A 1688
+// ORDER date is a calendar day, not an instant: gtradea stamps both the order
+// number (ORD-YYYYMMDD-xxxxxx) and the job timestamp in UTC, so rendering it
+// locally shifts the day for any order placed late in the UTC day — printing
+// "7/15/2026" right beside "ORD-20260714-553812", which reads as a bug. Our own
+// shipped_at IS a real instant, so that one reads in the viewer's zone.
+const fmtNumericDay = (ts, utc) => {
   if (!ts) return "—";
   const d = new Date(ts);
   if (isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    ...(utc ? { timeZone: "UTC" } : {}),
+  });
 };
-
-// Full month name, e.g. "July 24, 2026" — used under the "Dispatched" pill.
-// shipped_at is OUR server's timestamp (not a gtradea date), so this reads in
-// the viewer's local time like the rest of the Ship/Dispatched panel does.
-const fmtLongDay = (ts) => {
-  if (!ts) return "—";
-  const d = new Date(ts);
-  if (isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
-};
+const fmtDay = (ts) => fmtNumericDay(ts, true);       // 1688 order date
+const fmtShipDay = (ts) => fmtNumericDay(ts, false);  // our own shipped_at
 
 /* ---------------------------------- icons --------------------------------- */
 const svgBase = {
@@ -326,6 +341,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const isGtradea = mode === "gtradea";
   const homePath = isGtradea ? "/warehouse-gtradea" : "/warehouse";
   const TABS = isGtradea ? GTRADEA_TABS : CELLZEN_TABS;
+  // The shelf code shown in every hint/placeholder in this section. Both shapes
+  // validate (see RACK_CODE_PATTERN) — this just tells staff which one to write
+  // on a NEW label here.
+  const shelfExample = isGtradea ? "GT-01-0001" : "CZN01-01-0001";
   const navigate = useNavigate();
 
   const [racks, setRacks] = useState([]);
@@ -445,15 +464,26 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     return m;
   }, [items]);
 
+  // Resolve a scanned/typed code to an item. The PR id counts as a match because
+  // that's what the printed label's barcode now encodes — scanning a box has to
+  // find it. The internal CZN code still matches too, so labels printed before
+  // the switch keep working.
+  //
+  // A PR id (like the CZN code before it) is shared by every box of one 1688
+  // order, so a scan can hit several rows. An IN-STOCK one wins: otherwise
+  // scanning a box that's still on the shelf could surface a sibling that already
+  // shipped and answer "already shipped".
   const findItem = useCallback(
     (codeOrTracking) => {
       const c = String(codeOrTracking || "").trim().toLowerCase();
       if (!c) return null;
-      return (
-        items.find(
-          (i) => i.code.toLowerCase() === c || (i.trackingNumber || "").toLowerCase() === c
-        ) || null
+      const matches = items.filter(
+        (i) =>
+          (i.prCode || "").toLowerCase() === c ||
+          (i.code || "").toLowerCase() === c ||
+          (i.trackingNumber || "").toLowerCase() === c
       );
+      return matches.find((i) => i.status === "in_stock") || matches[0] || null;
     },
     [items]
   );
@@ -506,19 +536,19 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         return;
       }
       if (!activeShelfRef.current) {
-        showToast("Scan a shelf label first, e.g. CZN01-01-0001", "error");
+        showToast(`Scan a shelf label first, e.g. ${shelfExample}`, "error");
         return;
       }
       await storeTracking(activeShelfRef.current, t);
     },
-    [showToast, storeTracking, upsertRack]
+    [showToast, storeTracking, upsertRack, shelfExample]
   );
 
   const handleManualSave = async () => {
     const rackId = (manualRackText.trim() || manualRackSelect).trim().toUpperCase();
     const tracking = manualTracking.trim();
     if (!rackId) return showToast("Enter or choose a shelf first.", "error");
-    if (!isShelf(rackId)) return showToast("Shelf must look like CZN01-01-0001 (letters-digits-digits).", "error");
+    if (!isShelf(rackId)) return showToast(`Shelf must look like ${shelfExample} (letters-digits-digits).`, "error");
     if (!tracking) return showToast("Enter a tracking number.", "error");
     await storeTracking(rackId, tracking);
     setManualTracking("");
@@ -551,7 +581,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
           type="text"
           value={manualRackText}
           onChange={(e) => setManualRackText(e.target.value)}
-          placeholder="e.g. CZN01-01-0001"
+          placeholder={`e.g. ${shelfExample}`}
           className={`${FIELD} mt-1.5`}
         />
       </div>
@@ -641,7 +671,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       setShipSelectedId(null); // they leave Ship and appear in Dispatched
     }
     if (shipped.length && !failed) {
-      showToast(shipped.length === 1 ? `${shipped[0].code} marked shipped` : `${shipped.length} items marked shipped`, "ok");
+      showToast(shipped.length === 1 ? `${goodsCode(shipped[0])} marked shipped` : `${shipped.length} items marked shipped`, "ok");
     } else if (shipped.length && failed) {
       showToast(`${shipped.length} shipped · ${failed} failed`, "warn");
     } else {
@@ -707,7 +737,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       if (item.status === "shipped") {
         setShipSelectedId(item.id);
         setTab("Dispatched");
-        showToast(`${item.code} is already shipped`, "warn");
+        showToast(`${goodsCode(item)} is already shipped`, "warn");
         return;
       }
       setShipSelectedId(item.id);
@@ -788,8 +818,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         <div className="-mx-5 -mt-5 mb-4 h-3 opacity-55" style={BARCODE_STRIP} />
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 sm:flex-1">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#2D2D2D]/45">Item</div>
-            <div className="mt-0.5 break-all text-2xl font-black tracking-tight">{item.code}</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#2D2D2D]/45">
+              {item.prCode ? "PR ID" : "Item"}
+            </div>
+            <div className="mt-0.5 break-all text-2xl font-black tracking-tight">{goodsCode(item)}</div>
             <dl className="mt-3 space-y-1.5 text-xs">
               <div className="flex gap-2">
                 <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Shelf</dt>
@@ -834,7 +866,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
           </div>
           {/* Barcode: full-width card below the details on phones, fixed beside them on ≥sm */}
           <div className="mx-auto w-full max-w-[240px] shrink-0 rounded-lg bg-white p-3 shadow-sm sm:mx-0 sm:w-80 sm:max-w-none">
-            <Barcode text={item.code} className="w-full" />
+            <Barcode text={goodsCode(item)} className="w-full" />
           </div>
         </div>
       </div>
@@ -861,7 +893,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       const t = String(text || "").trim().toUpperCase();
       if (!t) return;
       if (!isShelf(t)) {
-        showToast(`Not a shelf label: ${t} — shelves look like CZN01-01-0001.`, "error");
+        showToast(`Not a shelf label: ${t} — shelves look like ${shelfExample}.`, "error");
         return;
       }
       if (racks.some((r) => r.id === t)) {
@@ -876,7 +908,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         showToast(e.message || "Failed to add shelf", "error");
       }
     },
-    [racks, showToast, upsertRack]
+    [racks, showToast, upsertRack, shelfExample]
   );
 
   // One camera → routes each decode to whatever tab is open. Store keeps
@@ -966,7 +998,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const handleAddRack = async () => {
     const id = newRackName.trim().toUpperCase();
     if (!id) return;
-    if (!isShelf(id)) return showToast("Shelf must look like CZN01-01-0001 (letters-digits-digits).", "error");
+    if (!isShelf(id)) return showToast(`Shelf must look like ${shelfExample} (letters-digits-digits).`, "error");
     if (racks.some((r) => r.id === id)) return showToast("That shelf already exists.", "warn");
     try {
       const created = await createRack(id);
@@ -998,7 +1030,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       await deleteItem(item.id);
       setItems((prev) => prev.filter((i) => i.id !== item.id));
       if (shipSelectedId === item.id) setShipSelectedId(null);
-      showToast(`${item.code} deleted`, "ok");
+      showToast(`${goodsCode(item)} deleted`, "ok");
     } catch (e) {
       showToast(e.message || "Unable to delete item", "error");
     }
@@ -1043,6 +1075,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // "Item stored" sheet actions. Any interaction stops the sheet's auto-dismiss
   // so it doesn't disappear mid-tap.
   const keepSavedSheet = () => { if (savedTimer.current) clearTimeout(savedTimer.current); };
+  // Straight to the printer, one copy, no dialog — this is the scan → print path
+  // staff run all day at the shelf, and the item already carries everything the
+  // label needs (PR id, order #, tracking) from the put-away response.
+  const printSavedItemNow = () => {
+    keepSavedSheet();
+    if (savedItem) doPrintLabel(savedItem, 1, savedItem.shipmentFrom === "By Land" ? "By Land" : "By Air");
+  };
+  // The "more than one package" case still goes through the copies + mode dialog.
   const printSavedItem = () => { keepSavedSheet(); if (savedItem) handlePrintLabel(savedItem); };
   const undoSavedItem = async () => {
     const item = savedItem;
@@ -1053,7 +1093,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       await deleteItem(item.id);
       setItems((prev) => prev.filter((i) => i.id !== item.id));
       setFeed((prev) => prev.filter((i) => i.id !== item.id));
-      showToast(`${item.code} removed`, "ok");
+      showToast(`${goodsCode(item)} removed`, "ok");
     } catch (e) {
       showToast(e.message || "Unable to remove item", "error");
     }
@@ -1073,12 +1113,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     const f = dashSearch.trim().toLowerCase();
     const rows = items.slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     if (!f) return rows;
-    return rows.filter(
-      (i) =>
-        i.code.toLowerCase().includes(f) ||
-        (i.trackingNumber || "").toLowerCase().includes(f) ||
-        (i.rackId || "").toLowerCase().includes(f)
-    );
+    return rows.filter((i) => itemMatches(i, f));
   }, [items, dashSearch]);
 
   const filteredShip = useMemo(() => {
@@ -1087,12 +1122,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       .filter((i) => i.status === "in_stock")
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     if (!f) return rows;
-    return rows.filter(
-      (i) =>
-        i.code.toLowerCase().includes(f) ||
-        (i.trackingNumber || "").toLowerCase().includes(f) ||
-        (i.rackId || "").toLowerCase().includes(f)
-    );
+    return rows.filter((i) => itemMatches(i, f));
   }, [items, shipSearch]);
 
   const [dispatchSearch, setDispatchSearch] = useState("");
@@ -1102,12 +1132,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       .filter((i) => i.status === "shipped")
       .sort((a, b) => new Date(b.shippedAt || b.createdAt) - new Date(a.shippedAt || a.createdAt));
     if (!f) return rows;
-    return rows.filter(
-      (i) =>
-        i.code.toLowerCase().includes(f) ||
-        (i.trackingNumber || "").toLowerCase().includes(f) ||
-        (i.rackId || "").toLowerCase().includes(f)
-    );
+    return rows.filter((i) => itemMatches(i, f));
   }, [items, dispatchSearch]);
 
   // Selected counts resolved against the VISIBLE (filtered) list, so the counter,
@@ -1588,7 +1613,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   value={shipSearch}
                   onChange={(v) => { setShipSearch(v); setShipSelectedId(null); }}
                   onEnter={doLookup}
-                  placeholder="Search code, tracking, or shelf"
+                  placeholder={isGtradea ? "Search PR, order, tracking, or shelf" : "Search code, tracking, or shelf"}
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
@@ -1660,7 +1685,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   value={newRackName}
                   onChange={(e) => setNewRackName(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && handleAddRack()}
-                  placeholder="Shelf ID, e.g. CZN01-01-0001"
+                  placeholder={`Shelf ID, e.g. ${shelfExample}`}
                   className={`${FIELD} pl-10`}
                 />
               </div>
@@ -1721,7 +1746,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 <SearchInput
                   value={dispatchSearch}
                   onChange={(v) => { setDispatchSearch(v); setShipSelectedId(null); }}
-                  placeholder="Search dispatched by code, tracking, or shelf…"
+                  placeholder={isGtradea ? "Search dispatched by PR, order, tracking, or shelf…" : "Search dispatched by code, tracking, or shelf…"}
                 />
               </div>
               <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
@@ -1832,7 +1857,8 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             <p className="mb-4 text-xs text-[#2D2D2D]/45">
               Pulled automatically from gtradea — &quot;Sync now&quot; fetches live. <span className="font-semibold text-[#412460]">📦 Received</span> means that
               CN tracking is in stock in your warehouse; <span className="font-semibold text-red-600">🚚 Dispatched</span> means it&apos;s since shipped out
-              (shown with the date); <span className="font-semibold text-[#B99353]">⏳ Not Updated</span> means gtradea has no CN tracking for that item yet.
+              (shown with the date); <span className="font-semibold text-[#B99353]">⏳ Pending</span> means it has CN tracking but hasn&apos;t been scanned in yet;
+              <span className="font-semibold"> Not Yet</span> means gtradea has no CN tracking for that item at all.
             </p>
             <div className="mb-4 flex flex-wrap items-center gap-3">
               <SearchInput
@@ -1884,7 +1910,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-red-50 text-red-500">
               <IconTrash className="h-5 w-5" />
             </span>
-            <h3 className="text-base font-bold">Delete {itemDeleteTarget.code}?</h3>
+            <h3 className="text-base font-bold">Delete {goodsCode(itemDeleteTarget)}?</h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
               Removes this dispatched record ({itemDeleteTarget.trackingNumber}). This can&apos;t be undone.
             </p>
@@ -1919,7 +1945,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               <ul className="space-y-1.5">
                 {batchDeleteItems.map((it) => (
                   <li key={it.id} className="flex justify-between gap-3">
-                    <span className="shrink-0 font-semibold text-[#412460]">{it.code}</span>
+                    <span className="shrink-0 font-semibold text-[#412460]">{goodsCode(it)}</span>
                     <span className="min-w-0 truncate text-right text-[#2D2D2D]/60">{it.trackingNumber || "—"}</span>
                   </li>
                 ))}
@@ -1983,7 +2009,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               {shipConfirmItems.length > 1 ? (
                 "These move out of stock and into Dispatched."
               ) : (
-                <>This moves <span className="font-semibold text-[#412460]">{shipConfirmItems[0].code}</span> out of stock and into Dispatched.</>
+                <>This moves <span className="font-semibold text-[#412460]">{goodsCode(shipConfirmItems[0])}</span> out of stock and into Dispatched.</>
               )}
             </p>
             {shipConfirmItems.length > 1 ? (
@@ -1991,7 +2017,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 <ul className="space-y-1.5">
                   {shipConfirmItems.map((it) => (
                     <li key={it.id} className="flex items-center justify-between gap-3">
-                      <span className="shrink-0 font-semibold text-[#412460]">{it.code}</span>
+                      <span className="shrink-0 font-semibold text-[#412460]">{goodsCode(it)}</span>
                       <span className="min-w-0 flex-1 truncate text-[#2D2D2D]/60">{it.trackingNumber || "—"}</span>
                       <ShipmentBadge mode={it.shipmentFrom} />
                     </li>
@@ -2061,7 +2087,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             </span>
             <h3 className="text-base font-bold">How many labels?</h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              Printing <span className="font-semibold text-[#412460]">{printQtyTarget.code}</span> — one label per package.
+              Printing <span className="font-semibold text-[#412460]">{goodsCode(printQtyTarget)}</span> — one label per package.
             </p>
             <div className="mt-4 flex items-center gap-2">
               <button
@@ -2227,12 +2253,23 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               <IconCheck className="h-7 w-7" />
             </span>
             <h3 className="text-center text-lg font-bold">Item stored</h3>
-            <p className="mt-1 text-center text-xs font-semibold text-[#412460]">{savedItem.code}</p>
+            {/* The id that's about to be printed, biggest thing on the sheet —
+                staff confirm it against the gtradea PR row at a glance. */}
+            <p className="mt-2 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/40">
+              {savedItem.prCode ? "PR ID" : "Goods number"}
+            </p>
+            <p className="break-all text-center text-xl font-black tracking-tight text-[#412460]">{goodsCode(savedItem)}</p>
             <dl className="mt-5 divide-y divide-[#F1EFEA] text-sm">
               <div className="flex items-center justify-between gap-4 py-3">
                 <dt className="text-[#2D2D2D]/50">Shelf</dt>
                 <dd className="font-semibold">{savedItem.rackId || "—"}</dd>
               </div>
+              {savedItem.orderNumber && (
+                <div className="flex items-center justify-between gap-4 py-3">
+                  <dt className="shrink-0 text-[#2D2D2D]/50">Order number</dt>
+                  <dd className="break-all text-right font-semibold">{savedItem.orderNumber}</dd>
+                </div>
+              )}
               <div className="flex items-center justify-between gap-4 py-3">
                 <dt className="shrink-0 text-[#2D2D2D]/50">Tracking number</dt>
                 <dd className="break-all text-right font-semibold">{savedItem.trackingNumber}</dd>
@@ -2249,10 +2286,17 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             <div className="mt-6 space-y-2.5">
               <button
                 type="button"
-                onClick={printSavedItem}
+                onClick={printSavedItemNow}
                 className="flex w-full items-center justify-center gap-2 rounded-full bg-[#412460] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-[#B99353] active:scale-[.98]"
               >
                 <IconPrinter className="h-4 w-4" /> Print label
+              </button>
+              <button
+                type="button"
+                onClick={printSavedItem}
+                className="w-full text-center text-xs font-semibold text-[#2D2D2D]/45 underline decoration-[#2D2D2D]/20 underline-offset-2 transition hover:text-[#412460]"
+              >
+                More than one package? Choose copies
               </button>
               <div className="grid grid-cols-2 gap-2.5">
                 <button
@@ -2548,13 +2592,17 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
   );
 }
 
-// GtradeA shipment table — CZN code, shelf, the linked 1688 order #, CN tracking,
-// product, status + Print/Download/Ship. Mirrors ItemsTable with the 1688 columns.
+// GtradeA shipment table — the gtradea PR id, shelf, the linked 1688 order #, CN
+// tracking, product, status + Print/Download/Ship. Mirrors ItemsTable with the
+// 1688 columns.
 function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
   // Boxes that share one goods number (all boxes of the same 1688 order — see
   // generateItemCode() in backend/inventory/routes/warehouse.js) are grouped
   // under a single summary row with a "packages" count + expand toggle, rather
-  // than repeating the same CZN code on every row.
+  // than repeating the same PR id on every row. Grouping still keys off the
+  // internal `code`, not the displayed PR id: it's on every row (a box stored
+  // before gtradea published its job code has no PR id yet), so it keeps the
+  // boxes of one order together regardless.
   const [expanded, setExpanded] = useState(() => new Set());
   const toggleExpand = (code) =>
     setExpanded((prev) => {
@@ -2629,7 +2677,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                       {isGroup ? (
                         <SelectAllCheck rows={group} selected={selected} onToggleAll={(checked) => onToggleRows(group, checked)} />
                       ) : (
-                        <RowCheck checked={!!selected?.has(head.id)} onChange={() => onToggleSelect(head.id)} label={`Select ${head.code}`} />
+                        <RowCheck checked={!!selected?.has(head.id)} onChange={() => onToggleSelect(head.id)} label={`Select ${goodsCode(head)}`} />
                       )}
                     </span>
                   )}
@@ -2643,8 +2691,8 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                 </div>
                 <dl className="mt-3 space-y-1.5 text-xs">
                   <div className="flex justify-between gap-3">
-                    <dt className="text-[#2D2D2D]/45">CZN</dt>
-                    <dd className="font-semibold text-[#412460]">{head.code}</dd>
+                    <dt className="text-[#2D2D2D]/45">PR ID</dt>
+                    <dd className="font-semibold text-[#412460]">{goodsCode(head)}</dd>
                   </div>
                   {isGroup ? (
                     <div className="flex justify-between gap-3">
@@ -2713,7 +2761,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                       <div className="flex items-start justify-between gap-3">
                         {selectable && (
                           <span className="pt-0.5" onClick={(e) => e.stopPropagation()}>
-                            <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code} ${it.trackingNumber}`} />
+                            <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${goodsCode(it)} ${it.trackingNumber}`} />
                           </span>
                         )}
                         <div className="min-w-0 flex-1 text-xs">
@@ -2765,7 +2813,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                   <SelectAllCheck rows={rows} selected={selected} onToggleAll={onToggleAll} />
                 </th>
               )}
-              <th>CZN Tracking</th>
+              <th>PR ID</th>
               <th>Shelf</th>
               <th>Order #</th>
               <th>Packages</th>
@@ -2795,11 +2843,11 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                         {isGroup ? (
                           <SelectAllCheck rows={group} selected={selected} onToggleAll={(checked) => onToggleRows(group, checked)} />
                         ) : (
-                          <RowCheck checked={!!selected?.has(head.id)} onChange={() => onToggleSelect(head.id)} label={`Select ${head.code}`} />
+                          <RowCheck checked={!!selected?.has(head.id)} onChange={() => onToggleSelect(head.id)} label={`Select ${goodsCode(head)}`} />
                         )}
                       </td>
                     )}
-                    <td className="whitespace-nowrap font-bold text-[#412460]">{head.code}</td>
+                    <td className="whitespace-nowrap font-bold text-[#412460]">{goodsCode(head)}</td>
                     <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{shelfLabel}</span></td>
                     <td className="whitespace-nowrap font-semibold text-[#2D2D2D]/80">{head.orderNumber || "—"}</td>
                     <td>
@@ -2832,7 +2880,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                     <tr key={it.id} onClick={() => onView(it)} className="cursor-pointer bg-[#FAFAF8] transition-colors hover:bg-[#F4F2EE] [&>td]:px-3 [&>td]:py-2.5">
                       {selectable && (
                         <td className="w-8" onClick={(e) => e.stopPropagation()}>
-                          <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code} ${it.trackingNumber}`} />
+                          <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${goodsCode(it)} ${it.trackingNumber}`} />
                         </td>
                       )}
                       <td className="pl-6 text-xs text-[#2D2D2D]/30">↳</td>
@@ -2855,40 +2903,42 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
 }
 
 // Where this 1688 line item stands, in four distinct states:
-//   no CN tracking yet on gtradea    -> "Not Updated" (nothing to receive against)
-//   has tracking, not scanned in     -> "Not received"
-//   has tracking, scanned in         -> "Received · CZN…" (bold purple)
+//   no CN tracking yet on gtradea    -> "Not Yet" (nothing to receive against)
+//   has tracking, not scanned in     -> "Pending" (boxed — goods are on the way)
+//   has tracking, scanned in         -> "Received" (bold purple; the PR ID has
+//                                       its own column, so it isn't repeated here)
 //   has tracking, scanned in, shipped -> "Dispatched" + the day it shipped
-// "Not Updated" matters because an order with no tracking can never match a
-// warehouse item — showing it as "Not received" implies the goods are late when
-// really it's the gtradea record that's incomplete. Once the matched warehouse
-// item ships, the pill flips from Received to Dispatched (bold red, matching
-// the rest of the shipped-state colour language) so the 1688 panel doesn't
-// keep telling staff the goods are still sitting in stock.
+// "Not Yet" is deliberately the ONLY state with no box around it: an order with no
+// tracking can never match a warehouse item, so it isn't waiting on the warehouse
+// at all — it's the gtradea record that's incomplete. Boxing it would put it on
+// the same footing as "Pending", which IS a real thing to go looking for. Once the
+// matched warehouse item ships, the pill flips from Received to Dispatched (bold
+// red, matching the rest of the shipped-state colour language) so the 1688 panel
+// doesn't keep telling staff the goods are still sitting in stock.
 function WarehousePill({ order }) {
   const state = supplierState(order);
   if (state === "not_updated") {
+    return <span className="text-[11px] text-[#2D2D2D]/35">Not Yet</span>;
+  }
+  if (state === "not_received") {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full bg-[#B99353]/12 px-2.5 py-1 text-[11px] font-semibold text-[#B99353]">
         <span aria-hidden="true">⏳</span>
-        Not Updated
+        Pending
       </span>
     );
-  }
-  if (state === "not_received") {
-    return <span className="text-[11px] text-[#2D2D2D]/35">Not received</span>;
   }
   if (state === "dispatched") {
     return (
       <span className="text-[11px] font-bold text-red-600">
-        <span aria-hidden="true">🚚</span> Dispatched · {fmtLongDay(order.warehouseShippedAt)}
+        <span aria-hidden="true">🚚</span> Dispatched · {fmtShipDay(order.warehouseShippedAt)}
       </span>
     );
   }
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-[#412460]/10 px-2.5 py-1 text-[11px] font-bold text-[#412460]">
       <span aria-hidden="true">📦</span>
-      Received{order.warehouseCode ? ` · ${order.warehouseCode}` : ""}
+      Received
     </span>
   );
 }
@@ -2925,8 +2975,9 @@ function SupplierOrdersTable({ rows, loading }) {
           <li key={o.id} className="rounded-2xl bg-white p-4 ring-1 ring-[#ECE9E3]">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">
+                <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">
                   {fmtDay(o.orderedAt)}
+                  {o.jobCode && <span className="rounded bg-[#412460]/8 px-1.5 py-0.5 tracking-normal text-[#412460]">{o.jobCode}</span>}
                 </div>
                 <div className="mt-0.5 break-all text-sm font-bold text-[#412460]">{o.orderNumber || "—"}</div>
                 <p className="mt-1 break-words text-xs text-[#2D2D2D]/70">{o.productName || "—"}</p>
@@ -2960,10 +3011,11 @@ function SupplierOrdersTable({ rows, loading }) {
 
       {/* Desktop: table */}
       <div className="-mx-1 hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[860px] text-left text-sm">
+        <table className="w-full min-w-[940px] text-left text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
               <th>Date</th>
+              <th>PR ID</th>
               <th>Order #</th>
               <th>Product</th>
               <th className="text-center">Qty</th>
@@ -2975,6 +3027,7 @@ function SupplierOrdersTable({ rows, loading }) {
             {rows.map((o) => (
               <tr key={o.id} className="transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3">
                 <td className="whitespace-nowrap text-xs text-[#2D2D2D]/55">{fmtDay(o.orderedAt)}</td>
+                <td className="whitespace-nowrap font-bold text-[#412460]">{o.jobCode || "—"}</td>
                 <td className="whitespace-nowrap font-bold text-[#412460]">{o.orderNumber || "—"}</td>
                 <td className="max-w-[300px]">
                   <div className="flex items-center gap-2">

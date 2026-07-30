@@ -57,10 +57,12 @@ const dbGuard = (res) => {
 
 const normRack = (v) => String(v || '').trim().toUpperCase();
 
-// The ONLY valid shelf-code shape: LETTERS + DIGITS - DIGITS - DIGITS
-// (e.g. CZN01-01-0001 / CZ02-02-0001). Anything else is a tracking number, not
-// a shelf, and must never be created as a rack.
-const SHELF_PATTERN = /^[A-Za-z]{1,6}\d{1,4}-\d{1,4}-\d{1,6}$/;
+// The ONLY valid shelf-code shape: LETTERS - DIGITS - DIGITS, where the letters
+// may carry a leading number of their own. That covers the GtradeA labels
+// (GT-01-0001) and the older Cellzen ones (CZN01-01-0001 / CZ02-02-0001) with one
+// pattern — existing shelves keep scanning. Anything else is a tracking number,
+// not a shelf, and must never be created as a rack.
+const SHELF_PATTERN = /^[A-Za-z]{1,6}\d{0,4}-\d{1,4}-\d{1,6}$/;
 const isShelfCode = (v) => SHELF_PATTERN.test(String(v || '').trim());
 
 // Escape LIKE/ILIKE metacharacters so a tracking number containing % or _ is
@@ -71,11 +73,15 @@ const escapeLike = (v) => String(v).replace(/[\\%_]/g, (c) => `\\${c}`);
 // Postgres "invalid input syntax for type uuid" 500 on a malformed id.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Generate the goods number for a newly put-away item: CZN-00001, CZN-00002, …
-// Every box that belongs to the same 1688 order (order_number) shares ONE goods
-// number — if another box from this order is already on file, its code is
-// reused instead of minting a new one. Otherwise the next sequential number is
-// the max existing CZN number + 1, zero-padded to 5 digits.
+// Generate the INTERNAL goods number for a newly put-away item: CZN-00001,
+// CZN-00002, … Every box that belongs to the same 1688 order (order_number)
+// shares ONE goods number — if another box from this order is already on file,
+// its code is reused instead of minting a new one. Otherwise the next
+// sequential number is the max existing CZN number + 1, zero-padded to 5 digits.
+//
+// NOTE: for gtradea items this code is no longer what staff see — the label,
+// its barcode and the GtradeA panel show the gtradea PR id (pr_code). `code`
+// stays as the stable internal key that groups the boxes of one order together.
 async function generateItemCode(orderNumber) {
   if (orderNumber) {
     const existing = await WarehouseItem.findOne({
@@ -86,16 +92,20 @@ async function generateItemCode(orderNumber) {
     if (existing?.code) return existing.code;
   }
 
-  const rows = await WarehouseItem.findAll({
-    where: { code: { [Op.iLike]: 'CZN%' } },
-    attributes: ['code'],
-  });
-  let maxSeq = 0;
-  for (const r of rows) {
-    const n = parseInt(String(r.code || '').replace(/[^0-9]/g, ''), 10);
-    if (!isNaN(n) && n > maxSeq) maxSeq = n;
-  }
-  return `CZN-${String(maxSeq + 1).padStart(5, '0')}`;
+  // Max sequence in ONE aggregate query. This used to pull every CZN row back
+  // into Node just to scan for the largest number — put-away is on the scan →
+  // print hot path (staff wait on it at the shelf), so the whole row set is
+  // never shipped over the wire for a single max.
+  //
+  // `[0-9]{1,9}` (not "strip every non-digit") caps the match at 9 digits, so the
+  // ::int cast can't overflow on an oddly-shaped code — and a code with no digits
+  // at all yields NULL, which MAX() simply skips.
+  const [[row]] = await sequelize.query(
+    `SELECT MAX((substring(code from '[0-9]{1,9}'))::int) AS max_seq
+       FROM warehouse_items
+      WHERE code ILIKE 'CZN%'`
+  );
+  return `CZN-${String((row?.max_seq || 0) + 1).padStart(5, '0')}`;
 }
 
 // ============================================================ RACKS
@@ -120,7 +130,7 @@ router.post('/racks', authenticate, requireStaffOrAdmin, async (req, res) => {
     const id = normRack(req.body?.id ?? req.body?.code);
     if (!id) return res.status(400).json({ success: false, message: 'Shelf code is required' });
     if (!isShelfCode(id)) {
-      return res.status(400).json({ success: false, message: 'Shelf code must look like CZN01-01-0001 (letters-digits-digits).' });
+      return res.status(400).json({ success: false, message: 'Shelf code must look like GT-01-0001 (letters-digits-digits).' });
     }
     const existing = await Rack.findByPk(id);
     if (existing) {
@@ -172,11 +182,11 @@ router.get('/items/export.csv', authenticate, requireStaffOrAdmin, async (req, r
       const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
       return `"${safe.replace(/"/g, '""')}"`;
     };
-    const header = ['Code', 'Tracking', 'Rack', 'Status', 'Stored By', 'Stored At', 'Shipped By', 'Shipped At'];
+    const header = ['PR ID', 'Code', 'Order #', 'Tracking', 'Rack', 'Status', 'Stored By', 'Stored At', 'Shipped By', 'Shipped At'];
     const lines = [header.join(',')];
     for (const r of rows) {
       lines.push([
-        r.code, r.tracking_number, r.rack_id, r.status,
+        r.pr_code, r.code, r.order_number, r.tracking_number, r.rack_id, r.status,
         r.created_by_name, r.createdAt, r.shipped_by_name, r.shipped_at,
       ].map(esc).join(','));
     }
@@ -202,7 +212,9 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     if (search) {
       const s = `%${escapeLike(String(search).trim())}%`;
       where[Op.or] = [
+        { pr_code: { [Op.iLike]: s } },   // gtradea PR id — what's printed on the box
         { code: { [Op.iLike]: s } },
+        { order_number: { [Op.iLike]: s } },
         { tracking_number: { [Op.iLike]: s } },
         { rack_id: { [Op.iLike]: s } },
       ];
@@ -214,23 +226,26 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       // refresh. id is unique and never changes, so it pins down one order.
       const found = await WarehouseItem.findAll({ where, order: [['createdAt', 'DESC'], ['id', 'ASC']], limit: 5000 });
 
-      // For GtradeA items, resolve the linked 1688 order # + product from the live
-      // supplier_orders (matched by CN tracking) whenever it wasn't captured at
-      // put-away time — so the order # always shows once the item's tracking is a
-      // known 1688 order.
+      // For GtradeA items, resolve the linked 1688 PR id + order # + product from
+      // the live supplier_orders (matched by CN tracking) whenever it wasn't
+      // captured at put-away time — so the PR id and order # always show once the
+      // item's tracking is a known 1688 order. Covers rows stored before those
+      // columns existed as well as any that the migration backfill couldn't match
+      // (e.g. gtradea only published the job code after the box was scanned in).
       if (SupplierOrder) {
-        const need = found.filter((r) => r.source === 'gtradea' && r.tracking_number && (!r.order_number || !r.product_name));
+        const need = found.filter((r) => r.source === 'gtradea' && r.tracking_number && (!r.pr_code || !r.order_number || !r.product_name));
         if (need.length) {
           const trackings = [...new Set(need.map((r) => r.tracking_number))];
           const orders = await SupplierOrder.findAll({
             where: { china_tracking_no: { [Op.in]: trackings } },
-            attributes: ['china_tracking_no', 'order_number', 'product_name'],
+            attributes: ['china_tracking_no', 'job_code', 'order_number', 'product_name'],
           });
           const map = {};
           for (const o of orders) { if (!map[o.china_tracking_no]) map[o.china_tracking_no] = o; }
           for (const r of found) {
             const m = r.source === 'gtradea' ? map[r.tracking_number] : null;
             if (m) {
+              if (!r.pr_code) r.pr_code = m.job_code;
               if (!r.order_number) r.order_number = m.order_number;
               if (!r.product_name) r.product_name = m.product_name;
             }
@@ -259,7 +274,7 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     const rackId = normRack(req.body?.rackId ?? req.body?.rack_id);
     if (!rackId) return res.status(400).json({ success: false, message: 'Scan or choose a shelf first' });
     if (!isShelfCode(rackId)) {
-      return res.status(400).json({ success: false, message: 'Shelf code must look like CZN01-01-0001 (letters-digits-digits).' });
+      return res.status(400).json({ success: false, message: 'Shelf code must look like GT-01-0001 (letters-digits-digits).' });
     }
     if (!trackingNumber) return res.status(400).json({ success: false, message: 'Tracking number is required' });
 
@@ -270,6 +285,7 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     const source = String(req.body?.source || 'cellzen').trim().toLowerCase() === 'gtradea' ? 'gtradea' : 'cellzen';
     let orderNumber = null;
     let productName = null;
+    let prCode = null;
     if (source === 'gtradea') {
       if (!SupplierOrder) {
         return res.status(503).json({ success: false, message: '1688 orders are not configured' });
@@ -283,6 +299,9 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       }
       orderNumber = match.order_number || null;
       productName = match.product_name || null;
+      // The gtradea PR id (job_code, e.g. PR-1029) — captured here so the label
+      // that gets printed seconds later already has it, with no second lookup.
+      prCode = match.job_code || null;
     }
 
     // Auto-create the shelf on first sight (spec: a new shelf code is created).
@@ -316,6 +335,7 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
         source,
         order_number: orderNumber,
         product_name: productName,
+        pr_code: prCode,
         created_by_user_id: req.user.id,
         created_by_name: req.user.name || null,
       });
