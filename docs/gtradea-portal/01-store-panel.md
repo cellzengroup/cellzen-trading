@@ -113,9 +113,10 @@ Server-side, in order:
    somewhere (checked at the app level; a partial unique DB index on
    `(tracking_number) WHERE status='in_stock'` is the atomic backstop for a
    simultaneous double-scan from two devices).
-6. Mints the next sequential code (`CZN00001`, `CZN00002`, …) by scanning
-   existing codes for the highest number, and retries up to 6 times on a
-   collision (two staff storing an item in the same instant).
+6. Mints the goods number: if another box from the same 1688 order number is
+   already on file, its code is reused; otherwise the next sequential code
+   (`CZN-00001`, `CZN-00002`, …) is minted by scanning existing codes for the
+   highest number. Cellzen items (no order number) always get a new code.
 7. Inserts the row with `status: 'in_stock'`, stamped with the acting user's
    id/name.
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import WarehouseScanner from "./WarehouseScanner";
@@ -651,14 +651,18 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   };
 
   // Ask before shipping — the tick on each Ship row, the detail-card button, a
-  // Ship-tab scan, and the "Ship selected" batch button all open this confirm, so
-  // a box is never shipped by accident. The confirm also collects the required
-  // logistics carrier, applied to every item in the batch — Cellzen and GtradeA
-  // both require it.
-  const requestShip = useCallback((item) => {
+  // Ship-tab scan, a merged group's "Ship all" button, and the "Ship selected"
+  // batch button all open this confirm, so a box is never shipped by accident.
+  // The confirm also collects the required logistics carrier, applied to every
+  // item in the batch — Cellzen and GtradeA both require it. Accepts either one
+  // item or an array (a merged group's "Ship all") — shipConfirmIsBatch stays
+  // false either way since it only governs the checkbox "Batch Ship" flow below.
+  const requestShip = useCallback((itemOrItems) => {
+    const list = Array.isArray(itemOrItems) ? itemOrItems : [itemOrItems];
+    if (!list.length) return;
     setShipLogistics("");
     setShipConfirmIsBatch(false);
-    setShipConfirmItems([item]);
+    setShipConfirmItems(list);
   }, []);
   const requestBatchShip = () => {
     // Only ship what's both selected AND currently visible, so a selection left
@@ -754,6 +758,28 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   };
   const handleDownloadLabel = (item) =>
     downloadItemLabel(item).catch((e) => showToast(e.message || "Download failed", "error"));
+
+  // Print one label per package in a merged group (all boxes of one 1688
+  // order share a goods number) — each label keeps that box's OWN tracking
+  // number and shipment mode. Always exactly 1 copy per box: the "how many
+  // copies" prompt only makes sense for repeating a single label, not for a
+  // batch of already-distinct boxes.
+  const handlePrintGroup = async (group) => {
+    if (!group?.length) return;
+    let ok = 0;
+    let failed = 0;
+    for (const item of group) {
+      try {
+        await printItemLabel(item, 1, item.shipmentFrom === "By Land" ? "By Land" : "By Air");
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (ok && !failed) showToast(`Printed ${ok} label${ok > 1 ? "s" : ""} ✓`, "ok");
+    else if (ok && failed) showToast(`${ok} printed · ${failed} failed`, "warn");
+    else showToast("Print failed", "error");
+  };
 
   // Item detail card — shared by the Ship (in-stock) and Dispatched (shipped) tabs.
   const detailCard = (item) => (
@@ -1593,9 +1619,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 selected={shipSel}
                 onToggleSelect={toggleShipSel}
                 onToggleAll={(checked) => toggleAllShip(filteredShip, checked)}
+                onToggleRows={toggleAllShip}
                 onView={openDetail}
                 onShip={requestShip}
                 onPrint={handlePrintLabel}
+                onPrintGroup={handlePrintGroup}
                 onDownload={handleDownloadLabel}
                 emptyAll={items.every((i) => i.status !== "in_stock")}
                 emptyText="Nothing in stock to ship — scan 1688 goods in the Store tab."
@@ -1727,8 +1755,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 selected={dispatchSel}
                 onToggleSelect={toggleDispatchSel}
                 onToggleAll={(checked) => toggleAllDispatch(filteredDispatched, checked)}
+                onToggleRows={toggleAllDispatch}
                 onView={openDetail}
                 onPrint={handlePrintLabel}
+                onPrintGroup={handlePrintGroup}
                 onDownload={handleDownloadLabel}
                 onDelete={(it) => setItemDeleteTarget(it)}
                 emptyAll={items.every((i) => i.status !== "shipped")}
@@ -2520,7 +2550,33 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
 
 // GtradeA shipment table — CZN code, shelf, the linked 1688 order #, CN tracking,
 // product, status + Print/Download/Ship. Mirrors ItemsTable with the 1688 columns.
-function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onDownload, selectable = false, selected, onToggleSelect, onToggleAll }) {
+function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
+  // Boxes that share one goods number (all boxes of the same 1688 order — see
+  // generateItemCode() in backend/inventory/routes/warehouse.js) are grouped
+  // under a single summary row with a "packages" count + expand toggle, rather
+  // than repeating the same CZN code on every row.
+  const [expanded, setExpanded] = useState(() => new Set());
+  const toggleExpand = (code) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+
+  // Order preserved: rows arrive pre-sorted newest first, and Map keeps
+  // first-seen key order, so each group surfaces at its most recent member's
+  // position.
+  const groups = useMemo(() => {
+    const map = new Map();
+    for (const it of rows || []) {
+      const key = it.code || it.id;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(it);
+    }
+    return [...map.values()];
+  }, [rows]);
+
   if (!rows || rows.length === 0) {
     return (
       <EmptyState>
@@ -2528,73 +2584,180 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
       </EmptyState>
     );
   }
+
+  const actionButtons = (it) => (
+    <div className="flex items-center justify-center gap-1">
+      {onPrint && (<button type="button" title="Print label" onClick={(e) => { e.stopPropagation(); onPrint(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconPrinter className="h-4 w-4" /></button>)}
+      {onDownload && (<button type="button" title="Download label" onClick={(e) => { e.stopPropagation(); onDownload(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconDownload className="h-4 w-4" /></button>)}
+      {onShip && (<button type="button" title="Mark as shipped" onClick={(e) => { e.stopPropagation(); onShip(it); }} className="ml-1 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#412460] text-white transition-colors hover:bg-[#B99353]"><IconCheck className="h-4 w-4" /></button>)}
+      {onDelete && (<button type="button" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/40 transition-colors hover:bg-red-50 hover:text-red-600"><IconTrash className="h-4 w-4" /></button>)}
+      {!onShip && !onPrint && !onDownload && !onDelete && (<IconChevron className="h-4 w-4 text-[#2D2D2D]/25" />)}
+    </div>
+  );
+
+  // Actions for a merged group's SUMMARY row: Print sends one label per box
+  // (each keeps its own tracking number, all sharing the group's goods
+  // number) and Ship marks every box in the group shipped at once. Per-box
+  // actions (ship/print/download/delete just one) live in the expanded rows.
+  const groupActionButtons = (group) => (
+    <div className="flex items-center justify-center gap-1">
+      {onPrintGroup && (<button type="button" title={`Print ${group.length} labels`} onClick={(e) => { e.stopPropagation(); onPrintGroup(group); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconPrinter className="h-4 w-4" /></button>)}
+      {onShip && (<button type="button" title={`Ship all ${group.length}`} onClick={(e) => { e.stopPropagation(); onShip(group); }} className="ml-1 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#412460] text-white transition-colors hover:bg-[#B99353]"><IconCheck className="h-4 w-4" /></button>)}
+      {!onPrintGroup && !onShip && (<IconChevron className="h-4 w-4 text-[#2D2D2D]/25" />)}
+    </div>
+  );
+
   return (
     <>
       {/* Mobile: cards */}
       <ul className="space-y-2.5 md:hidden">
-        {rows.map((it) => (
-          <li
-            key={it.id}
-            onClick={() => onView(it)}
-            className="cursor-pointer rounded-2xl bg-white p-4 shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3] transition active:scale-[.99]"
-          >
-            <div className="flex items-start justify-between gap-3">
-              {selectable && (
-                <span className="pt-0.5">
-                  <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code}`} />
-                </span>
+        {groups.map((group) => {
+          const head = group[0];
+          const count = group.length;
+          const isGroup = count > 1;
+          const isOpen = isGroup && expanded.has(head.code);
+          const modes = new Set(group.map((g) => g.shipmentFrom || "By Air"));
+          return (
+            <li key={head.code || head.id} className="overflow-hidden rounded-2xl bg-white shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3]">
+              <div
+                onClick={() => (isGroup ? toggleExpand(head.code) : onView(head))}
+                className="cursor-pointer p-4 transition active:scale-[.99]"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  {selectable && (
+                    <span className="pt-0.5" onClick={(e) => e.stopPropagation()}>
+                      {isGroup ? (
+                        <SelectAllCheck rows={group} selected={selected} onToggleAll={(checked) => onToggleRows(group, checked)} />
+                      ) : (
+                        <RowCheck checked={!!selected?.has(head.id)} onChange={() => onToggleSelect(head.id)} label={`Select ${head.code}`} />
+                      )}
+                    </span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">Order #</div>
+                    <div className="break-all text-base font-bold leading-tight text-[#412460]">{head.orderNumber || "—"}</div>
+                  </div>
+                  {isGroup
+                    ? (modes.size > 1 && <span className="text-[11px] font-semibold text-[#B99353]">Mixed</span>)
+                    : <ShipmentBadge mode={head.shipmentFrom} />}
+                </div>
+                <dl className="mt-3 space-y-1.5 text-xs">
+                  <div className="flex justify-between gap-3">
+                    <dt className="text-[#2D2D2D]/45">CZN</dt>
+                    <dd className="font-semibold text-[#412460]">{head.code}</dd>
+                  </div>
+                  {isGroup ? (
+                    <div className="flex justify-between gap-3">
+                      <dt className="text-[#2D2D2D]/45">Packages</dt>
+                      <dd className="flex items-center gap-1 font-semibold text-[#412460]">
+                        {count} packages
+                        <IconChevron className={`h-3 w-3 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                      </dd>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-[#2D2D2D]/45">Shelf</dt>
+                        <dd><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 font-semibold text-[#412460]">{head.rackId || "—"}</span></dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-[#2D2D2D]/45">CN Tracking</dt>
+                        <dd className="min-w-0 break-all text-right font-medium">{head.trackingNumber || "—"}</dd>
+                      </div>
+                    </>
+                  )}
+                </dl>
+                {!isGroup && (onShip || onPrint || onDownload || onDelete) && (
+                  <div className="mt-3 flex items-center gap-2 border-t border-[#F1EFEA] pt-3">
+                    {onPrint && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onPrint(head); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                        <IconPrinter className="h-3.5 w-3.5" /> Print
+                      </button>
+                    )}
+                    {onDownload && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onDownload(head); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                        <IconDownload className="h-3.5 w-3.5" /> Label
+                      </button>
+                    )}
+                    {onShip && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onShip(head); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95">
+                        <IconCheck className="h-3.5 w-3.5" /> Ship
+                      </button>
+                    )}
+                    {onDelete && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(head); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-red-500/80 ring-1 ring-red-100 transition active:scale-95">
+                        <IconTrash className="h-3.5 w-3.5" /> Delete
+                      </button>
+                    )}
+                  </div>
+                )}
+                {isGroup && (onPrintGroup || onShip) && (
+                  <div className="mt-3 flex items-center gap-2 border-t border-[#F1EFEA] pt-3">
+                    {onPrintGroup && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onPrintGroup(group); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                        <IconPrinter className="h-3.5 w-3.5" /> Print {count}
+                      </button>
+                    )}
+                    {onShip && (
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onShip(group); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95">
+                        <IconCheck className="h-3.5 w-3.5" /> Ship all {count}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+              {isGroup && isOpen && (
+                <div className="divide-y divide-[#F1EFEA] border-t border-[#F1EFEA] bg-[#FAFAF8]">
+                  {group.map((it) => (
+                    <div key={it.id} onClick={() => onView(it)} className="cursor-pointer p-3 pl-6">
+                      <div className="flex items-start justify-between gap-3">
+                        {selectable && (
+                          <span className="pt-0.5" onClick={(e) => e.stopPropagation()}>
+                            <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code} ${it.trackingNumber}`} />
+                          </span>
+                        )}
+                        <div className="min-w-0 flex-1 text-xs">
+                          <div className="break-all font-medium text-[#2D2D2D]/80">{it.trackingNumber || "—"}</div>
+                          <div className="mt-1 text-[#2D2D2D]/45">Shelf <span className="font-semibold text-[#412460]">{it.rackId || "—"}</span></div>
+                        </div>
+                        <ShipmentBadge mode={it.shipmentFrom} />
+                      </div>
+                      {(onShip || onPrint || onDownload || onDelete) && (
+                        <div className="mt-2.5 flex items-center gap-2 border-t border-[#F1EFEA] pt-2.5">
+                          {onPrint && (
+                            <button type="button" onClick={(e) => { e.stopPropagation(); onPrint(it); }} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                              <IconPrinter className="h-3.5 w-3.5" /> Print
+                            </button>
+                          )}
+                          {onDownload && (
+                            <button type="button" onClick={(e) => { e.stopPropagation(); onDownload(it); }} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                              <IconDownload className="h-3.5 w-3.5" /> Label
+                            </button>
+                          )}
+                          {onShip && (
+                            <button type="button" onClick={(e) => { e.stopPropagation(); onShip(it); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#412460] px-2.5 py-1 text-xs font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95">
+                              <IconCheck className="h-3.5 w-3.5" /> Ship
+                            </button>
+                          )}
+                          {onDelete && (
+                            <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(it); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold text-red-500/80 ring-1 ring-red-100 transition active:scale-95">
+                              <IconTrash className="h-3.5 w-3.5" /> Delete
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
-              <div className="min-w-0 flex-1">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">Order #</div>
-                <div className="break-all text-base font-bold leading-tight text-[#412460]">{it.orderNumber || "—"}</div>
-              </div>
-              <ShipmentBadge mode={it.shipmentFrom} />
-            </div>
-            <dl className="mt-3 space-y-1.5 text-xs">
-              <div className="flex justify-between gap-3">
-                <dt className="text-[#2D2D2D]/45">CZN</dt>
-                <dd className="font-semibold text-[#412460]">{it.code}</dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-[#2D2D2D]/45">Shelf</dt>
-                <dd><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 font-semibold text-[#412460]">{it.rackId || "—"}</span></dd>
-              </div>
-              <div className="flex justify-between gap-3">
-                <dt className="text-[#2D2D2D]/45">CN Tracking</dt>
-                <dd className="min-w-0 break-all text-right font-medium">{it.trackingNumber || "—"}</dd>
-              </div>
-            </dl>
-            {(onShip || onPrint || onDownload || onDelete) && (
-              <div className="mt-3 flex items-center gap-2 border-t border-[#F1EFEA] pt-3">
-                {onPrint && (
-                  <button type="button" onClick={(e) => { e.stopPropagation(); onPrint(it); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
-                    <IconPrinter className="h-3.5 w-3.5" /> Print
-                  </button>
-                )}
-                {onDownload && (
-                  <button type="button" onClick={(e) => { e.stopPropagation(); onDownload(it); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
-                    <IconDownload className="h-3.5 w-3.5" /> Label
-                  </button>
-                )}
-                {onShip && (
-                  <button type="button" onClick={(e) => { e.stopPropagation(); onShip(it); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95">
-                    <IconCheck className="h-3.5 w-3.5" /> Ship
-                  </button>
-                )}
-                {onDelete && (
-                  <button type="button" onClick={(e) => { e.stopPropagation(); onDelete(it); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-red-500/80 ring-1 ring-red-100 transition active:scale-95">
-                    <IconTrash className="h-3.5 w-3.5" /> Delete
-                  </button>
-                )}
-              </div>
-            )}
-          </li>
-        ))}
+            </li>
+          );
+        })}
       </ul>
 
       {/* Desktop: table */}
       <div className="-mx-1 hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[820px] text-left text-sm">
+        <table className="w-full min-w-[900px] text-left text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
               {selectable && (
@@ -2605,35 +2768,85 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
               <th>CZN Tracking</th>
               <th>Shelf</th>
               <th>Order #</th>
+              <th>Packages</th>
               <th>Tracking</th>
               <th>Shipment</th>
               <th className="text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
-            {rows.map((it) => (
-              <tr key={it.id} onClick={() => onView(it)} className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3">
-                {selectable && (
-                  <td className="w-8" onClick={(e) => e.stopPropagation()}>
-                    <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code}`} />
-                  </td>
-                )}
-                <td className="whitespace-nowrap font-bold text-[#412460]">{it.code}</td>
-                <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{it.rackId || "—"}</span></td>
-                <td className="whitespace-nowrap font-semibold text-[#2D2D2D]/80">{it.orderNumber || "—"}</td>
-                <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={it.trackingNumber}>{it.trackingNumber || "—"}</td>
-                <td><ShipmentBadge mode={it.shipmentFrom} /></td>
-                <td className="text-center">
-                  <div className="flex items-center justify-center gap-1">
-                    {onPrint && (<button type="button" title="Print label" onClick={(e) => { e.stopPropagation(); onPrint(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconPrinter className="h-4 w-4" /></button>)}
-                    {onDownload && (<button type="button" title="Download label" onClick={(e) => { e.stopPropagation(); onDownload(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconDownload className="h-4 w-4" /></button>)}
-                    {onShip && (<button type="button" title="Mark as shipped" onClick={(e) => { e.stopPropagation(); onShip(it); }} className="ml-1 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#412460] text-white transition-colors hover:bg-[#B99353]"><IconCheck className="h-4 w-4" /></button>)}
-                    {onDelete && (<button type="button" title="Delete" onClick={(e) => { e.stopPropagation(); onDelete(it); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/40 transition-colors hover:bg-red-50 hover:text-red-600"><IconTrash className="h-4 w-4" /></button>)}
-                    {!onShip && !onPrint && !onDownload && !onDelete && (<IconChevron className="h-4 w-4 text-[#2D2D2D]/25" />)}
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {groups.map((group) => {
+              const head = group[0];
+              const count = group.length;
+              const isGroup = count > 1;
+              const isOpen = isGroup && expanded.has(head.code);
+              const shelves = new Set(group.map((g) => g.rackId || "—"));
+              const shelfLabel = shelves.size === 1 ? [...shelves][0] : `${shelves.size} shelves`;
+              const modes = new Set(group.map((g) => g.shipmentFrom || "By Air"));
+
+              return (
+                <Fragment key={head.code || head.id}>
+                  <tr
+                    onClick={() => (isGroup ? toggleExpand(head.code) : onView(head))}
+                    className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3"
+                  >
+                    {selectable && (
+                      <td className="w-8" onClick={(e) => e.stopPropagation()}>
+                        {isGroup ? (
+                          <SelectAllCheck rows={group} selected={selected} onToggleAll={(checked) => onToggleRows(group, checked)} />
+                        ) : (
+                          <RowCheck checked={!!selected?.has(head.id)} onChange={() => onToggleSelect(head.id)} label={`Select ${head.code}`} />
+                        )}
+                      </td>
+                    )}
+                    <td className="whitespace-nowrap font-bold text-[#412460]">{head.code}</td>
+                    <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{shelfLabel}</span></td>
+                    <td className="whitespace-nowrap font-semibold text-[#2D2D2D]/80">{head.orderNumber || "—"}</td>
+                    <td>
+                      {isGroup ? (
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); toggleExpand(head.code); }}
+                          className="inline-flex items-center gap-1 rounded-full bg-[#412460]/10 px-2.5 py-1 text-xs font-bold text-[#412460] transition hover:bg-[#412460]/15"
+                        >
+                          {count} packages
+                          <IconChevron className={`h-3 w-3 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                        </button>
+                      ) : (
+                        <span className="text-xs text-[#2D2D2D]/35">1</span>
+                      )}
+                    </td>
+                    <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={isGroup ? undefined : head.trackingNumber}>
+                      {isGroup ? "—" : (head.trackingNumber || "—")}
+                    </td>
+                    <td>
+                      {isGroup
+                        ? (modes.size === 1 ? <ShipmentBadge mode={head.shipmentFrom} /> : <span className="text-[11px] font-semibold text-[#B99353]">Mixed</span>)
+                        : <ShipmentBadge mode={head.shipmentFrom} />}
+                    </td>
+                    <td className="text-center">
+                      {isGroup ? groupActionButtons(group) : actionButtons(head)}
+                    </td>
+                  </tr>
+                  {isGroup && isOpen && group.map((it) => (
+                    <tr key={it.id} onClick={() => onView(it)} className="cursor-pointer bg-[#FAFAF8] transition-colors hover:bg-[#F4F2EE] [&>td]:px-3 [&>td]:py-2.5">
+                      {selectable && (
+                        <td className="w-8" onClick={(e) => e.stopPropagation()}>
+                          <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${it.code} ${it.trackingNumber}`} />
+                        </td>
+                      )}
+                      <td className="pl-6 text-xs text-[#2D2D2D]/30">↳</td>
+                      <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{it.rackId || "—"}</span></td>
+                      <td className="text-xs text-[#2D2D2D]/30">—</td>
+                      <td className="text-xs text-[#2D2D2D]/30">—</td>
+                      <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={it.trackingNumber}>{it.trackingNumber || "—"}</td>
+                      <td><ShipmentBadge mode={it.shipmentFrom} /></td>
+                      <td className="text-center">{actionButtons(it)}</td>
+                    </tr>
+                  ))}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>

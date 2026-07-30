@@ -291,8 +291,8 @@ async function shrinkImageForExport(buffer) {
   try {
     const sharp = require('sharp');
     const out = await sharp(buffer)
-      .resize({ width: PACKING_IMG_MAX * 2, withoutEnlargement: true })
-      .jpeg({ quality: 70 })
+      .resize({ width: PACKING_IMG_MAX, withoutEnlargement: true })
+      .jpeg({ quality: 45 })
       .toBuffer();
     return { buffer: out, ext: 'jpeg' };
   } catch (e) {
@@ -309,7 +309,11 @@ async function shrinkImageForExport(buffer) {
 router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const orders = await fetchSupplierOrders(req.query.search);
+    const allOrders = await fetchSupplierOrders(req.query.search);
+    // The packing list is a physical-packing reference — only goods actually
+    // sitting on the shelf belong on it. Dispatched (already shipped out) and
+    // not-yet-received orders (no warehouse scan yet) have nothing to pack.
+    const orders = allOrders.filter((o) => o.warehouse && o.warehouse.in_warehouse && o.warehouse.status === 'in_stock');
 
     // One batched NER call for every row's product name (see productNameNer.js
     // for why: a wrong name here is a customs problem, not just a cosmetic

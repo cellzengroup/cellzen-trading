@@ -71,10 +71,21 @@ const escapeLike = (v) => String(v).replace(/[\\%_]/g, (c) => `\\${c}`);
 // Postgres "invalid input syntax for type uuid" 500 on a malformed id.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Generate the next SEQUENTIAL internal code: CZN00001, CZN00002, … — the max
-// existing CZN number + 1, zero-padded to 5 digits. The DB unique constraint on
-// `code` + the retry loop in POST /items cover concurrent races.
-async function generateItemCode() {
+// Generate the goods number for a newly put-away item: CZN-00001, CZN-00002, …
+// Every box that belongs to the same 1688 order (order_number) shares ONE goods
+// number — if another box from this order is already on file, its code is
+// reused instead of minting a new one. Otherwise the next sequential number is
+// the max existing CZN number + 1, zero-padded to 5 digits.
+async function generateItemCode(orderNumber) {
+  if (orderNumber) {
+    const existing = await WarehouseItem.findOne({
+      where: { order_number: orderNumber },
+      order: [['createdAt', 'ASC']],
+      attributes: ['code'],
+    });
+    if (existing?.code) return existing.code;
+  }
+
   const rows = await WarehouseItem.findAll({
     where: { code: { [Op.iLike]: 'CZN%' } },
     attributes: ['code'],
@@ -84,7 +95,7 @@ async function generateItemCode() {
     const n = parseInt(String(r.code || '').replace(/[^0-9]/g, ''), 10);
     if (!isNaN(n) && n > maxSeq) maxSeq = n;
   }
-  return `CZN${String(maxSeq + 1).padStart(5, '0')}`;
+  return `CZN-${String(maxSeq + 1).padStart(5, '0')}`;
 }
 
 // ============================================================ RACKS
@@ -239,7 +250,8 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
 });
 
 // POST /items — put-away. Auto-creates the shelf on first sight, dedupes an
-// already-in-stock tracking number, mints a unique WH code, links item -> shelf.
+// already-in-stock tracking number, mints (or reuses) the goods number, links
+// item -> shelf.
 router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
@@ -291,37 +303,27 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       });
     }
 
-    // Mint a sequential CZNnnnnn code and insert, retrying if a concurrent
-    // request grabbed the same number first. A tracking-index violation means a
-    // concurrent put-away already stored this tracking number (not retryable).
-    let item = null;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      try {
-        item = await WarehouseItem.create({
-          code: await generateItemCode(),
-          tracking_number: trackingNumber,
-          rack_id: rackId,
-          status: 'in_stock',
-          source,
-          order_number: orderNumber,
-          product_name: productName,
-          created_by_user_id: req.user.id,
-          created_by_name: req.user.name || null,
-        });
-        break;
-      } catch (error) {
-        if (error.name === 'SequelizeUniqueConstraintError') {
-          const constraint = String(error?.parent?.constraint || '');
-          if (constraint.includes('tracking')) {
-            return res.status(409).json({ success: false, message: 'Already in stock — this tracking number is already stored' });
-          }
-          if (attempt < 5) continue; // code collision — regenerate + retry
-        }
-        throw error;
+    // Mint (or reuse) the goods number and insert. The tracking_number partial
+    // unique index is the atomic backstop for a concurrent double-scan of the
+    // same tracking number (not retryable — the item is already stored).
+    let item;
+    try {
+      item = await WarehouseItem.create({
+        code: await generateItemCode(orderNumber),
+        tracking_number: trackingNumber,
+        rack_id: rackId,
+        status: 'in_stock',
+        source,
+        order_number: orderNumber,
+        product_name: productName,
+        created_by_user_id: req.user.id,
+        created_by_name: req.user.name || null,
+      });
+    } catch (error) {
+      if (error.name === 'SequelizeUniqueConstraintError') {
+        return res.status(409).json({ success: false, message: 'Already in stock — this tracking number is already stored' });
       }
-    }
-    if (!item) {
-      return res.status(409).json({ success: false, message: 'Could not allocate a code — please retry' });
+      throw error;
     }
     res.status(201).json({ success: true, data: item });
   } catch (error) {

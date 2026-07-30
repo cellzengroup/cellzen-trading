@@ -86,9 +86,10 @@ Told as a walkthrough of one order's life, start to finish:
      gtradea has never heard of it, the scan is **rejected** ("This tracking
      number doesn't exist in the orders") — this is what keeps 1688 stock
      honest.
-   - If it matches, the backend **mints a new internal code** (`CZN00001`,
-     `CZN00002`, …), links the item to the matched order number + product
-     name, and stores it as `in_stock` on that shelf.
+   - If it matches, the backend **mints an internal code** (`CZN-00001`,
+     `CZN-00002`, …) — or reuses one, if another box from the same 1688 order
+     number already has one — links the item to the matched order number +
+     product name, and stores it as `in_stock` on that shelf.
    - The 1688 Orders panel now shows that order as **📦 Received**, because
      its tracking number matches a stored item.
    See the [Store panel](./01-store-panel.md).
