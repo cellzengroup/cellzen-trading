@@ -739,8 +739,8 @@ function MyComponent() {
 
 **Allowed Origins:**
 - Development: `localhost:3300`, `localhost:3001`, `localhost:5173`
-- Production: `cellzen-trading.onrender.com`, `www.cellzengroup.com`, `cellzengroup.com`
-- Wildcard: `*.onrender.com`
+- Production: `www.cellzengroup.com`, `cellzengroup.com`, `l78jmacr.up.railway.app`
+- Wildcard: `*.cellzengroup.com`, `*.up.railway.app`
 
 **Settings:** Credentials enabled, all standard methods allowed.
 
@@ -771,7 +771,7 @@ function MyComponent() {
 - **Build Output:** `../dist`
 - **Plugin:** `@vitejs/plugin-react`
 - **Path Aliases:** `@/`, `src/`, `components/`, `utils/`
-- **Allowed Hosts:** `cellzen-trading.onrender.com`, `*.onrender.com`, `www.cellzengroup.com`, `cellzengroup.com`, `localhost`
+- **Allowed Hosts:** `l78jmacr.up.railway.app`, `*.up.railway.app`, `www.cellzengroup.com`, `cellzengroup.com`, `localhost`, `127.0.0.1`
 
 ### Tailwind CSS (`tailwind.config.js`)
 
@@ -839,11 +839,17 @@ CORS_ORIGINS=http://localhost:3300,https://www.cellzengroup.com
 
 ## 14. Deployment
 
-### Production Platform: Render
+### Production Platform: Railway
 
-**URL:** `https://cellzen-trading.onrender.com`
+**Custom Domain:** `https://www.cellzengroup.com` (fronted by Cloudflare)
 
-**Custom Domain:** `https://www.cellzengroup.com`
+**Railway host:** `https://l78jmacr.up.railway.app`
+
+> Render is **not** a deployment target. An old `cellzen-trading.onrender.com`
+> deployment stayed live and answering `200` long after it was retired, so it
+> has been removed from the CORS allow-list and from every client-side API
+> fallback list — a stale replica silently serving outdated data is worse than
+> a host that simply isn't reachable. Do not re-add `*.onrender.com`.
 
 ### Build & Start Scripts
 

@@ -420,8 +420,9 @@ export default function Products() {
       const sameOrigin = `${window.location.origin}/api`;
       if (!candidates.includes(sameOrigin)) candidates.push(sameOrigin);
     }
+    // Railway-served production hosts only — never *.onrender.com (a stale
+    // Render deployment stayed live and answering, which made it a trap).
     [
-      "https://cellzen-trading.onrender.com/api",
       "https://www.cellzengroup.com/api",
       "https://cellzengroup.com/api",
     ].forEach((u) => { if (!candidates.includes(u)) candidates.push(u); });

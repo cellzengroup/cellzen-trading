@@ -11,7 +11,7 @@ const { authenticate } = require('../middleware/auth');
 const { withConnectionRetry } = require('../dbRetry');
 const { downloadImage } = require('../../config/supabase');
 const gtradeaSync = require('../services/gtradeaSync');
-const { extractProductNames } = require('../services/productNameNer');
+const { extractProductNames } = require('../services/productNames');
 
 const router = express.Router();
 
@@ -283,10 +283,11 @@ const PACKING_THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, b
 // (PACKING_IMG_MAX), so embedding gtradea's original product photo — often a
 // multi-MB listing image — just bloats both the in-memory workbook and the
 // downloaded file for no visible benefit. Re-encode down to a small JPEG
-// before embedding instead. `sharp` isn't a direct dependency of this project
-// (it rides in transitively via the NER model stack), so this lazily
-// requires it and falls back to the original buffer if it's unavailable —
-// same defensive pattern productNameNer.js uses for onnxruntime-node.
+// before embedding instead. `sharp` is a declared backend dependency, but it's
+// a native addon whose prebuilt binary can fail to load on an unexpected
+// OS/libc combo — so this requires it lazily and falls back to the original
+// buffer if it's unavailable, rather than taking the whole export down over a
+// thumbnail optimisation.
 async function shrinkImageForExport(buffer) {
   try {
     const sharp = require('sharp');
@@ -295,7 +296,7 @@ async function shrinkImageForExport(buffer) {
       .jpeg({ quality: 45 })
       .toBuffer();
     return { buffer: out, ext: 'jpeg' };
-  } catch (e) {
+  } catch {
     return { buffer, ext: null };
   }
 }
@@ -315,10 +316,10 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     // not-yet-received orders (no warehouse scan yet) have nothing to pack.
     const orders = allOrders.filter((o) => o.warehouse && o.warehouse.in_warehouse && o.warehouse.status === 'in_stock');
 
-    // One batched NER call for every row's product name (see productNameNer.js
-    // for why: a wrong name here is a customs problem, not just a cosmetic
-    // one). `nerNames[i]` is null wherever the model wasn't confident enough
-    // or wasn't available at all — those rows fall back to the heuristic.
+    // Resolve every row's product name up front (see productNames.js — a wrong
+    // name here is a customs problem, not just a cosmetic one). `nerNames[i]`
+    // is null wherever no strategy produced a trustworthy name; those rows fall
+    // back to deriveShortProductName below.
     const nerNames = await extractProductNames(orders.map((o) => o.product_name || ''));
 
     // Fetch every row's product image in parallel (bounded to 8 at a time)

@@ -109,7 +109,7 @@ here. The label still comes out of the Deli 720C at the warehouse.
 ### Point this agent at the server
 In `config.json`, fill in:
 ```json
-"apiBaseUrl": "https://cellzen-trading.onrender.com",
+"apiBaseUrl": "https://www.cellzengroup.com",
 "agentToken": "<the SAME value as PRINT_AGENT_TOKEN>"
 ```
 Restart the bridge. On startup it should say **`Cloud queue : ON`**. Now any

@@ -31,6 +31,52 @@ const MODEL_PATH = path.join(MODEL_DIR, 'model_uint8.onnx');
 const ENTITY_LABELS = ['product'];
 const SCORE_THRESHOLD = 0.2;
 
+// ---------------------------------------------------------------- PRODUCTION
+// This model is OPT-IN, and it will never download itself while serving a
+// request. Both rules exist because doing otherwise took the packing-list
+// export down in production with a 502:
+//
+//   * .cache/ is gitignored and the Railway container has an ephemeral disk, so
+//     the model is absent after every single deploy. The old code then
+//     fetched 183MB from HuggingFace *inside* the export request — far longer
+//     than the platform's proxy timeout, so the client got a 502 while the
+//     download was still running.
+//   * Loading a 183MB quantized transformer spikes RSS well past the ~512MB
+//     small-instance limit. That gets the process SIGKILL'd, which no
+//     try/catch can intercept — the connection dies and the proxy reports a
+//     502. Locally it always "worked" only because the model was already
+//     cached and a dev box has RAM to spare.
+//
+// Falling back costs one column's polish (deriveShortProductName in
+// routes/supplierOrders.js already handles every null we return); leaving it
+// on cost the entire export. So: enable it deliberately, on a box with the
+// memory for it, after pre-fetching the model with
+// `node backend/scripts/prefetch-ner-model.js`.
+const NER_ENABLED = String(process.env.PACKING_NER_ENABLED || '').toLowerCase() === 'true';
+// Even when enabled, never let init+inference hold the export open forever.
+const NER_TIMEOUT_MS = Number(process.env.PACKING_NER_TIMEOUT_MS || 20000);
+// Set PACKING_NER_ALLOW_DOWNLOAD=true only for the prefetch script / a warm-up
+// run — never for normal request-time use.
+const ALLOW_DOWNLOAD = String(process.env.PACKING_NER_ALLOW_DOWNLOAD || '').toLowerCase() === 'true';
+
+let warnedDisabled = false;
+const warnOnce = (msg) => {
+  if (warnedDisabled) return;
+  warnedDisabled = true;
+  console.log(`[productNameNer] ${msg} — packing list will use the heuristic product name.`);
+};
+
+// Reject rather than hang forever. Note the underlying work is NOT cancelled
+// (ONNX inference isn't abortable); this just stops the HTTP request from
+// waiting on it, so the export completes with heuristic names instead.
+const withTimeout = (promise, ms, label) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error(`${label} exceeded ${ms}ms`)), ms);
+  promise.then(
+    (v) => { clearTimeout(timer); resolve(v); },
+    (e) => { clearTimeout(timer); reject(e); }
+  );
+});
+
 // Strip (Color: ...) / [silver] spec tags — noise for name extraction, same
 // cleanup the old heuristic used.
 const stripSpecTags = (title) => String(title || '')
@@ -86,7 +132,17 @@ function getGliner() {
       require('onnxruntime-node');
       const { Gliner } = require('gliner/node');
 
-      if (!fs.existsSync(MODEL_PATH)) await downloadModel();
+      // Request-time downloads are what produced the production 502 (see the
+      // note at the top of this file). Only the prefetch script may download.
+      if (!fs.existsSync(MODEL_PATH)) {
+        if (!ALLOW_DOWNLOAD) {
+          throw new Error(
+            'GLiNER model not cached. Run `node backend/scripts/prefetch-ner-model.js` on this host, '
+            + 'or leave PACKING_NER_ENABLED unset to use the heuristic name.'
+          );
+        }
+        await downloadModel();
+      }
       const gliner = new Gliner({
         tokenizerPath: 'onnx-community/gliner_small-v2',
         onnxSettings: { modelPath: MODEL_PATH },
@@ -112,20 +168,28 @@ function getGliner() {
 // callers should fall back to something else (never silently leave a
 // customs-facing field blank because of that).
 async function extractProductNames(titles) {
+  // Opt-in only. Disabled is the safe default: the caller's heuristic covers
+  // every null, and this path can otherwise take the whole export down.
+  if (!NER_ENABLED) {
+    warnOnce('NER disabled (set PACKING_NER_ENABLED=true to enable)');
+    return titles.map(() => null);
+  }
+
   const cleaned = titles.map(stripSpecTags);
   let gliner;
   try {
-    gliner = await getGliner();
-  } catch {
+    gliner = await withTimeout(getGliner(), NER_TIMEOUT_MS, 'GLiNER init');
+  } catch (e) {
+    warnOnce(`GLiNER unavailable: ${e.message}`);
     return titles.map(() => null);
   }
 
   try {
-    const results = await gliner.inference({
+    const results = await withTimeout(gliner.inference({
       texts: cleaned,
       entities: ENTITY_LABELS,
       threshold: SCORE_THRESHOLD,
-    });
+    }), NER_TIMEOUT_MS, 'GLiNER inference');
     return results.map((spans) => {
       if (!Array.isArray(spans) || !spans.length) return null;
       const best = spans.reduce((a, b) => (b.score > a.score ? b : a));

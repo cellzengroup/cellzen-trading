@@ -5,8 +5,14 @@
 // and falls back to the known production hosts. Once a base works, it's cached
 // for the rest of the session so subsequent calls go straight to it.
 
+// Production is Railway, served through Cloudflare at cellzengroup.com.
+//
+// Do NOT add *.onrender.com here. An old Render deployment was still live and
+// answering 200 long after it stopped being the deployment target, so listing
+// it meant a same-origin hiccup could fall through and pin the session to a
+// stale replica serving outdated data — the exact sticky-cache failure the
+// resilientFetch comment below describes.
 const KNOWN_PROD_BASES = [
-  "https://cellzen-trading.onrender.com/api",
   "https://l78jmacr.up.railway.app/api",
   "https://www.cellzengroup.com/api",
   "https://cellzengroup.com/api",

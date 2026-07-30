@@ -67,7 +67,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 {
   "gtradeaEmail": "procurement@gtradea.com",
   "gtradeaPassword": "the real gtradea password",
-  "apiBaseUrl": "https://cellzen-trading.onrender.com",
+  "apiBaseUrl": "https://www.cellzengroup.com",
   "bridgeToken": "the same value you put in GTRADEA_BRIDGE_TOKEN"
 }
 ```
@@ -75,7 +75,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 3. Double-click **`start-bridge.bat`** to test it. You should see:
 
 ```
-gtradea bridge starting — https://gtradea.com -> https://cellzen-trading.onrender.com, every 90s
+gtradea bridge starting — https://gtradea.com -> https://www.cellzengroup.com, every 90s
 relayed 9 job(s) -> 21/21 item(s) stored in 13210ms
 ```
 

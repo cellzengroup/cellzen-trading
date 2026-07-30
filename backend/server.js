@@ -30,8 +30,9 @@ app.use(compression({ threshold: 1024 }));
 
 // CORS configuration
 const isProduction = process.env.NODE_ENV === 'production';
+// Production runs on Railway, served through Cloudflare at cellzengroup.com.
+// Render is NOT a deployment target — do not re-add *.onrender.com here.
 const defaultProdOrigins = [
-  'https://cellzen-trading.onrender.com',
   'https://l78jmacr.up.railway.app',
   'https://www.cellzengroup.com',
   'https://cellzengroup.com',
@@ -59,11 +60,11 @@ const corsOrigin = (origin, callback) => {
 
   if (baseAllowedOrigins.includes(origin)) return callback(null, true);
 
-  // Allow any cellzengroup.com subdomain (api., admin., etc.) + Render subdomains
+  // Allow any cellzengroup.com subdomain (api., admin., etc.) + Railway's own
+  // *.up.railway.app hostnames, which is what the platform serves us on.
   try {
     const host = new URL(origin).hostname;
     if (host === 'cellzengroup.com' || host.endsWith('.cellzengroup.com')) return callback(null, true);
-    if (host.endsWith('.onrender.com')) return callback(null, true);
     if (host.endsWith('.up.railway.app')) return callback(null, true);
   } catch {
     // fall through to reject
