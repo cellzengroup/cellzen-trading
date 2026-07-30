@@ -67,7 +67,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 {
   "gtradeaEmail": "procurement@gtradea.com",
   "gtradeaPassword": "the real gtradea password",
-  "apiBaseUrl": "https://www.cellzengroup.com",
+  "apiBaseUrl": ["https://www.cellzengroup.com", "https://cellzengroup.com"],
   "bridgeToken": "the same value you put in GTRADEA_BRIDGE_TOKEN"
 }
 ```
@@ -89,7 +89,7 @@ relayed 9 job(s) -> 21/21 item(s) stored in 13210ms
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `gtradeaEmail` / `gtradeaPassword` | — | the gtradea procurement login |
-| `apiBaseUrl` | — | the Cellzen site origin |
+| `apiBaseUrl` | — | the Cellzen site origin. One origin, or several tried in order — a string, a comma-separated string, or an array (e.g. www first, then the apex) |
 | `bridgeToken` | — | must match `GTRADEA_BRIDGE_TOKEN` on Render |
 | `pollMs` | `90000` | how often to pull (ms) |
 | `requestTimeoutMs` | `25000` | per-request ceiling so a stall can't wedge it |

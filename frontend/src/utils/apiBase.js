@@ -12,8 +12,11 @@
 // it meant a same-origin hiccup could fall through and pin the session to a
 // stale replica serving outdated data — the exact sticky-cache failure the
 // resilientFetch comment below describes.
+// l78jmacr.up.railway.app is intentionally absent: it answers 404 with
+// `x-railway-fallback: true`, meaning no service is bound to that hostname
+// any more. A fallback that can never succeed only adds a wasted round-trip
+// before the next candidate is tried.
 const KNOWN_PROD_BASES = [
-  "https://l78jmacr.up.railway.app/api",
   "https://www.cellzengroup.com/api",
   "https://cellzengroup.com/api",
 ];

@@ -43,7 +43,11 @@ const DEFAULTS = {
   gtradeaAnonKey:
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd0a2R0eWh1Y3lkcGtuemhoaWJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA1NjMyODEsImV4cCI6MjA3NjEzOTI4MX0.OLvWKouodCWL1XulvnJjwW-iId1zBw5b7vOIefdN7rg",
   // --- Cellzen website (the destination) ---
-  apiBaseUrl: "",          // e.g. https://cellzengroup.com
+  // One origin, or several to try in order. Accepts a string, a
+  // comma-separated string, or an array:
+  //   "https://www.cellzengroup.com"
+  //   ["https://www.cellzengroup.com", "https://cellzengroup.com"]
+  apiBaseUrl: "",          // e.g. https://www.cellzengroup.com
   bridgeToken: "",         // must match GTRADEA_BRIDGE_TOKEN in the backend env
   // --- cadence ---
   pollMs: 90000,           // how often to pull from gtradea (ms)
@@ -63,7 +67,22 @@ function loadConfig() {
 
 const cfg = loadConfig();
 const BASE = String(cfg.gtradeaBaseUrl || "").replace(/\/+$/, "");
-const API = String(cfg.apiBaseUrl || "").replace(/\/+$/, "");
+
+// apiBaseUrl may be a single origin, a comma-separated list, or an array — we
+// try each in order so the apex and www hostnames can both be listed and
+// whichever answers first wins.
+function parseApiBases(value) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  const seen = new Set();
+  const out = [];
+  for (const entry of raw) {
+    const url = String(entry || "").trim().replace(/\/+$/, "");
+    if (url && !seen.has(url)) { seen.add(url); out.push(url); }
+  }
+  return out;
+}
+const API_BASES = parseApiBases(cfg.apiBaseUrl);
+const API = API_BASES[0] || "";
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const err = (...a) => console.error(new Date().toISOString(), ...a);
@@ -87,6 +106,41 @@ async function req(url, init) {
     signal: AbortSignal.timeout(cfg.requestTimeoutMs),
   });
   return res;
+}
+
+// POST the pulled details to Cellzen, trying each configured origin in turn.
+//
+// `redirect: "error"` is deliberate and load-bearing. fetch() follows
+// redirects by default, but per spec a 301/302 on a POST is replayed as a
+// bodyless GET — so an apex -> www redirect would "succeed" while silently
+// discarding every order. Treating a redirect as a hard failure means we move
+// on to the next origin (or log loudly) instead of quietly ingesting nothing.
+async function postIngest(details) {
+  let lastErr = null;
+  for (const base of API_BASES) {
+    try {
+      const res = await fetch(`${base}/api/inventory/supplier-orders/ingest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.bridgeToken}` },
+        body: JSON.stringify({ details }),
+        redirect: "error",
+        signal: AbortSignal.timeout(cfg.requestTimeoutMs),
+      });
+      // A 5xx may just be this origin being unhealthy — try the next one.
+      if (res.status >= 500 && API_BASES.length > 1 && base !== API_BASES[API_BASES.length - 1]) {
+        lastErr = new Error(`${base} returned HTTP ${res.status}`);
+        err(`ingest: ${base} returned HTTP ${res.status} — trying next origin`);
+        continue;
+      }
+      const out = await res.json().catch(() => ({}));
+      return { res, out, base };
+    } catch (e) {
+      // Network error, timeout, or a refused redirect.
+      lastErr = e;
+      err(`ingest: ${base} failed (${e.message})`);
+    }
+  }
+  throw lastErr || new Error("no apiBaseUrl configured");
 }
 
 let token = null; // { accessToken, expiresAt }
@@ -171,15 +225,9 @@ async function pullAndRelay() {
     return;
   }
 
-  const res = await fetch(`${API}/api/inventory/supplier-orders/ingest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.bridgeToken}` },
-    body: JSON.stringify({ details }),
-    signal: AbortSignal.timeout(cfg.requestTimeoutMs),
-  });
-  const out = await res.json().catch(() => ({}));
+  const { res, out, base } = await postIngest(details);
   if (!res.ok || !out.success) {
-    throw new Error(`ingest rejected (HTTP ${res.status}): ${out.message || "unknown error"}`);
+    throw new Error(`ingest rejected by ${base} (HTTP ${res.status}): ${out.message || "unknown error"}`);
   }
   const d = out.data || {};
   log(
@@ -202,12 +250,13 @@ async function tick() {
 }
 
 function main() {
-  const missing = ["gtradeaEmail", "gtradeaPassword", "apiBaseUrl", "bridgeToken"].filter((k) => !cfg[k]);
+  const missing = ["gtradeaEmail", "gtradeaPassword", "bridgeToken"].filter((k) => !cfg[k]);
+  if (!API_BASES.length) missing.push("apiBaseUrl");
   if (missing.length) {
     err(`Missing config: ${missing.join(", ")}. Edit ${CONFIG_PATH} (see config.example.json).`);
     process.exit(1);
   }
-  log(`gtradea bridge starting — ${BASE} -> ${API}, every ${Math.round(cfg.pollMs / 1000)}s`);
+  log(`gtradea bridge starting — ${BASE} -> ${API_BASES.join(", ")}, every ${Math.round(cfg.pollMs / 1000)}s`);
   tick();
   setInterval(tick, cfg.pollMs);
 }

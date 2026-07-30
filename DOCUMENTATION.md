@@ -841,9 +841,16 @@ CORS_ORIGINS=http://localhost:3300,https://www.cellzengroup.com
 
 ### Production Platform: Railway
 
-**Custom Domain:** `https://www.cellzengroup.com` (fronted by Cloudflare)
+**Custom Domain:** `https://www.cellzengroup.com` (fronted by Cloudflare) — this is
+the canonical URL. Everything that talks to production (both on-site bridges,
+the client-side API fallback list) points here rather than at a
+`*.up.railway.app` hostname, so a regenerated Railway subdomain can't break it.
 
-**Railway host:** `https://l78jmacr.up.railway.app`
+> `l78jmacr.up.railway.app` appears in older config/docs but is **dead** — it
+> answers `404` with `x-railway-fallback: true`, i.e. no service is bound to it.
+> If you ever need the direct Railway hostname, read the current one from
+> Railway → service → Settings → Networking. The CORS allow-list keeps a
+> `*.up.railway.app` wildcard so whatever it is will be accepted.
 
 > Render is **not** a deployment target. An old `cellzen-trading.onrender.com`
 > deployment stayed live and answering `200` long after it was retired, so it

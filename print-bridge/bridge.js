@@ -49,7 +49,10 @@ const DEFAULTS = {
   bitmapYOffset: 0,     // nudge the whole label image down (+) / up (-), in dots
   bitmapInvert: false,  // set true only if the label prints as a black rectangle
   allowOrigin: "*",     // CORS: your production origin, or "*" for any
-  apiBaseUrl: "",       // site origin for phone printing, e.g. https://cellzengroup.com
+  // Site origin for phone printing. One origin, or several to try in order —
+  // accepts a string, a comma-separated string, or an array, e.g.
+  //   ["https://www.cellzengroup.com", "https://cellzengroup.com"]
+  apiBaseUrl: "",       // e.g. https://www.cellzengroup.com
   agentToken: "",       // must match PRINT_AGENT_TOKEN in the backend env
   pollMs: 2500,         // how often to check the cloud queue for new jobs (ms)
 };
@@ -292,24 +295,62 @@ const server = http.createServer(async (req, res) => {
 // Polls the backend for queued jobs, prints each on the Deli 720C, reports back.
 const WAREHOUSE_PATH = "/api/inventory/warehouse";
 
+// apiBaseUrl may be a single origin, a comma-separated list, or an array — we
+// try each in order so the apex and www hostnames can both be listed.
+function parseApiBases(value) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  const seen = new Set();
+  const out = [];
+  for (const entry of raw) {
+    const url = String(entry || "").trim().replace(/\/+$/, "");
+    if (url && !seen.has(url)) { seen.add(url); out.push(url); }
+  }
+  return out;
+}
+const API_BASES = parseApiBases(cfg.apiBaseUrl);
+
+// The origin that last answered, so we don't re-probe a dead one every 2.5s.
+let preferredBase = API_BASES[0] || "";
+const basesInPreferredOrder = () =>
+  [preferredBase, ...API_BASES.filter((b) => b !== preferredBase)].filter(Boolean);
+
 function cloudEnabled() {
-  return Boolean(cfg.apiBaseUrl && cfg.agentToken);
+  return Boolean(API_BASES.length && cfg.agentToken);
 }
 
+// `redirect: "error"` matters here: fetch() follows redirects by default, but a
+// 301/302 on a POST is replayed as a bodyless GET — so an apex -> www redirect
+// would report success while sending no result at all. Failing instead means
+// the job simply re-claims server-side after 2 min rather than being lost.
 function reportJob(id, body) {
-  const base = String(cfg.apiBaseUrl).replace(/\/+$/, "");
-  return fetch(`${base}${WAREHOUSE_PATH}/print-jobs/${id}/complete`, {
+  return fetch(`${preferredBase}${WAREHOUSE_PATH}/print-jobs/${id}/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.agentToken}` },
     body: JSON.stringify(body),
+    redirect: "error",
   }).catch(() => {}); // best-effort; a stuck job re-claims after 2 min server-side
 }
 
+// Claim from the first origin that answers, and remember it for next time.
+async function claimPending() {
+  let lastErr = null;
+  for (const base of basesInPreferredOrder()) {
+    try {
+      const res = await fetch(`${base}${WAREHOUSE_PATH}/print-jobs/pending?limit=5`, {
+        headers: { Authorization: `Bearer ${cfg.agentToken}` },
+        redirect: "error",
+      });
+      preferredBase = base;
+      return res;
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("no apiBaseUrl configured");
+}
+
 async function pollOnce() {
-  const base = String(cfg.apiBaseUrl).replace(/\/+$/, "");
-  const res = await fetch(`${base}${WAREHOUSE_PATH}/print-jobs/pending?limit=5`, {
-    headers: { Authorization: `Bearer ${cfg.agentToken}` },
-  });
+  const res = await claimPending();
   if (res.status === 401) {
     console.error("  Cloud queue: invalid agentToken (must match PRINT_AGENT_TOKEN on the server)");
     return;
@@ -357,7 +398,7 @@ if (require.main === module) {
       console.log("  Using printer  : " + (PRINTER || "(NONE — set printerName in config.json)"));
       console.log("  Local test     : open http://127.0.0.1:" + cfg.port + "/selftest");
       if (cloudEnabled()) {
-        console.log("  Cloud queue    : ON  → " + cfg.apiBaseUrl + " (phones can print; polling " + (cfg.pollMs || 2500) + "ms)");
+        console.log("  Cloud queue    : ON  → " + API_BASES.join(", ") + " (phones can print; polling " + (cfg.pollMs || 2500) + "ms)");
         startCloudPoller();
       } else {
         console.log("  Cloud queue    : OFF (set apiBaseUrl + agentToken in config.json to enable phone printing)");
