@@ -248,15 +248,66 @@ export async function syncSupplierOrders(force = false) {
 // Download the packing list (same search filter as the on-screen table) as a
 // styled .xlsx — title band, logo, purple header row, one row per order with
 // its product photo. Same auth-gated GET -> blob -> anchor click as exportItemsCsv.
-export async function exportSupplierOrdersXlsx(search = "") {
-  const qs = search ? `?search=${encodeURIComponent(search)}` : "";
-  const res = await authFetch(`/inventory/supplier-orders/export.xlsx${qs}`, { ...STAFF, cache: "no-store" });
+//
+// `scope` picks which slice of the orders lands in the sheet — "received"
+// (default: only what's on the shelf right now), "all", or "not_arrived"
+// (ordered but never scanned in). `from`/`to` are optional inclusive
+// YYYY-MM-DD bounds on the gtradea order date. `images` false drops the product
+// photos AND the column that holds them, which is what makes a big export
+// finish quickly. All of it is validated server-side; the names must stay in
+// step with EXPORT_SCOPES in backend/inventory/routes/supplierOrders.js.
+export async function exportSupplierOrdersXlsx(
+  search = "",
+  { scope = "received", from = "", to = "", images = true } = {}
+) {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  params.set("scope", scope);
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  if (!images) params.set("images", "0");
+  const res = await authFetch(`/inventory/supplier-orders/export.xlsx?${params}`, { ...STAFF, cache: "no-store" });
   if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`);
+  // Mirrors the server's own Content-Disposition name so a file saved from the
+  // browser and one fetched directly from the API are named the same thing.
+  const scopeTag = { received: "Received", all: "All", not_arrived: "NotArrived" }[scope] || "Received";
+  await saveResponseAs(res, `CZN_GtradeA_PackingList_${scopeTag}${images ? "" : "_NoImages"}_${dateStamp(from, to)}.xlsx`);
+}
+
+// Download the GtradeA billing report as a styled .xlsx — teal title band, logo,
+// orange header, one row per 1688 line item (date, PR id, order id, product,
+// quantity, unit, price). `from`/`to` are optional inclusive YYYY-MM-DD bounds
+// on the gtradea order date; omitting both is the all-time report.
+export async function exportBillingReportXlsx(search = "", { from = "", to = "" } = {}) {
+  const params = new URLSearchParams();
+  if (search) params.set("search", search);
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  const qs = params.toString();
+  const res = await authFetch(`/inventory/supplier-orders/billing-report.xlsx${qs ? `?${qs}` : ""}`, {
+    ...STAFF,
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Report failed (HTTP ${res.status})`);
+  const stamp = from || to ? dateStamp(from, to) : `AllTime_${todayStamp()}`;
+  await saveResponseAs(res, `CZN_GtradeA_Billing_${stamp}.xlsx`);
+}
+
+const todayStamp = () => new Date().toISOString().slice(0, 10).replace(/-/g, "");
+// Names a download after the range it covers, falling back to the day it was
+// taken. Kept in step with the same expression on the server.
+const dateStamp = (from, to) =>
+  from || to ? `${(from || "any").replace(/-/g, "")}_${(to || "any").replace(/-/g, "")}` : todayStamp();
+
+// Turn an authenticated file response into a saved download. Blob + anchor
+// rather than pointing the browser at the URL, because these routes need the
+// staff Authorization header that a plain navigation can't carry.
+async function saveResponseAs(res, filename) {
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `CZN_GtradeA_PackingList_${new Date().toISOString().slice(0, 10).replace(/-/g, "")}.xlsx`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();

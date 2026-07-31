@@ -16,6 +16,7 @@ import {
   loadSupplierOrders,
   syncSupplierOrders,
   exportSupplierOrdersXlsx,
+  exportBillingReportXlsx,
   goodsCode,
 } from "../../../utils/warehouseApi";
 import { downloadItemLabel, downloadRackLabel, printItemLabel } from "../../../utils/warehouseLabels";
@@ -202,6 +203,40 @@ const SUPPLIER_SORTS = [
   { value: "not_received", label: "Pending" },
 ];
 
+// The three slices the packing-list export offers. `match` mirrors the server's
+// EXPORT_SCOPES in backend/inventory/routes/supplierOrders.js — it exists only
+// so the panel can show how many rows each choice will produce BEFORE the user
+// waits on a download; the server re-applies the real filter either way.
+const EXPORT_SCOPES = [
+  {
+    value: "all",
+    label: "Export All",
+    hint: "Every 1688 order, whatever its warehouse state.",
+    match: () => true,
+  },
+  {
+    value: "received",
+    label: "Received Only",
+    hint: "Goods on the shelf right now — the list you can actually pack.",
+    match: (o) => o.inWarehouse && o.warehouseStatus === "in_stock",
+  },
+  {
+    value: "not_arrived",
+    label: "Not Arrived Yet",
+    hint: "Ordered but never scanned in — the chase list. Dispatched goods aren't here; they did arrive.",
+    match: (o) => !o.inWarehouse,
+  },
+];
+
+// A row's gtradea order date as a UTC calendar day (YYYY-MM-DD), which is both
+// what the table's Date column shows and what the server's from/to compare
+// against — so a range picked here selects exactly the rows the user can see.
+const orderDay = (o) => {
+  if (!o.orderedAt) return "";
+  const d = new Date(o.orderedAt);
+  return isNaN(d.getTime()) ? "" : d.toISOString().slice(0, 10);
+};
+
 // Every date in the 1688 panel: short and numeric, e.g. 7/30/2026. Field order
 // follows the viewer's own locale, so it reads the way their machine writes dates.
 //
@@ -246,6 +281,7 @@ const IconSearch = (p) => (<svg {...svgBase} strokeWidth="2" {...p}><circle cx="
 const IconCamera = (p) => (<svg {...svgBase} {...p}><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg>);
 const IconKeyboard = (p) => (<svg {...svgBase} {...p}><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" /></svg>);
 const IconClose = (p) => (<svg {...svgBase} strokeWidth="2.2" {...p}><path d="M18 6 6 18M6 6l12 12" /></svg>);
+const IconReport = (p) => (<svg {...svgBase} {...p}><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6" /><path d="M9 17v-4" /><path d="M12 17v-6" /><path d="M15 17v-2" /></svg>);
 
 /* ------------------------------ small pieces ------------------------------ */
 // Replaces the old in-stock/shipped Status pill — shipped vs. in-stock is
@@ -1277,16 +1313,79 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   };
 
   // Exports the CURRENT search filter (server re-runs the same query), so the
-  // packing list always matches what's on screen rather than every order ever synced.
+  // packing list always matches what's on screen rather than every order ever
+  // synced — narrowed further by the scope + optional date range the user picks
+  // in the export panel.
   const [supplierExporting, setSupplierExporting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportScope, setExportScope] = useState("received");
+  const [exportFrom, setExportFrom] = useState("");
+  const [exportTo, setExportTo] = useState("");
+  const [exportImages, setExportImages] = useState(true);
+
+  // An inverted range would silently export nothing, so it's caught here rather
+  // than being sent to the server as a valid-looking query.
+  const exportRangeInvalid = !!exportFrom && !!exportTo && exportFrom > exportTo;
+
+  // Esc closes the panel — but not mid-export, where the download is already in
+  // flight and the button is the only thing still reporting on it.
+  useEffect(() => {
+    if (!exportOpen) return undefined;
+    const onKey = (e) => { if (e.key === "Escape" && !supplierExporting) setExportOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [exportOpen, supplierExporting]);
+
   const handleExportSupplier = async () => {
+    if (exportRangeInvalid) return;
     setSupplierExporting(true);
     try {
-      await exportSupplierOrdersXlsx(supplierSearch);
+      await exportSupplierOrdersXlsx(supplierSearch, {
+        scope: exportScope,
+        from: exportFrom,
+        to: exportTo,
+        images: exportImages,
+      });
+      setExportOpen(false);
     } catch (e) {
       showToast(e.message || "Export failed", "error");
     } finally {
       setSupplierExporting(false);
+    }
+  };
+
+  // ---- Billing report: same sheet as GtradeA_Billing_Templates.xlsx, either
+  // all time or bounded by an order-date range.
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportRunning, setReportRunning] = useState(false);
+  const [reportRange, setReportRange] = useState("all"); // all | range
+  const [reportFrom, setReportFrom] = useState("");
+  const [reportTo, setReportTo] = useState("");
+  const reportRangeInvalid = reportRange === "range" && !!reportFrom && !!reportTo && reportFrom > reportTo;
+  // "Between these dates" with neither date filled is just the all-time report
+  // under a different name — say so rather than silently downloading everything.
+  const reportRangeEmpty = reportRange === "range" && !reportFrom && !reportTo;
+
+  useEffect(() => {
+    if (!reportOpen) return undefined;
+    const onKey = (e) => { if (e.key === "Escape" && !reportRunning) setReportOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [reportOpen, reportRunning]);
+
+  const handleDownloadReport = async () => {
+    if (reportRangeInvalid || reportRangeEmpty) return;
+    setReportRunning(true);
+    try {
+      await exportBillingReportXlsx(supplierSearch, {
+        from: reportRange === "range" ? reportFrom : "",
+        to: reportRange === "range" ? reportTo : "",
+      });
+      setReportOpen(false);
+    } catch (e) {
+      showToast(e.message || "Report failed", "error");
+    } finally {
+      setReportRunning(false);
     }
   };
 
@@ -1310,6 +1409,23 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     const hit = (o) => supplierState(o) === supplierSort;
     return [...base].sort((a, b) => Number(hit(b)) - Number(hit(a)));
   }, [supplierOrders, supplierSearch, supplierSort]);
+
+  // How many rows each scope would export under the current search + date range,
+  // shown live next to the three choices so nobody waits out a slow export only
+  // to open an empty sheet. Counted off the rows already loaded here; the file
+  // itself is still built server-side from the same filters.
+  const exportCounts = useMemo(() => {
+    const inRange = (o) => {
+      if (!exportFrom && !exportTo) return true;
+      const day = orderDay(o);
+      if (!day) return false; // no order date can't be placed in a window
+      if (exportFrom && day < exportFrom) return false;
+      if (exportTo && day > exportTo) return false;
+      return true;
+    };
+    const rows = filteredSupplier.filter(inRange);
+    return Object.fromEntries(EXPORT_SCOPES.map((s) => [s.value, rows.filter(s.match).length]));
+  }, [filteredSupplier, exportFrom, exportTo]);
 
   // Synchronous auth gate: redirect DURING render (not in an effect) so a
   // logged-out visitor goes straight to the login without the warehouse panel
@@ -1868,12 +1984,21 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               />
               <button
                 type="button"
-                onClick={handleExportSupplier}
+                onClick={() => setExportOpen(true)}
                 disabled={supplierExporting}
                 className={BTN_GHOST}
               >
                 <IconDownload className={`h-3.5 w-3.5 ${supplierExporting ? "animate-pulse" : ""}`} />
                 {supplierExporting ? "Exporting…" : "Export"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setReportOpen(true)}
+                disabled={reportRunning}
+                className={BTN_GHOST}
+              >
+                <IconReport className={`h-3.5 w-3.5 ${reportRunning ? "animate-pulse" : ""}`} />
+                {reportRunning ? "Preparing…" : "Download Report"}
               </button>
             </div>
             <SupplierOrdersTable rows={filteredSupplier} loading={supplierLoading} />
@@ -1902,6 +2027,287 @@ export default function WarehouseApp({ mode = "cellzen" }) {
           )}
         </div>
       </div>
+
+      {/* GtradeA billing report — all time, or bounded by order date */}
+      {reportOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm"
+          onClick={() => { if (!reportRunning) setReportOpen(false); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Download billing report"
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"
+          >
+            <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#267488]/10 text-[#267488]">
+              <IconReport className="h-5 w-5" />
+            </span>
+            <h3 className="text-base font-bold">Billing report</h3>
+            <p className="mt-1 text-xs text-[#2D2D2D]/55">
+              Date, PR ID, Order ID, product, quantity and price for every 1688 line item
+              {supplierSearch.trim() ? <> matching &ldquo;{supplierSearch.trim()}&rdquo;</> : null}. Lines
+              belonging to one order share a single ID and price cell.
+            </p>
+
+            <div className="mt-5 space-y-2">
+              {[
+                { value: "all", label: "All time", hint: "Every 1688 order on record." },
+                { value: "range", label: "Between these dates", hint: "Bounds the gtradea order date, both ends included." },
+              ].map((opt) => {
+                const active = reportRange === opt.value;
+                return (
+                  <label
+                    key={opt.value}
+                    className={`flex cursor-pointer gap-3 rounded-2xl p-3.5 ring-1 transition-all ${
+                      active
+                        ? "bg-[#267488]/[0.07] ring-[#267488]/40"
+                        : "bg-[#F6F4F0] ring-transparent hover:ring-[#E6E2DB]"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="report-range"
+                      value={opt.value}
+                      checked={active}
+                      onChange={() => setReportRange(opt.value)}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[#267488]"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold text-[#2D2D2D]">{opt.label}</span>
+                      <span className="mt-0.5 block text-[11px] leading-snug text-[#2D2D2D]/55">{opt.hint}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            {reportRange === "range" && (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-[10px] text-[#2D2D2D]/45">From</span>
+                  <input
+                    type="date"
+                    value={reportFrom}
+                    max={reportTo || undefined}
+                    onChange={(e) => setReportFrom(e.target.value)}
+                    className={FIELD}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[10px] text-[#2D2D2D]/45">To</span>
+                  <input
+                    type="date"
+                    value={reportTo}
+                    min={reportFrom || undefined}
+                    onChange={(e) => setReportTo(e.target.value)}
+                    className={FIELD}
+                  />
+                </label>
+              </div>
+            )}
+
+            {reportRangeInvalid ? (
+              <p className="mt-3 text-[11px] font-semibold text-red-600">
+                &ldquo;From&rdquo; is after &ldquo;To&rdquo; — no order can fall in that range.
+              </p>
+            ) : reportRangeEmpty ? (
+              <p className="mt-3 text-[11px] font-semibold text-[#B99353]">
+                Pick at least one date, or switch back to All time.
+              </p>
+            ) : null}
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setReportOpen(false)}
+                disabled={reportRunning}
+                className={BTN_GHOST}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDownloadReport}
+                disabled={reportRunning || reportRangeInvalid || reportRangeEmpty}
+                className={BTN_PRIMARY}
+              >
+                <IconDownload className={`h-3.5 w-3.5 ${reportRunning ? "animate-pulse" : ""}`} />
+                {reportRunning ? "Preparing…" : "Download"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 1688 packing-list export — pick the slice, optionally bound by order date */}
+      {exportOpen && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm"
+          onClick={() => { if (!supplierExporting) setExportOpen(false); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Export 1688 orders"
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"
+          >
+            <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
+              <IconDownload className="h-5 w-5" />
+            </span>
+            <h3 className="text-base font-bold">What do you want to export?</h3>
+            <p className="mt-1 text-xs text-[#2D2D2D]/55">
+              Builds the styled packing list from the orders{" "}
+              {supplierSearch.trim() ? <>matching &ldquo;{supplierSearch.trim()}&rdquo;</> : "on this tab"}.
+            </p>
+
+            <div className="mt-5 space-y-2">
+              {EXPORT_SCOPES.map((s) => {
+                const active = exportScope === s.value;
+                return (
+                  <label
+                    key={s.value}
+                    className={`flex cursor-pointer gap-3 rounded-2xl p-3.5 ring-1 transition-all ${
+                      active
+                        ? "bg-[#412460]/[0.06] ring-[#412460]/40"
+                        : "bg-[#F6F4F0] ring-transparent hover:ring-[#E6E2DB]"
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="export-scope"
+                      value={s.value}
+                      checked={active}
+                      onChange={() => setExportScope(s.value)}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[#412460]"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span className="text-sm font-semibold text-[#2D2D2D]">
+                          {s.label}
+                          {s.value === "received" && (
+                            <span className="ml-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#412460]/60">
+                              Default
+                            </span>
+                          )}
+                        </span>
+                        <span className="shrink-0 text-xs font-semibold text-[#412460]">
+                          {exportCounts[s.value]}
+                        </span>
+                      </span>
+                      <span className="mt-0.5 block text-[11px] leading-snug text-[#2D2D2D]/55">{s.hint}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className="mt-5">
+              <div className="flex items-center justify-between">
+                <span className={LABEL}>By date — optional</span>
+                {(exportFrom || exportTo) && (
+                  <button
+                    type="button"
+                    onClick={() => { setExportFrom(""); setExportTo(""); }}
+                    className="text-[11px] font-semibold text-[#412460]/70 transition-colors hover:text-[#412460]"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-[10px] text-[#2D2D2D]/45">From</span>
+                  <input
+                    type="date"
+                    value={exportFrom}
+                    max={exportTo || undefined}
+                    onChange={(e) => setExportFrom(e.target.value)}
+                    className={FIELD}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[10px] text-[#2D2D2D]/45">To</span>
+                  <input
+                    type="date"
+                    value={exportTo}
+                    min={exportFrom || undefined}
+                    onChange={(e) => setExportTo(e.target.value)}
+                    className={FIELD}
+                  />
+                </label>
+              </div>
+              <p className="mt-1.5 text-[11px] text-[#2D2D2D]/45">
+                Bounds the 1688 order date, both ends included. Leave blank for every date.
+              </p>
+            </div>
+
+            <div className="mt-5">
+              <span className={LABEL}>Product photos</span>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {[
+                  { on: true, label: "With images", hint: "Photo in every row" },
+                  { on: false, label: "Without images", hint: "Faster, much smaller file" },
+                ].map((opt) => (
+                  <button
+                    key={String(opt.on)}
+                    type="button"
+                    onClick={() => setExportImages(opt.on)}
+                    aria-pressed={exportImages === opt.on}
+                    className={`rounded-2xl px-3 py-2.5 text-left ring-1 transition-all ${
+                      exportImages === opt.on
+                        ? "bg-[#412460]/[0.06] ring-[#412460]/40"
+                        : "bg-[#F6F4F0] ring-transparent hover:ring-[#E6E2DB]"
+                    }`}
+                  >
+                    <span className="block text-xs font-semibold text-[#2D2D2D]">{opt.label}</span>
+                    <span className="mt-0.5 block text-[10px] leading-snug text-[#2D2D2D]/50">{opt.hint}</span>
+                  </button>
+                ))}
+              </div>
+              {!exportImages && (
+                <p className="mt-1.5 text-[11px] text-[#2D2D2D]/45">
+                  The Product Image column is left out entirely, so there&apos;s no empty gap in the sheet.
+                </p>
+              )}
+            </div>
+
+            {exportRangeInvalid ? (
+              <p className="mt-3 text-[11px] font-semibold text-red-600">
+                &ldquo;From&rdquo; is after &ldquo;To&rdquo; — no order can fall in that range.
+              </p>
+            ) : exportCounts[exportScope] === 0 ? (
+              // Not a hard block: the sheet is built server-side from the full
+              // order table, and these counts only see what this tab has loaded.
+              <p className="mt-3 text-[11px] font-semibold text-[#B99353]">
+                No loaded orders match this choice — the sheet may come out empty.
+              </p>
+            ) : null}
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setExportOpen(false)}
+                disabled={supplierExporting}
+                className={BTN_GHOST}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleExportSupplier}
+                disabled={supplierExporting || exportRangeInvalid}
+                className={BTN_PRIMARY}
+              >
+                <IconDownload className={`h-3.5 w-3.5 ${supplierExporting ? "animate-pulse" : ""}`} />
+                {supplierExporting ? "Exporting…" : "Export"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* dispatched item delete confirm */}
       {itemDeleteTarget && (

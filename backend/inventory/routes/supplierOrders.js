@@ -46,9 +46,24 @@ const dbGuard = (res) => {
 // literally instead of being treated as a wildcard.
 const escapeLike = (v) => String(v).replace(/[\\%_]/g, (c) => `\\${c}`);
 
+// A YYYY-MM-DD query param -> the instant that bounds that calendar day in UTC,
+// or null if it isn't a real date (a typo must not silently drop every row).
+// UTC on purpose: gtradea stamps ordered_at in UTC and the 1688 panel renders
+// that column in UTC too, so "1st–31st" here selects exactly the days the user
+// can see in the table rather than sliding by their timezone offset.
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const dayBound = (v, end) => {
+  const s = String(v || '').trim();
+  if (!DAY_RE.test(s)) return null;
+  const d = new Date(`${s}T${end ? '23:59:59.999' : '00:00:00.000'}Z`);
+  return isNaN(d.getTime()) ? null : d;
+};
+
 // Shared by GET / (JSON list) and GET /export.xlsx (packing list) so the two
-// can never disagree on which rows a given search matches.
-async function fetchSupplierOrders(search) {
+// can never disagree on which rows a given search matches. `from`/`to` bound
+// the ORDER date (ordered_at) and are used by the export only — the on-screen
+// list has no date filter of its own.
+async function fetchSupplierOrders(search, { from, to } = {}) {
   const where = {};
   if (search) {
     const s = `%${escapeLike(String(search).trim())}%`;
@@ -58,6 +73,20 @@ async function fetchSupplierOrders(search) {
       { product_name: { [Op.iLike]: s } },
       { job_code: { [Op.iLike]: s } },
     ];
+  }
+  // Filtered in the QUERY, not after the fact: the 5000-row cap below is applied
+  // by Postgres, so a post-filter would only ever see the newest 5000 orders and
+  // would quietly return nothing for an older date range.
+  const fromAt = dayBound(from, false);
+  const toAt = dayBound(to, true);
+  if (fromAt || toAt) {
+    // Rows with no ordered_at can't be placed in a window at all, and Postgres
+    // drops NULLs from a range comparison anyway — so they're excluded whenever
+    // a date bound is given. That's the honest answer for "ordered between X and Y".
+    where.ordered_at = {
+      ...(fromAt ? { [Op.gte]: fromAt } : {}),
+      ...(toAt ? { [Op.lte]: toAt } : {}),
+    };
   }
 
   // Wrapped as one unit: a pooled connection that's gone stale (see
@@ -271,13 +300,44 @@ async function mapWithConcurrency(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
 }
 
-const PACKING_HEADERS = ['MARKA', 'Ctn. No', 'Order ID', 'Goods No.', 'Product Image', 'Product Name', 'Brand name', 'Model Number', 'Product Description', 'Quantity', 'Unit', 'KG', 'CBM', 'Paid Amount'];
-const PACKING_COL_WIDTHS = [16, 15, 24, 16, 28, 24, 18, 24, 58, 14, 14, 14, 14, 16];
-const PACKING_PAID_COL = 14; // 1-indexed — order-level, so it merges the same way Order ID does
-const PACKING_IMG_COL = 5; // 1-indexed column — Product Image
+// The sheet's columns, in order. Declared as a list rather than parallel
+// header/width arrays with hard-coded indexes because the "without images"
+// export DROPS the image column outright — leaving it in place as an empty
+// 28-wide band reads as missing data rather than a deliberate choice — and
+// every column after it then shifts left. Indexes are derived per-export from
+// this list (see packingColumns below), so nothing has to be renumbered by hand.
+const PACKING_COLUMNS = [
+  { key: 'marka', header: 'MARKA', width: 16 },
+  { key: 'ctn', header: 'Ctn. No', width: 15 },
+  { key: 'order', header: 'Order ID', width: 24 },
+  { key: 'goods', header: 'Goods No.', width: 16 },
+  { key: 'image', header: 'Product Image', width: 28 },
+  { key: 'name', header: 'Product Name', width: 24 },
+  { key: 'brand', header: 'Brand name', width: 18 },
+  { key: 'model', header: 'Model Number', width: 24 },
+  { key: 'description', header: 'Product Description', width: 58 },
+  { key: 'quantity', header: 'Quantity', width: 14 },
+  { key: 'unit', header: 'Unit', width: 14 },
+  { key: 'kg', header: 'KG', width: 14 },
+  { key: 'cbm', header: 'CBM', width: 14 },
+  { key: 'paid', header: 'Paid Amount', width: 16 },
+];
+// -> { columns: [...], col: { marka: 1, ctn: 2, ... } }, 1-indexed for ExcelJS.
+const packingColumns = (withImages) => {
+  const columns = withImages ? PACKING_COLUMNS : PACKING_COLUMNS.filter((c) => c.key !== 'image');
+  return { columns, col: Object.fromEntries(columns.map((c, i) => [c.key, i + 1])) };
+};
 const PACKING_ROW_HEIGHT = 126; // pt (~168px) — data rows, sized up from the template's 45pt
+// Without photos there's nothing needing a 126pt row, so the sheet tightens up
+// to something you can actually scroll and print. Still tall enough for the
+// wrapped product description, which is the only multi-line cell left.
+const PACKING_ROW_HEIGHT_NO_IMG = 42; // pt
 const PACKING_IMG_MAX = 140; // px — thumbnail fits inside the taller data row without blowing it up
 const PACKING_THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+// How many rows get the expensive per-row extras (product photo + LLM-refined
+// name). Data rows are NOT capped — see the export route for why only the
+// enrichment is bounded.
+const PACKING_ENRICH_MAX_ROWS = Number(process.env.PACKING_ENRICH_MAX_ROWS || 500);
 
 // The packing list only ever shows these photos as a ~140px thumbnail
 // (PACKING_IMG_MAX), so embedding gtradea's original product photo — often a
@@ -301,49 +361,127 @@ async function shrinkImageForExport(buffer) {
   }
 }
 
-// GET /export.xlsx — packing list for the (optionally search-filtered) 1688
-// orders, styled after frontend/public/Invoice/GtradeA Sent Goods.xlsx: title
-// band, Cellzen logo, purple header row, one row per order with its product
-// photo embedded. Brand/model/description are gtradea data gaps we backfill
-// with sane placeholders (see the per-row build below) rather than leaving the
-// columns blank, since the sheet is used as a physical packing reference.
+// Which slice of the 1688 orders an export covers. `received` is the default
+// because the packing list is a physical-packing reference — only goods sitting
+// on the shelf can actually go in a carton — but staff also need the other two
+// views: `all` to reconcile a whole date range against gtradea, and
+// `not_arrived` as a chase list for stock that was ordered but never scanned in.
+const EXPORT_SCOPES = {
+  received: {
+    label: 'Received Only',
+    // In the warehouse RIGHT NOW. A box that arrived and has since been
+    // dispatched is deliberately out: there's nothing left to pack.
+    match: (o) => !!(o.warehouse && o.warehouse.in_warehouse && o.warehouse.status === 'in_stock'),
+  },
+  all: {
+    label: 'All Orders',
+    match: () => true,
+  },
+  not_arrived: {
+    label: 'Not Arrived Yet',
+    // Never scanned into the warehouse — covers both "gtradea has no CN
+    // tracking yet" and "has tracking but hasn't turned up". A dispatched box
+    // is NOT here; it did arrive.
+    match: (o) => !(o.warehouse && o.warehouse.in_warehouse),
+  },
+};
+// Tolerate the UI's own vocabulary for the same slice so a renamed control on
+// the frontend can't silently fall back to the default scope.
+const SCOPE_ALIASES = { pending: 'not_arrived', not_received: 'not_arrived', in_stock: 'received' };
+// hasOwnProperty, not a bare lookup: `?scope=constructor` would otherwise hit an
+// inherited Object.prototype member and read as a known scope.
+const hasKey = (obj, k) => Object.prototype.hasOwnProperty.call(obj, k);
+const resolveScope = (v) => {
+  const key = String(v || '').trim().toLowerCase();
+  const name = hasKey(SCOPE_ALIASES, key) ? SCOPE_ALIASES[key] : key;
+  return hasKey(EXPORT_SCOPES, name) ? name : 'received';
+};
+
+// GET /export.xlsx — packing list for the (optionally search-, scope- and
+// date-filtered) 1688 orders, styled after
+// frontend/public/Invoice/GtradeA Sent Goods.xlsx: title band, Cellzen logo,
+// purple header row, one row per order with its product photo embedded.
+// Brand/model/description are gtradea data gaps we backfill with sane
+// placeholders (see the per-row build below) rather than leaving the columns
+// blank, since the sheet is used as a physical packing reference.
+//
+// Query: ?search= (same matcher as the list) &scope=received|all|not_arrived
+// (default received) &from=YYYY-MM-DD &to=YYYY-MM-DD (both optional, inclusive,
+// on the gtradea ORDER date) &images=0 to drop the product photos.
 router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const allOrders = await fetchSupplierOrders(req.query.search);
-    // The packing list is a physical-packing reference — only goods actually
-    // sitting on the shelf belong on it. Dispatched (already shipped out) and
-    // not-yet-received orders (no warehouse scan yet) have nothing to pack.
-    const orders = allOrders.filter((o) => o.warehouse && o.warehouse.in_warehouse && o.warehouse.status === 'in_stock');
+    const scopeKey = resolveScope(req.query.scope);
+    const scope = EXPORT_SCOPES[scopeKey];
+    const from = DAY_RE.test(String(req.query.from || '').trim()) ? String(req.query.from).trim() : '';
+    const to = DAY_RE.test(String(req.query.to || '').trim()) ? String(req.query.to).trim() : '';
+    // Photos are the default (the sheet is a packing reference), so only an
+    // explicit off value turns them off — an absent or unparseable param must
+    // not quietly produce a photo-less list.
+    const withImages = !['0', 'false', 'no', 'off'].includes(String(req.query.images ?? '').trim().toLowerCase());
+    const { columns, col } = packingColumns(withImages);
+    const rowHeight = withImages ? PACKING_ROW_HEIGHT : PACKING_ROW_HEIGHT_NO_IMG;
+    const allOrders = await fetchSupplierOrders(req.query.search, { from, to });
+    const orders = allOrders.filter(scope.match);
 
-    // Resolve every row's product name up front (see productNames.js — a wrong
-    // name here is a customs problem, not just a cosmetic one). `nerNames[i]`
-    // is null wherever no strategy produced a trustworthy name; those rows fall
-    // back to deriveShortProductName below.
-    const nerNames = await extractProductNames(orders.map((o) => o.product_name || ''));
+    // Product photos and LLM-refined names are per-row NETWORK work: a Supabase
+    // download + re-encode each, plus a Groq call per 25 titles. On the default
+    // Received-only list that's a few dozen rows and costs nothing. "Export all"
+    // over a long date range can be thousands — and doing this for every one of
+    // them is exactly what used to push this route past Render's proxy timeout
+    // into a 502 (see mapWithConcurrency above). So the enrichment, not the data,
+    // is what gets bounded: EVERY matching row and every field is still written
+    // below, the rows past this point just carry the offline heuristic name and
+    // no thumbnail — which is all a reconciliation-sized export needs anyway.
+    const enriched = orders.slice(0, PACKING_ENRICH_MAX_ROWS);
+    const trimmedEnrichment = orders.length > enriched.length;
+    if (trimmedEnrichment) {
+      console.warn(`[1688 export] ${orders.length} rows (scope=${scopeKey}) — photos/LLM names limited to the first ${enriched.length}.`);
+    }
 
-    // Fetch every row's product image in parallel (bounded to 8 at a time)
-    // instead of one network round-trip at a time inside the row loop below —
-    // see mapWithConcurrency above for why that mattered.
+    // Resolve the product name up front (see productNames.js — a wrong name here
+    // is a customs problem, not just a cosmetic one). `nerNames[i]` is null
+    // wherever no strategy produced a trustworthy name, and undefined past
+    // `enriched`; both fall back to deriveShortProductName below.
+    const nerNames = await extractProductNames(enriched.map((o) => o.product_name || ''));
+
+    // Fetch the product images in parallel (bounded to 8 at a time) instead of
+    // one network round-trip at a time inside the row loop below. Skipped
+    // entirely for a no-images export — that's the whole point of the option,
+    // and it's what makes a several-thousand-row "Export All" finish quickly.
     const imageBuffers = new Array(orders.length).fill(null);
-    await mapWithConcurrency(orders, 8, async (o, i) => {
-      if (!o.product_image) return;
-      try {
-        const raw = await downloadImage(o.product_image);
-        if (raw) imageBuffers[i] = await shrinkImageForExport(raw);
-      } catch (e) {
-        console.error('[1688 export] product image download failed:', e?.message || e);
-      }
-    });
+    if (withImages) {
+      await mapWithConcurrency(enriched, 8, async (o, i) => {
+        if (!o.product_image) return;
+        try {
+          const raw = await downloadImage(o.product_image);
+          if (raw) imageBuffers[i] = await shrinkImageForExport(raw);
+        } catch (e) {
+          console.error('[1688 export] product image download failed:', e?.message || e);
+        }
+      });
+    }
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Packing List');
-    PACKING_COL_WIDTHS.forEach((w, i) => { sheet.getColumn(i + 1).width = w; });
+    columns.forEach((c, i) => { sheet.getColumn(i + 1).width = c.width; });
 
-    // Row 1 — title band
-    sheet.mergeCells(1, 1, 1, PACKING_HEADERS.length);
+    // Row 1 — title band. The scope and date range are printed INTO the sheet,
+    // not just the filename: these lists get emailed and printed, and a
+    // "Not Arrived Yet" chase list that reads like a packing list of goods on
+    // hand is the kind of mix-up that ships the wrong carton.
+    sheet.mergeCells(1, 1, 1, columns.length);
     const titleCell = sheet.getCell(1, 1);
-    titleCell.value = 'Packing List of 1688 Orders';
+    const rangeLabel = from && to ? ` (${from} to ${to})` : from ? ` (from ${from})` : to ? ` (up to ${to})` : '';
+    // A trimmed export says so on its face — a reader who sees photos stop
+    // halfway down otherwise has no way to tell that from missing product data.
+    // Only photos are called out: a row past the cap still gets a product name,
+    // just from the offline heuristic rather than the model, so nothing is
+    // actually absent from those cells. Moot without images.
+    const trimLabel = trimmedEnrichment && withImages
+      ? `  ·  photos on the first ${enriched.length} of ${orders.length} rows`
+      : '';
+    titleCell.value = `Packing List of 1688 Orders — ${scope.label}${rangeLabel}${trimLabel}`;
     titleCell.font = { size: 17, bold: true, name: 'Arial', color: { argb: 'FF2D2D2D' } };
     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E4DD' } };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -351,7 +489,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
 
     // Row 2 — logo band, logo pulled straight from the template file so the
     // export always carries whatever mark is currently in that file.
-    sheet.mergeCells(2, 1, 2, PACKING_HEADERS.length);
+    sheet.mergeCells(2, 1, 2, columns.length);
     sheet.getRow(2).height = 105;
     if (fs.existsSync(PACKING_TEMPLATE_PATH)) {
       try {
@@ -375,9 +513,9 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
 
     // Row 3 — header
     const headerRow = sheet.getRow(3);
-    PACKING_HEADERS.forEach((h, i) => {
+    columns.forEach((c, i) => {
       const cell = headerRow.getCell(i + 1);
-      cell.value = h;
+      cell.value = c.header;
       cell.font = { size: 13, name: 'Arial', color: { argb: 'FFFFFFFF' } };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF512D70' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
@@ -401,26 +539,26 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
         cell.border = PACKING_THIN_BORDER;
       };
 
-      setCell(1, 'CZN-GT'); // Marka — fixed shipping mark for every carton in this batch
-      setCell(2, null); // Ctn. No — filled in by hand once cartons are packed
-      setCell(3, o.order_number || '-');
+      setCell(col.marka, 'CZN-GT'); // Marka — fixed shipping mark for every carton in this batch
+      setCell(col.ctn, null); // Ctn. No — filled in by hand once cartons are packed
+      setCell(col.order, o.order_number || '-');
       // Goods No. — the id physically printed on the box's label: the gtradea PR
       // id (PR-1029), same as the GtradeA panel's "Received · PR-…" pill. Falls
       // back to the internal CZN code only for a box stored before gtradea
       // published a job code for its order. Blank until it's actually received —
       // never a made-up sequence.
-      setCell(4, o.warehouse && o.warehouse.in_warehouse ? (o.warehouse.pr_code || o.job_code || o.warehouse.code) : null);
-      setCell(5, null); // Product Image cell — the photo is embedded below
-      setCell(6, nerNames[i] || deriveShortProductName(o.product_name), { bold: true });
-      setCell(7, 'GT'); // gtradea doesn't track a real brand — generic house brand
-      setCell(8, deriveModelNumber(o));
-      setCell(9, o.product_name || '-'); // full 1688 listing title — no qty/unit mixed in
-      setCell(10, qty || null);
-      setCell(11, 'pcs');
-      setCell(12, null); // KG — filled in by hand at packing time
-      setCell(13, null); // CBM — filled in by hand at packing time
-      setCell(14, o.paid_amount != null ? Number(o.paid_amount) : null); // Paid Amount — from gtradea's procurement/China-ops view, packing list only (not shown on the 1688 tab)
-      row.height = PACKING_ROW_HEIGHT;
+      setCell(col.goods, o.warehouse && o.warehouse.in_warehouse ? (o.warehouse.pr_code || o.job_code || o.warehouse.code) : null);
+      if (withImages) setCell(col.image, null); // the photo is embedded into this cell below
+      setCell(col.name, nerNames[i] || deriveShortProductName(o.product_name), { bold: true });
+      setCell(col.brand, 'GT'); // gtradea doesn't track a real brand — generic house brand
+      setCell(col.model, deriveModelNumber(o));
+      setCell(col.description, o.product_name || '-'); // full 1688 listing title — no qty/unit mixed in
+      setCell(col.quantity, qty || null);
+      setCell(col.unit, 'pcs');
+      setCell(col.kg, null); // KG — filled in by hand at packing time
+      setCell(col.cbm, null); // CBM — filled in by hand at packing time
+      setCell(col.paid, o.paid_amount != null ? Number(o.paid_amount) : null); // Paid Amount — from gtradea's procurement/China-ops view, packing list only (not shown on the 1688 tab)
+      row.height = rowHeight;
 
       const img = imageBuffers[i];
       if (img) {
@@ -433,13 +571,14 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
           const h = Math.round(dim.height * scale);
           const imgId = workbook.addImage({ buffer: buf, extension: ext === 'jpg' ? 'jpeg' : ext });
           const PX_TO_EMU = 9525;
-          const colWidthPx = PACKING_COL_WIDTHS[PACKING_IMG_COL - 1] * 7.5;
-          const rowHeightPx = PACKING_ROW_HEIGHT * 1.333;
+          const imgCol0 = col.image - 1; // ExcelJS anchors are 0-indexed
+          const colWidthPx = columns[imgCol0].width * 7.5;
+          const rowHeightPx = rowHeight * 1.333;
           const padX = Math.round(Math.max(0, (colWidthPx - w) / 2) * PX_TO_EMU);
           const padY = Math.round(Math.max(0, (rowHeightPx - h) / 2) * PX_TO_EMU);
           sheet.addImage(imgId, {
-            tl: { col: PACKING_IMG_COL - 1, row: r - 1, nativeCol: PACKING_IMG_COL - 1, nativeRow: r - 1, nativeColOff: padX, nativeRowOff: padY },
-            br: { col: PACKING_IMG_COL - 1, row: r - 1, nativeCol: PACKING_IMG_COL - 1, nativeRow: r - 1, nativeColOff: padX + w * PX_TO_EMU, nativeRowOff: padY + h * PX_TO_EMU },
+            tl: { col: imgCol0, row: r - 1, nativeCol: imgCol0, nativeRow: r - 1, nativeColOff: padX, nativeRowOff: padY },
+            br: { col: imgCol0, row: r - 1, nativeCol: imgCol0, nativeRow: r - 1, nativeColOff: padX + w * PX_TO_EMU, nativeRowOff: padY + h * PX_TO_EMU },
             editAs: 'oneCell',
           });
         } catch (e) {
@@ -464,9 +603,9 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
         && orders[i].china_tracking_no === orders[groupStart].china_tracking_no;
       if (!sameShipment) {
         if (i - groupStart > 1) {
-          [3, PACKING_PAID_COL].forEach((col) => {
-            sheet.mergeCells(4 + groupStart, col, 4 + i - 1, col);
-            sheet.getCell(4 + groupStart, col).alignment = { horizontal: 'center', vertical: 'middle' };
+          [col.order, col.paid].forEach((c) => {
+            sheet.mergeCells(4 + groupStart, c, 4 + i - 1, c);
+            sheet.getCell(4 + groupStart, c).alignment = { horizontal: 'center', vertical: 'middle' };
           });
         }
         // Paid amount is per ORDER, not per line item — count each order once
@@ -481,20 +620,24 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     // Total row
     const totalRow = sheet.getRow(r);
     totalRow.height = 40;
-    const setTotalCell = (col, value) => {
-      const cell = totalRow.getCell(col);
+    const setTotalCell = (c, value) => {
+      const cell = totalRow.getCell(c);
       cell.value = value;
       cell.font = { size: 12, bold: true, name: 'Arial' };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E4DD' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
     };
-    setTotalCell(8, 'Total');
-    setTotalCell(9, 'Total');
-    setTotalCell(10, totalQty);
-    setTotalCell(11, 'pcs');
-    setTotalCell(PACKING_PAID_COL, totalPaid ? Math.round(totalPaid * 100) / 100 : null);
+    setTotalCell(col.model, 'Total');
+    setTotalCell(col.description, 'Total');
+    setTotalCell(col.quantity, totalQty);
+    setTotalCell(col.unit, 'pcs');
+    setTotalCell(col.paid, totalPaid ? Math.round(totalPaid * 100) / 100 : null);
 
-    const filename = `CZN_GtradeA_PackingList_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`;
+    const stamp = from || to
+      ? `${(from || 'any').replace(/-/g, '')}_${(to || 'any').replace(/-/g, '')}`
+      : new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const scopeTag = { received: 'Received', all: 'All', not_arrived: 'NotArrived' }[scopeKey];
+    const filename = `CZN_GtradeA_PackingList_${scopeTag}${withImages ? '' : '_NoImages'}_${stamp}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     await workbook.xlsx.write(res);
@@ -502,6 +645,277 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
   } catch (error) {
     console.error('Export 1688 packing list error:', error);
     res.status(500).json({ success: false, message: 'Export failed' });
+  }
+});
+
+// ============================================================ BILLING REPORT
+// Styled after frontend/public/Invoice/GtradeA_Billing_Templates.xlsx — every
+// literal below (teal title band, orange header, 83.25pt bordered rows, the BR
+// Firma faces, the ¥ accounting format) is read off that file, so the generated
+// report and the hand-made template are the same document.
+const BILLING_TEMPLATE_PATH = path.join(PACKING_TEMPLATE_DIR, 'GtradeA_Billing_Templates.xlsx');
+const BILLING_TEAL = 'FF267488';   // title band fill
+const BILLING_CREAM = 'FFF4F0EB';  // title band text
+const BILLING_ORANGE = 'FFE94724'; // column header fill
+// The title band reads plainly: "GtradeA Billing" in the family's regular
+// weight, smaller than the template's 17pt SemiBold.
+const BILLING_TITLE_FONT = 'BR Firma Regular';
+const BILLING_TITLE_SIZE = 10;
+// The sheet is set in the family's REGULAR weight — headers and data alike.
+// Medium is reserved for the one column that should carry weight on the page,
+// the product name, so the eye lands on what each line is actually for.
+const BILLING_FONT = 'BR Firma Regular';
+const BILLING_EMPHASIS_FONT = 'BR Firma Medium';
+// Chinese Yuan accounting format, copied verbatim from the template's price column.
+const BILLING_CNY_FMT = '_ [$¥-804]* #,##0.00_ ;_ [$¥-804]* -#,##0.00_ ;_ [$¥-804]* "-"??_ ;_ @_ ';
+const BILLING_DATE_FMT = 'd-mmm';
+const BILLING_TITLE_HEIGHT = 35.6;
+const BILLING_LOGO_HEIGHT = 101.15;
+// Fraction of the sheet width the logo may occupy. The mark is ~4.8:1, so
+// height-fitting alone would run it most of the way across the page.
+const BILLING_LOGO_MAX_WIDTH = 0.4;
+const BILLING_ROW_HEIGHT = 83.25;
+// The template carries one combined "Product ID" column; this splits it into the
+// PR ID and Order ID the 1688 tab actually shows, which is what was asked for.
+// Widths run wider than the template's so nothing sits tight against a cell
+// border — the ids and the product name are the long values, so they get the
+// most room. The price header carries the currency, since the ¥ in the cells is
+// part of a number format and can be easy to miss.
+const BILLING_COLUMNS = [
+  { key: 'date', header: 'Date', width: 18 },
+  { key: 'pr', header: 'PR ID', width: 21 },
+  { key: 'order', header: 'Order ID', width: 32 },
+  { key: 'name', header: 'Product Name', width: 42 },
+  { key: 'quantity', header: 'Qty', width: 14 },
+  { key: 'unit', header: 'Unit', width: 14 },
+  { key: 'price', header: 'Total Price (¥)', width: 26 },
+];
+const BILLING_COL = Object.fromEntries(BILLING_COLUMNS.map((c, i) => [c.key, i + 1]));
+const BILLING_BORDER = PACKING_THIN_BORDER;
+
+// ordered_at is a UTC calendar day everywhere else in this feature, so pin the
+// cell to UTC midnight. Handing ExcelJS a raw timestamp would let a late-evening
+// order render as the next/previous day depending on how the serial is read.
+const billingDateCell = (ts) => {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+};
+
+// Two rows belong to the same billing group when they're the same order AND the
+// same PR. The order number has to be present to claim that — a pair of blank
+// ids is not evidence of anything, and merging on it would fuse unrelated lines.
+const sameBillingGroup = (a, b) => !!a.orderId && a.orderId === b.orderId && a.prId === b.prId;
+
+// Maximal runs of equal adjacent values in `rows[start..end)`, as [from, to)
+// pairs. Used for the price column: a run longer than one row is a single
+// order-level charge repeated across its line items, so it merges into one cell
+// and counts once. `null` (unpriced) never runs — blank cells stay separate.
+function equalRuns(rows, start, end, valueOf) {
+  const runs = [];
+  let i = start;
+  while (i < end) {
+    const v = valueOf(rows[i]);
+    let j = i + 1;
+    if (v !== null) while (j < end && valueOf(rows[j]) === v) j += 1;
+    runs.push([i, j]);
+    i = j;
+  }
+  return runs;
+}
+
+// GET /billing-report.xlsx — the GtradeA billing report: one row per 1688 line
+// item with its date, PR/order ids, product, quantity and price.
+//
+// Query: ?search= (same matcher as the list) &from=YYYY-MM-DD &to=YYYY-MM-DD.
+// Both dates optional — omitting them is the "All time" report.
+router.get('/billing-report.xlsx', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const from = DAY_RE.test(String(req.query.from || '').trim()) ? String(req.query.from).trim() : '';
+    const to = DAY_RE.test(String(req.query.to || '').trim()) ? String(req.query.to).trim() : '';
+    // Billing covers what was ORDERED, so there's no warehouse-state scope here:
+    // an order still in transit has already been paid for and belongs on the bill.
+    const orders = await fetchSupplierOrders(req.query.search, { from, to });
+
+    // Same bound as the packing list, and for the same reason — see the comment
+    // there. No images on this sheet, so naming is the only per-row network cost.
+    const enriched = orders.slice(0, PACKING_ENRICH_MAX_ROWS);
+    const nerNames = await extractProductNames(enriched.map((o) => o.product_name || ''));
+
+    const rows = orders.map((o, i) => ({
+      date: billingDateCell(o.ordered_at),
+      // The PR id printed on the box, same precedence as the packing list's
+      // Goods No. — the warehouse's own pr_code once scanned in, else whatever
+      // job code gtradea published for the order.
+      prId: (o.warehouse && o.warehouse.pr_code) || o.job_code || '',
+      orderId: o.order_number || '',
+      name: nerNames[i] || deriveShortProductName(o.product_name),
+      quantity: Number(o.quantity) || null,
+      // paid_amount is an ORDER-level figure repeated on every line item of that
+      // order (see the packing list's total), which is exactly what makes the
+      // merge below meaningful.
+      price: Number.isFinite(Number(o.paid_amount)) && o.paid_amount != null ? Number(o.paid_amount) : null,
+    }));
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('GtradeA Billings');
+    BILLING_COLUMNS.forEach((c, i) => { sheet.getColumn(i + 1).width = c.width; });
+    const lastCol = BILLING_COLUMNS.length;
+
+    // Row 1 — title band
+    sheet.mergeCells(1, 1, 1, lastCol);
+    const titleCell = sheet.getCell(1, 1);
+    // Title only — the date range it covers is carried by the filename, so the
+    // band stays clean.
+    titleCell.value = 'GtradeA Billing';
+    titleCell.font = { name: BILLING_TITLE_FONT, size: BILLING_TITLE_SIZE, color: { argb: BILLING_CREAM } };
+    titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BILLING_TEAL } };
+    titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    sheet.getRow(1).height = BILLING_TITLE_HEIGHT;
+
+    // Row 2 — logo band, lifted from the template so the report always carries
+    // whatever mark that file currently holds.
+    sheet.mergeCells(2, 1, 2, lastCol);
+    sheet.getRow(2).height = BILLING_LOGO_HEIGHT;
+    if (fs.existsSync(BILLING_TEMPLATE_PATH)) {
+      try {
+        const templateWb = new ExcelJS.Workbook();
+        await templateWb.xlsx.readFile(BILLING_TEMPLATE_PATH);
+        const tplSheet = templateWb.getWorksheet(1);
+        const tplImages = tplSheet ? tplSheet.getImages() : [];
+        if (tplImages.length) {
+          const imgData = templateWb.getImage(tplImages[0].imageId);
+          const logoId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
+          const widthsPx = BILLING_COLUMNS.map((c) => c.width * 7.5);
+          const totalPx = widthsPx.reduce((a, b) => a + b, 0);
+          const dim = imageSize(imgData.buffer);
+          // The mark is very wide (1186 x 248, about 4.8:1), so fitting it to the
+          // band's HEIGHT alone would stretch it right across the sheet. Take the
+          // smaller of the height fit and a width cap, and never upscale — so it
+          // keeps the proportions of the original artwork at a sensible size.
+          const scale = Math.min(
+            (BILLING_LOGO_HEIGHT * 1.333 - 16) / dim.height,
+            (totalPx * BILLING_LOGO_MAX_WIDTH) / dim.width,
+            1
+          );
+          const w = Math.round(dim.width * scale);
+          const h = Math.round(dim.height * scale);
+          // Anchor by TOP-LEFT + explicit extent, NOT top-left + bottom-right.
+          // A br anchor makes Excel stretch the image to whatever gap it lands in,
+          // and that gap depends on Excel's own column-width-to-pixel rounding —
+          // which is not the 7.5x used here, so the mark came out distorted. `ext`
+          // sets the size outright, so the aspect ratio is exactly the original's.
+          const colAt = (xPx) => {
+            let x = Math.max(0, xPx);
+            for (let i = 0; i < widthsPx.length; i++) {
+              if (x < widthsPx[i]) return i + x / widthsPx[i]; // fractional column
+              x -= widthsPx[i];
+            }
+            return widthsPx.length;
+          };
+          const rowOff = Math.max(0, (BILLING_LOGO_HEIGHT * 1.333 - h) / 2) / (BILLING_LOGO_HEIGHT * 1.333);
+          sheet.addImage(logoId, {
+            tl: { col: colAt((totalPx - w) / 2), row: 1 + rowOff },
+            ext: { width: w, height: h },
+            editAs: 'oneCell',
+          });
+        }
+      } catch (e) {
+        console.error('[1688 billing] could not load logo template:', e?.message || e);
+      }
+    }
+
+    // Row 3 — column headers
+    const headerRow = sheet.getRow(3);
+    BILLING_COLUMNS.forEach((c, i) => {
+      const cell = headerRow.getCell(i + 1);
+      cell.value = c.header;
+      cell.font = { name: BILLING_FONT, size: 16 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BILLING_ORANGE } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    });
+    headerRow.height = BILLING_ROW_HEIGHT;
+
+    // Data rows
+    const FIRST_ROW = 4;
+    rows.forEach((row, i) => {
+      const r = sheet.getRow(FIRST_ROW + i);
+      const setCell = (c, value, extra = {}) => {
+        const cell = r.getCell(c);
+        cell.value = value === '' || value == null ? null : value;
+        cell.font = { name: BILLING_FONT, size: 16, ...(extra.font || {}) };
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.border = BILLING_BORDER;
+        if (extra.numFmt) cell.numFmt = extra.numFmt;
+      };
+      setCell(BILLING_COL.date, row.date, { numFmt: BILLING_DATE_FMT });
+      setCell(BILLING_COL.pr, row.prId);
+      setCell(BILLING_COL.order, row.orderId);
+      // Medium rather than bold: the weight comes from the face itself, so it
+      // stays in the family instead of Excel synthesising a heavier one.
+      setCell(BILLING_COL.name, row.name, { font: { name: BILLING_EMPHASIS_FONT } });
+      setCell(BILLING_COL.quantity, row.quantity);
+      setCell(BILLING_COL.unit, 'pcs');
+      setCell(BILLING_COL.price, row.price, { numFmt: BILLING_CNY_FMT });
+      r.height = BILLING_ROW_HEIGHT;
+    });
+
+    // Merge down: the PR/Order ids across every line item of one order, and the
+    // price across each run of line items carrying the SAME charge. A group whose
+    // lines were each priced separately keeps one price cell per line.
+    let total = 0;
+    let start = 0;
+    for (let i = 1; i <= rows.length; i++) {
+      if (i < rows.length && sameBillingGroup(rows[start], rows[i])) continue;
+      if (i - start > 1) {
+        [BILLING_COL.pr, BILLING_COL.order].forEach((c) => {
+          sheet.mergeCells(FIRST_ROW + start, c, FIRST_ROW + i - 1, c);
+          sheet.getCell(FIRST_ROW + start, c).alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        });
+      }
+      for (const [a, b] of equalRuns(rows, start, i, (x) => x.price)) {
+        if (b - a > 1) {
+          sheet.mergeCells(FIRST_ROW + a, BILLING_COL.price, FIRST_ROW + b - 1, BILLING_COL.price);
+          sheet.getCell(FIRST_ROW + a, BILLING_COL.price).alignment = { horizontal: 'center', vertical: 'middle' };
+        }
+        // One charge per merged run — that's the whole point of the merge, and
+        // it's what keeps the total from double-counting an order-level amount
+        // that happens to be stamped on each of its line items.
+        if (rows[a].price !== null) total += rows[a].price;
+      }
+      start = i;
+    }
+
+    // Total row, bookending the sheet in the title band's colours.
+    const totalRow = sheet.getRow(FIRST_ROW + rows.length);
+    totalRow.height = BILLING_ROW_HEIGHT;
+    BILLING_COLUMNS.forEach((c, i) => {
+      const cell = totalRow.getCell(i + 1);
+      cell.font = { name: BILLING_TITLE_FONT, size: 16, color: { argb: BILLING_CREAM } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BILLING_TEAL } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = BILLING_BORDER;
+    });
+    totalRow.getCell(BILLING_COL.name).value = 'Total';
+    totalRow.getCell(BILLING_COL.quantity).value = rows.reduce((s, x) => s + (x.quantity || 0), 0) || null;
+    totalRow.getCell(BILLING_COL.unit).value = 'pcs';
+    const totalCell = totalRow.getCell(BILLING_COL.price);
+    totalCell.value = total ? Math.round(total * 100) / 100 : null;
+    totalCell.numFmt = BILLING_CNY_FMT;
+
+    const stamp = from || to
+      ? `${(from || 'any').replace(/-/g, '')}_${(to || 'any').replace(/-/g, '')}`
+      : `AllTime_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`;
+    const filename = `CZN_GtradeA_Billing_${stamp}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error('GtradeA billing report error:', error);
+    res.status(500).json({ success: false, message: 'Report failed' });
   }
 });
 
