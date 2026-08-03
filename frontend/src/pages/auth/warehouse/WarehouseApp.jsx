@@ -16,6 +16,7 @@ import {
   loadSupplierOrders,
   syncSupplierOrders,
   exportSupplierOrdersXlsx,
+  exportSupplierOrdersPdf,
   exportBillingReportXlsx,
   goodsCode,
 } from "../../../utils/warehouseApi";
@@ -1316,7 +1317,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // packing list always matches what's on screen rather than every order ever
   // synced — narrowed further by the scope + optional date range the user picks
   // in the export panel.
-  const [supplierExporting, setSupplierExporting] = useState(false);
+  // Which format is currently downloading ("xlsx" | "pdf" | ""), not a plain
+  // boolean: both buttons live in the same footer, and only the one that was
+  // actually clicked should be the one reporting progress.
+  const [exportingFormat, setExportingFormat] = useState("");
+  const supplierExporting = !!exportingFormat;
   const [exportOpen, setExportOpen] = useState(false);
   const [exportScope, setExportScope] = useState("received");
   const [exportFrom, setExportFrom] = useState("");
@@ -1336,11 +1341,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [exportOpen, supplierExporting]);
 
-  const handleExportSupplier = async () => {
-    if (exportRangeInvalid) return;
-    setSupplierExporting(true);
+  // Same rows, same filters, same server code — the format only picks which
+  // file the server writes them into.
+  const handleExportSupplier = async (format) => {
+    if (exportRangeInvalid || supplierExporting) return;
+    setExportingFormat(format);
     try {
-      await exportSupplierOrdersXlsx(supplierSearch, {
+      const download = format === "pdf" ? exportSupplierOrdersPdf : exportSupplierOrdersXlsx;
+      await download(supplierSearch, {
         scope: exportScope,
         from: exportFrom,
         to: exportTo,
@@ -1350,7 +1358,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     } catch (e) {
       showToast(e.message || "Export failed", "error");
     } finally {
-      setSupplierExporting(false);
+      setExportingFormat("");
     }
   };
 
@@ -2160,7 +2168,8 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             <h3 className="text-base font-bold">What do you want to export?</h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
               Builds the styled packing list from the orders{" "}
-              {supplierSearch.trim() ? <>matching &ldquo;{supplierSearch.trim()}&rdquo;</> : "on this tab"}.
+              {supplierSearch.trim() ? <>matching &ldquo;{supplierSearch.trim()}&rdquo;</> : "on this tab"} — as an
+              Excel sheet to work in, or a PDF to print and send.
             </p>
 
             <div className="mt-5 space-y-2">
@@ -2286,23 +2295,35 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               </p>
             ) : null}
 
-            <div className="mt-6 flex justify-end gap-2">
+            {/* Excel leads — it's the working copy staff fill the Ctn. No / KG /
+                CBM columns into. The PDF is the same list frozen for printing
+                and emailing, so it sits beside it rather than under a menu. */}
+            <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setExportOpen(false)}
                 disabled={supplierExporting}
-                className={BTN_GHOST}
+                className={`${BTN_GHOST} disabled:cursor-not-allowed disabled:opacity-40`}
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={handleExportSupplier}
+                onClick={() => handleExportSupplier("pdf")}
+                disabled={supplierExporting || exportRangeInvalid}
+                className={`${BTN_GHOST} disabled:cursor-not-allowed disabled:opacity-40`}
+              >
+                <IconDownload className={`h-3.5 w-3.5 ${exportingFormat === "pdf" ? "animate-pulse" : ""}`} />
+                {exportingFormat === "pdf" ? "Exporting…" : "Export as PDF"}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleExportSupplier("xlsx")}
                 disabled={supplierExporting || exportRangeInvalid}
                 className={BTN_PRIMARY}
               >
-                <IconDownload className={`h-3.5 w-3.5 ${supplierExporting ? "animate-pulse" : ""}`} />
-                {supplierExporting ? "Exporting…" : "Export"}
+                <IconDownload className={`h-3.5 w-3.5 ${exportingFormat === "xlsx" ? "animate-pulse" : ""}`} />
+                {exportingFormat === "xlsx" ? "Exporting…" : "Export as Excel"}
               </button>
             </div>
           </div>
@@ -3354,6 +3375,15 @@ function SupplierOrdersTable({ rows, loading }) {
   // Track images that failed to load and hide them via STATE, not by mutating the
   // DOM node — an imperative style change would persist across re-renders and could
   // permanently hide a later-valid image for the same row key.
+  //
+  // Both <img>s below MUST keep referrerPolicy="no-referrer". Product photos are
+  // hotlinked straight off cbu01.alicdn.com, which 403s any request carrying a
+  // Referer that isn't a 1688/alibaba domain — and the browser default
+  // (strict-origin-when-cross-origin) sends https://www.cellzengroup.com/. Without
+  // the attribute EVERY photo 403s, lands in brokenImgs and silently vanishes; it
+  // only looked like "new orders have no photo" because alicdn serves
+  // max-age=31536000, so already-seen URLs still came from the browser's disk cache
+  // while freshly-synced rows hit the network and got blocked.
   const [brokenImgs, setBrokenImgs] = useState(() => new Set());
   const markImgBroken = (url) =>
     setBrokenImgs((prev) => (!url || prev.has(url) ? prev : new Set(prev).add(url)));
@@ -3393,6 +3423,7 @@ function SupplierOrdersTable({ rows, loading }) {
                   src={o.productImage}
                   alt=""
                   loading="lazy"
+                  referrerPolicy="no-referrer"
                   onError={() => markImgBroken(o.productImage)}
                   className="h-12 w-12 shrink-0 rounded-lg object-cover ring-1 ring-[#ECE9E3]"
                 />
@@ -3442,6 +3473,7 @@ function SupplierOrdersTable({ rows, loading }) {
                         src={o.productImage}
                         alt=""
                         loading="lazy"
+                        referrerPolicy="no-referrer"
                         onError={() => markImgBroken(o.productImage)}
                         className="h-8 w-8 shrink-0 rounded object-cover ring-1 ring-[#ECE9E3]"
                       />

@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const ExcelJS = require('exceljs');
+const PDFDocument = require('pdfkit');
 const nlp = require('compromise');
 const { imageSize } = require('image-size');
 const { Op } = require('sequelize');
@@ -23,6 +24,13 @@ const PACKING_TEMPLATE_DIR = fs.existsSync(path.join(__dirname, '..', '..', '..'
   ? path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'Invoice')
   : path.join(__dirname, '..', '..', '..', 'dist', 'Invoice');
 const PACKING_TEMPLATE_PATH = path.join(PACKING_TEMPLATE_DIR, 'GtradeA Sent Goods.xlsx');
+// The PDF export embeds a real TTF rather than leaning on a PDF base-14 font:
+// 1688 listing titles are machine-translated and carry accented and occasional
+// non-Latin characters, which a WinAnsi-encoded base font drops silently.
+// Resolved the same dev/dist way as the template dir above.
+const PACKING_FONT_DIR = fs.existsSync(path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'fonts', 'Roboto'))
+  ? path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'fonts', 'Roboto')
+  : path.join(__dirname, '..', '..', '..', 'dist', 'fonts', 'Roboto');
 
 // Same staff-or-admin gate used across the inventory routes (see warehouse.js).
 // Data is SHARED — every staff/admin sees every 1688 order. No per-user scoping.
@@ -332,32 +340,84 @@ const PACKING_ROW_HEIGHT = 126; // pt (~168px) — data rows, sized up from the 
 // to something you can actually scroll and print. Still tall enough for the
 // wrapped product description, which is the only multi-line cell left.
 const PACKING_ROW_HEIGHT_NO_IMG = 42; // pt
-const PACKING_IMG_MAX = 140; // px — thumbnail fits inside the taller data row without blowing it up
 const PACKING_THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+
+// ---- Product photo geometry. The photo is drawn at EXACTLY the width of the
+// Product Image column and the ROW is then made as tall as that width implies
+// for the photo's own aspect ratio. Nothing is letterboxed inside a fixed band
+// and nothing is squeezed to fit a height it was never measured against, so a
+// portrait shot and a square one both fill the column edge to edge.
+//
+// Excel stores a column width as a count of '0' glyphs in the workbook's
+// default font (Calibri 11, max digit width 7px) and renders it as
+// `width * 7 + 5` pixels — the conversion has to be that formula and not an
+// approximation, or "exact width" is off by a visible few pixels.
+const excelColWidthPx = (width) => Math.round(width * 7 + 5);
+// Excel lays rows out at 96dpi against 72pt/inch row heights.
+const pxToPt = (px) => Math.round(px * 75) / 100;
+const PACKING_IMG_COL_PX = excelColWidthPx(PACKING_COLUMNS.find((c) => c.key === 'image').width);
+// The one limit on "height follows width": an extreme portrait would otherwise
+// ask for a row past Excel's 409pt ceiling (and past a PDF page). Beyond this
+// the photo is fitted by height instead and comes out narrower than the column.
+const PACKING_IMG_MAX_HEIGHT_PX = 400; // px (300pt)
+// Photos are re-encoded at twice their on-screen width: Excel draws them at
+// 96dpi but these lists get printed, and a 1:1 thumbnail prints soft.
+const PACKING_IMG_RENDER_PX = PACKING_IMG_COL_PX * 2;
+
+// Size one downloaded photo to `targetWidth`, preserving its aspect ratio, in
+// whatever unit the caller works in (px for the sheet, pt for the PDF).
+// Returns null when there's no usable image, so callers can treat "no photo"
+// and "unreadable photo" the same way. Shared by both exports so a row comes
+// out the same shape in the sheet and on the page.
+function fitImageToColumn(img, targetWidth, maxHeight) {
+  if (!img || !img.buffer) return null;
+  try {
+    const dim = imageSize(img.buffer);
+    if (!dim || !dim.width || !dim.height) return null;
+    let w = targetWidth;
+    let h = (dim.height / dim.width) * w;
+    if (h > maxHeight) {
+      h = maxHeight;
+      w = (dim.width / dim.height) * h;
+    }
+    return { buffer: img.buffer, ext: img.ext || 'jpeg', w, h };
+  } catch (e) {
+    console.error('[1688 export] could not read product image dimensions:', e?.message || e);
+    return null;
+  }
+}
+
+// ExcelJS and pdfkit both want a plain format name, and only 'jpeg' — never
+// 'jpg'. Used only when sharp is unavailable and the original bytes go in as-is.
+const extFromUrl = (url) => {
+  const e = path.extname(String(url || '').split('?')[0]).replace('.', '').toLowerCase();
+  return e === 'jpg' ? 'jpeg' : (e || 'jpeg');
+};
 // How many rows get the expensive per-row extras (product photo + LLM-refined
 // name). Data rows are NOT capped — see the export route for why only the
 // enrichment is bounded.
 const PACKING_ENRICH_MAX_ROWS = Number(process.env.PACKING_ENRICH_MAX_ROWS || 500);
 
-// The packing list only ever shows these photos as a ~140px thumbnail
-// (PACKING_IMG_MAX), so embedding gtradea's original product photo — often a
-// multi-MB listing image — just bloats both the in-memory workbook and the
-// downloaded file for no visible benefit. Re-encode down to a small JPEG
-// before embedding instead. `sharp` is a declared backend dependency, but it's
-// a native addon whose prebuilt binary can fail to load on an unexpected
+// The packing list only ever shows these photos a couple of hundred pixels
+// wide (PACKING_IMG_RENDER_PX), so embedding gtradea's original product photo
+// — often a multi-MB listing image — just bloats both the in-memory workbook
+// and the downloaded file for no visible benefit. Re-encode down to a small
+// JPEG before embedding instead. `sharp` is a declared backend dependency, but
+// it's a native addon whose prebuilt binary can fail to load on an unexpected
 // OS/libc combo — so this requires it lazily and falls back to the original
 // buffer if it's unavailable, rather than taking the whole export down over a
-// thumbnail optimisation.
-async function shrinkImageForExport(buffer) {
+// thumbnail optimisation. The fallback still has to name a format, hence
+// `sourceUrl`: an unlabelled buffer is rejected by both writers.
+async function shrinkImageForExport(buffer, sourceUrl) {
   try {
     const sharp = require('sharp');
     const out = await sharp(buffer)
-      .resize({ width: PACKING_IMG_MAX, withoutEnlargement: true })
-      .jpeg({ quality: 45 })
+      .resize({ width: PACKING_IMG_RENDER_PX, withoutEnlargement: true })
+      .jpeg({ quality: 55 })
       .toBuffer();
     return { buffer: out, ext: 'jpeg' };
   } catch {
-    return { buffer, ext: null };
+    return { buffer, ext: extFromUrl(sourceUrl) };
   }
 }
 
@@ -397,13 +457,181 @@ const resolveScope = (v) => {
   return hasKey(EXPORT_SCOPES, name) ? name : 'received';
 };
 
+// ============================================================= PACKING LIST
+// Everything below is shared by the two packing-list exports (.xlsx and .pdf):
+// which orders are on the list, what each row says, the title, the logo and the
+// filename. Only the drawing differs between the two, so the sheet and the
+// printable page can never disagree about the shipment they describe.
+
+// Read the export's query params the same way for both formats.
+function readPackingQuery(query) {
+  const scopeKey = resolveScope(query.scope);
+  return {
+    scopeKey,
+    scope: EXPORT_SCOPES[scopeKey],
+    from: DAY_RE.test(String(query.from || '').trim()) ? String(query.from).trim() : '',
+    to: DAY_RE.test(String(query.to || '').trim()) ? String(query.to).trim() : '',
+    // Photos are the default (the list is a packing reference), so only an
+    // explicit off value turns them off — an absent or unparseable param must
+    // not quietly produce a photo-less list.
+    withImages: !['0', 'false', 'no', 'off'].includes(String(query.images ?? '').trim().toLowerCase()),
+  };
+}
+
+// The rows plus their bounded per-row enrichment (LLM product names + downsized
+// photos), ready to draw.
+//
+// Product photos and LLM-refined names are per-row NETWORK work: a Supabase
+// download + re-encode each, plus a Groq call per 25 titles. On the default
+// Received-only list that's a few dozen rows and costs nothing. "Export all"
+// over a long date range can be thousands — and doing this for every one of
+// them is exactly what used to push this route past Render's proxy timeout into
+// a 502 (see mapWithConcurrency above). So the enrichment, not the data, is
+// what gets bounded: EVERY matching row and every field is still written, the
+// rows past this point just carry the offline heuristic name and no thumbnail —
+// which is all a reconciliation-sized export needs anyway.
+async function buildPackingExport(opts) {
+  const { scopeKey, scope, from, to, withImages } = opts;
+  const allOrders = await fetchSupplierOrders(opts.search, { from, to });
+  const orders = allOrders.filter(scope.match);
+
+  const enriched = orders.slice(0, PACKING_ENRICH_MAX_ROWS);
+  const trimmedEnrichment = orders.length > enriched.length;
+  if (trimmedEnrichment) {
+    console.warn(`[1688 export] ${orders.length} rows (scope=${scopeKey}) — photos/LLM names limited to the first ${enriched.length}.`);
+  }
+
+  // Resolve the product name up front (see productNames.js — a wrong name here
+  // is a customs problem, not just a cosmetic one). `nerNames[i]` is null
+  // wherever no strategy produced a trustworthy name, and undefined past
+  // `enriched`; both fall back to deriveShortProductName below.
+  const nerNames = await extractProductNames(enriched.map((o) => o.product_name || ''));
+
+  // Fetch the product images in parallel (bounded to 8 at a time) instead of
+  // one network round-trip at a time inside the row loop. Skipped entirely for
+  // a no-images export — that's the whole point of the option, and it's what
+  // makes a several-thousand-row "Export All" finish quickly.
+  const imageBuffers = new Array(orders.length).fill(null);
+  if (withImages) {
+    await mapWithConcurrency(enriched, 8, async (o, i) => {
+      if (!o.product_image) return;
+      try {
+        const raw = await downloadImage(o.product_image);
+        if (raw) imageBuffers[i] = await shrinkImageForExport(raw, o.product_image);
+      } catch (e) {
+        console.error('[1688 export] product image download failed:', e?.message || e);
+      }
+    });
+  }
+
+  return { orders, nerNames, imageBuffers, enrichedCount: enriched.length, trimmedEnrichment };
+}
+
+// The heading printed INTO the document, not just into the filename: these
+// lists get emailed and printed, and a "Not Arrived Yet" chase list that reads
+// like a packing list of goods on hand is the kind of mix-up that ships the
+// wrong carton. A trimmed export says so on its face too — a reader who sees
+// photos stop halfway down otherwise has no way to tell that from missing
+// product data. Only photos are called out: a row past the cap still gets a
+// product name, just from the offline heuristic rather than the model, so
+// nothing is actually absent from those cells. Moot without images.
+function packingTitle({ scope, from, to, withImages, trimmedEnrichment, enrichedCount, total }) {
+  const rangeLabel = from && to ? ` (${from} to ${to})` : from ? ` (from ${from})` : to ? ` (up to ${to})` : '';
+  const trimLabel = trimmedEnrichment && withImages
+    ? `  ·  photos on the first ${enrichedCount} of ${total} rows`
+    : '';
+  return `Packing List of 1688 Orders — ${scope.label}${rangeLabel}${trimLabel}`;
+}
+
+// Kept in step with the same expression in frontend/src/utils/warehouseApi.js,
+// so a file saved from the browser and one fetched from the API match.
+function packingFilename({ scopeKey, withImages, from, to }, ext) {
+  const stamp = from || to
+    ? `${(from || 'any').replace(/-/g, '')}_${(to || 'any').replace(/-/g, '')}`
+    : new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const scopeTag = { received: 'Received', all: 'All', not_arrived: 'NotArrived' }[scopeKey];
+  return `CZN_GtradeA_PackingList_${scopeTag}${withImages ? '' : '_NoImages'}_${stamp}.${ext}`;
+}
+
+// The Cellzen mark, pulled straight out of the hand-styled template file so
+// both exports always carry whatever mark is currently in it. Returns null when
+// the template is missing or holds no image — a logo-less document is a much
+// better outcome than a failed export.
+async function packingLogo() {
+  if (!fs.existsSync(PACKING_TEMPLATE_PATH)) return null;
+  try {
+    const templateWb = new ExcelJS.Workbook();
+    await templateWb.xlsx.readFile(PACKING_TEMPLATE_PATH);
+    const tplSheet = templateWb.getWorksheet(1);
+    const tplImages = tplSheet ? tplSheet.getImages() : [];
+    if (!tplImages.length) return null;
+    return templateWb.getImage(tplImages[0].imageId); // { buffer, extension }
+  } catch (e) {
+    console.error('[1688 export] could not load logo template:', e?.message || e);
+    return null;
+  }
+}
+
+// One row's cell values, keyed by column. Brand/model/description are gtradea
+// data gaps backfilled with sane placeholders rather than left blank, since the
+// list is used as a physical packing reference. Values are returned raw — the
+// sheet writes them as numbers, the PDF formats them as text.
+function packingRowValues(o, name) {
+  return {
+    marka: 'CZN-GT',   // fixed shipping mark for every carton in this batch
+    ctn: null,         // Ctn. No — filled in by hand once cartons are packed
+    order: o.order_number || '-',
+    // Goods No. — the id physically printed on the box's label: the gtradea PR
+    // id (PR-1029), same as the GtradeA panel's "Received · PR-…" pill. Falls
+    // back to the internal CZN code only for a box stored before gtradea
+    // published a job code for its order. Blank until it's actually received —
+    // never a made-up sequence.
+    goods: o.warehouse && o.warehouse.in_warehouse ? (o.warehouse.pr_code || o.job_code || o.warehouse.code) : null,
+    image: null,       // the photo is drawn into this cell
+    name,
+    brand: 'GT',       // gtradea doesn't track a real brand — generic house brand
+    model: deriveModelNumber(o),
+    description: o.product_name || '-', // full 1688 listing title — no qty/unit mixed in
+    quantity: Number(o.quantity) || null,
+    unit: 'pcs',
+    kg: null,          // filled in by hand at packing time
+    cbm: null,         // filled in by hand at packing time
+    // Paid Amount — from gtradea's procurement/China-ops view, packing list
+    // only (not shown on the 1688 tab).
+    paid: o.paid_amount != null ? Number(o.paid_amount) : null,
+  };
+}
+
+// Consecutive line items that belong to the same order AND the same CN tracking
+// number are one shipment split across several product rows, so their order
+// number and paid amount (both order-level, not per-item) read once per shipment
+// instead of repeating on every line — merged cells in the sheet, an unbroken
+// cell on the page. Returns, for every row, the index of the first row of its
+// shipment, plus the paid total counted ONCE per shipment so it isn't inflated
+// by multi-item orders.
+function packingShipmentGroups(orders) {
+  const groupOf = new Array(orders.length).fill(0);
+  let start = 0;
+  let totalPaid = 0;
+  for (let i = 1; i <= orders.length; i++) {
+    const sameShipment = i < orders.length
+      && orders[i].order_number && orders[i].china_tracking_no
+      && orders[i].order_number === orders[start].order_number
+      && orders[i].china_tracking_no === orders[start].china_tracking_no;
+    if (!sameShipment) {
+      for (let k = start; k < i; k++) groupOf[k] = start;
+      const paid = Number(orders[start].paid_amount);
+      if (Number.isFinite(paid)) totalPaid += paid;
+      start = i;
+    }
+  }
+  return { groupOf, totalPaid: totalPaid ? Math.round(totalPaid * 100) / 100 : null };
+}
+
 // GET /export.xlsx — packing list for the (optionally search-, scope- and
 // date-filtered) 1688 orders, styled after
 // frontend/public/Invoice/GtradeA Sent Goods.xlsx: title band, Cellzen logo,
 // purple header row, one row per order with its product photo embedded.
-// Brand/model/description are gtradea data gaps we backfill with sane
-// placeholders (see the per-row build below) rather than leaving the columns
-// blank, since the sheet is used as a physical packing reference.
 //
 // Query: ?search= (same matcher as the list) &scope=received|all|not_arrived
 // (default received) &from=YYYY-MM-DD &to=YYYY-MM-DD (both optional, inclusive,
@@ -411,103 +639,39 @@ const resolveScope = (v) => {
 router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const scopeKey = resolveScope(req.query.scope);
-    const scope = EXPORT_SCOPES[scopeKey];
-    const from = DAY_RE.test(String(req.query.from || '').trim()) ? String(req.query.from).trim() : '';
-    const to = DAY_RE.test(String(req.query.to || '').trim()) ? String(req.query.to).trim() : '';
-    // Photos are the default (the sheet is a packing reference), so only an
-    // explicit off value turns them off — an absent or unparseable param must
-    // not quietly produce a photo-less list.
-    const withImages = !['0', 'false', 'no', 'off'].includes(String(req.query.images ?? '').trim().toLowerCase());
+    const opts = { ...readPackingQuery(req.query), search: req.query.search };
+    const { withImages } = opts;
     const { columns, col } = packingColumns(withImages);
-    const rowHeight = withImages ? PACKING_ROW_HEIGHT : PACKING_ROW_HEIGHT_NO_IMG;
-    const allOrders = await fetchSupplierOrders(req.query.search, { from, to });
-    const orders = allOrders.filter(scope.match);
-
-    // Product photos and LLM-refined names are per-row NETWORK work: a Supabase
-    // download + re-encode each, plus a Groq call per 25 titles. On the default
-    // Received-only list that's a few dozen rows and costs nothing. "Export all"
-    // over a long date range can be thousands — and doing this for every one of
-    // them is exactly what used to push this route past Render's proxy timeout
-    // into a 502 (see mapWithConcurrency above). So the enrichment, not the data,
-    // is what gets bounded: EVERY matching row and every field is still written
-    // below, the rows past this point just carry the offline heuristic name and
-    // no thumbnail — which is all a reconciliation-sized export needs anyway.
-    const enriched = orders.slice(0, PACKING_ENRICH_MAX_ROWS);
-    const trimmedEnrichment = orders.length > enriched.length;
-    if (trimmedEnrichment) {
-      console.warn(`[1688 export] ${orders.length} rows (scope=${scopeKey}) — photos/LLM names limited to the first ${enriched.length}.`);
-    }
-
-    // Resolve the product name up front (see productNames.js — a wrong name here
-    // is a customs problem, not just a cosmetic one). `nerNames[i]` is null
-    // wherever no strategy produced a trustworthy name, and undefined past
-    // `enriched`; both fall back to deriveShortProductName below.
-    const nerNames = await extractProductNames(enriched.map((o) => o.product_name || ''));
-
-    // Fetch the product images in parallel (bounded to 8 at a time) instead of
-    // one network round-trip at a time inside the row loop below. Skipped
-    // entirely for a no-images export — that's the whole point of the option,
-    // and it's what makes a several-thousand-row "Export All" finish quickly.
-    const imageBuffers = new Array(orders.length).fill(null);
-    if (withImages) {
-      await mapWithConcurrency(enriched, 8, async (o, i) => {
-        if (!o.product_image) return;
-        try {
-          const raw = await downloadImage(o.product_image);
-          if (raw) imageBuffers[i] = await shrinkImageForExport(raw);
-        } catch (e) {
-          console.error('[1688 export] product image download failed:', e?.message || e);
-        }
-      });
-    }
+    const nominalHeight = withImages ? PACKING_ROW_HEIGHT : PACKING_ROW_HEIGHT_NO_IMG;
+    const { orders, nerNames, imageBuffers, enrichedCount, trimmedEnrichment } = await buildPackingExport(opts);
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Packing List');
     columns.forEach((c, i) => { sheet.getColumn(i + 1).width = c.width; });
 
-    // Row 1 — title band. The scope and date range are printed INTO the sheet,
-    // not just the filename: these lists get emailed and printed, and a
-    // "Not Arrived Yet" chase list that reads like a packing list of goods on
-    // hand is the kind of mix-up that ships the wrong carton.
+    // Row 1 — title band.
     sheet.mergeCells(1, 1, 1, columns.length);
     const titleCell = sheet.getCell(1, 1);
-    const rangeLabel = from && to ? ` (${from} to ${to})` : from ? ` (from ${from})` : to ? ` (up to ${to})` : '';
-    // A trimmed export says so on its face — a reader who sees photos stop
-    // halfway down otherwise has no way to tell that from missing product data.
-    // Only photos are called out: a row past the cap still gets a product name,
-    // just from the offline heuristic rather than the model, so nothing is
-    // actually absent from those cells. Moot without images.
-    const trimLabel = trimmedEnrichment && withImages
-      ? `  ·  photos on the first ${enriched.length} of ${orders.length} rows`
-      : '';
-    titleCell.value = `Packing List of 1688 Orders — ${scope.label}${rangeLabel}${trimLabel}`;
+    titleCell.value = packingTitle({ ...opts, trimmedEnrichment, enrichedCount, total: orders.length });
     titleCell.font = { size: 17, bold: true, name: 'Arial', color: { argb: 'FF2D2D2D' } };
     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E4DD' } };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
     sheet.getRow(1).height = 48;
 
-    // Row 2 — logo band, logo pulled straight from the template file so the
-    // export always carries whatever mark is currently in that file.
+    // Row 2 — logo band.
     sheet.mergeCells(2, 1, 2, columns.length);
     sheet.getRow(2).height = 105;
-    if (fs.existsSync(PACKING_TEMPLATE_PATH)) {
+    const logo = await packingLogo();
+    if (logo) {
       try {
-        const templateWb = new ExcelJS.Workbook();
-        await templateWb.xlsx.readFile(PACKING_TEMPLATE_PATH);
-        const tplSheet = templateWb.getWorksheet(1);
-        const tplImages = tplSheet ? tplSheet.getImages() : [];
-        if (tplImages.length) {
-          const imgData = templateWb.getImage(tplImages[0].imageId);
-          const logoId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
-          sheet.addImage(logoId, {
-            tl: { col: 5, row: 1, nativeCol: 5, nativeRow: 1, nativeColOff: 839416, nativeRowOff: 150000 },
-            br: { col: 7, row: 1, nativeCol: 7, nativeRow: 1, nativeColOff: 85760, nativeRowOff: 1050000 },
-            editAs: 'oneCell',
-          });
-        }
+        const logoId = workbook.addImage({ buffer: logo.buffer, extension: logo.extension });
+        sheet.addImage(logoId, {
+          tl: { col: 5, row: 1, nativeCol: 5, nativeRow: 1, nativeColOff: 839416, nativeRowOff: 150000 },
+          br: { col: 7, row: 1, nativeCol: 7, nativeRow: 1, nativeColOff: 85760, nativeRowOff: 1050000 },
+          editAs: 'oneCell',
+        });
       } catch (e) {
-        console.error('[1688 export] could not load logo template:', e?.message || e);
+        console.error('[1688 export] could not place logo:', e?.message || e);
       }
     }
 
@@ -528,57 +692,46 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i];
       const row = sheet.getRow(r);
-      const qty = Number(o.quantity) || 0;
-      totalQty += qty;
+      const values = packingRowValues(o, nerNames[i] || deriveShortProductName(o.product_name));
+      totalQty += values.quantity || 0;
 
-      const setCell = (col, value, extraFont) => {
-        const cell = row.getCell(col);
+      const setCell = (c, value, extraFont) => {
+        const cell = row.getCell(c);
         cell.value = value === '' || value == null ? null : value;
         cell.font = { size: 11, name: 'Arial', ...extraFont };
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
         cell.border = PACKING_THIN_BORDER;
       };
+      columns.forEach((c, idx) => setCell(idx + 1, values[c.key], c.key === 'name' ? { bold: true } : undefined));
 
-      setCell(col.marka, 'CZN-GT'); // Marka — fixed shipping mark for every carton in this batch
-      setCell(col.ctn, null); // Ctn. No — filled in by hand once cartons are packed
-      setCell(col.order, o.order_number || '-');
-      // Goods No. — the id physically printed on the box's label: the gtradea PR
-      // id (PR-1029), same as the GtradeA panel's "Received · PR-…" pill. Falls
-      // back to the internal CZN code only for a box stored before gtradea
-      // published a job code for its order. Blank until it's actually received —
-      // never a made-up sequence.
-      setCell(col.goods, o.warehouse && o.warehouse.in_warehouse ? (o.warehouse.pr_code || o.job_code || o.warehouse.code) : null);
-      if (withImages) setCell(col.image, null); // the photo is embedded into this cell below
-      setCell(col.name, nerNames[i] || deriveShortProductName(o.product_name), { bold: true });
-      setCell(col.brand, 'GT'); // gtradea doesn't track a real brand — generic house brand
-      setCell(col.model, deriveModelNumber(o));
-      setCell(col.description, o.product_name || '-'); // full 1688 listing title — no qty/unit mixed in
-      setCell(col.quantity, qty || null);
-      setCell(col.unit, 'pcs');
-      setCell(col.kg, null); // KG — filled in by hand at packing time
-      setCell(col.cbm, null); // CBM — filled in by hand at packing time
-      setCell(col.paid, o.paid_amount != null ? Number(o.paid_amount) : null); // Paid Amount — from gtradea's procurement/China-ops view, packing list only (not shown on the 1688 tab)
-      row.height = rowHeight;
+      // The photo decides how tall this row is. It's drawn at the exact width of
+      // the Product Image column, so its height is whatever that width implies
+      // for its own aspect ratio — the row grows to match rather than the photo
+      // shrinking to fit. Rows with no photo keep the nominal height, which also
+      // acts as the floor so a wide, short image can't produce a cramped row.
+      const drawn = withImages ? fitImageToColumn(imageBuffers[i], PACKING_IMG_COL_PX, PACKING_IMG_MAX_HEIGHT_PX) : null;
+      row.height = drawn ? Math.max(nominalHeight, pxToPt(drawn.h)) : nominalHeight;
 
-      const img = imageBuffers[i];
-      if (img) {
+      if (drawn) {
         try {
-          const buf = img.buffer;
-          const ext = img.ext || (path.extname(o.product_image.split('?')[0]).replace('.', '') || 'jpeg').toLowerCase();
-          const dim = imageSize(buf);
-          const scale = Math.min(PACKING_IMG_MAX / dim.width, PACKING_IMG_MAX / dim.height, 1);
-          const w = Math.round(dim.width * scale);
-          const h = Math.round(dim.height * scale);
-          const imgId = workbook.addImage({ buffer: buf, extension: ext === 'jpg' ? 'jpeg' : ext });
+          const imgId = workbook.addImage({ buffer: drawn.buffer, extension: drawn.ext });
           const PX_TO_EMU = 9525;
           const imgCol0 = col.image - 1; // ExcelJS anchors are 0-indexed
-          const colWidthPx = columns[imgCol0].width * 7.5;
-          const rowHeightPx = rowHeight * 1.333;
-          const padX = Math.round(Math.max(0, (colWidthPx - w) / 2) * PX_TO_EMU);
-          const padY = Math.round(Math.max(0, (rowHeightPx - h) / 2) * PX_TO_EMU);
+          const rowHeightPx = row.height / 0.75;
+          // padX is 0 for anything that isn't height-capped — that IS the
+          // exact-width fit. padY centres a photo shorter than its row.
+          const padX = Math.round(Math.max(0, (PACKING_IMG_COL_PX - drawn.w) / 2) * PX_TO_EMU);
+          const padY = Math.round(Math.max(0, (rowHeightPx - drawn.h) / 2) * PX_TO_EMU);
           sheet.addImage(imgId, {
             tl: { col: imgCol0, row: r - 1, nativeCol: imgCol0, nativeRow: r - 1, nativeColOff: padX, nativeRowOff: padY },
-            br: { col: imgCol0, row: r - 1, nativeCol: imgCol0, nativeRow: r - 1, nativeColOff: padX + w * PX_TO_EMU, nativeRowOff: padY + h * PX_TO_EMU },
+            br: {
+              col: imgCol0,
+              row: r - 1,
+              nativeCol: imgCol0,
+              nativeRow: r - 1,
+              nativeColOff: Math.round(padX + drawn.w * PX_TO_EMU),
+              nativeRowOff: Math.round(padY + drawn.h * PX_TO_EMU),
+            },
             editAs: 'oneCell',
           });
         } catch (e) {
@@ -589,32 +742,18 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       r += 1;
     }
 
-    // Merge the Order ID + Paid Amount cells down across consecutive line items
-    // that belong to the same order AND the same CN tracking number — that's one
-    // shipment split into several product rows, so its order number and paid
-    // amount (both order-level, not per-item) should read once per shipment
-    // instead of repeating on every line.
-    let groupStart = 0;
-    let totalPaid = 0;
-    for (let i = 1; i <= orders.length; i++) {
-      const sameShipment = i < orders.length
-        && orders[i].order_number && orders[i].china_tracking_no
-        && orders[i].order_number === orders[groupStart].order_number
-        && orders[i].china_tracking_no === orders[groupStart].china_tracking_no;
-      if (!sameShipment) {
-        if (i - groupStart > 1) {
-          [col.order, col.paid].forEach((c) => {
-            sheet.mergeCells(4 + groupStart, c, 4 + i - 1, c);
-            sheet.getCell(4 + groupStart, c).alignment = { horizontal: 'center', vertical: 'middle' };
-          });
-        }
-        // Paid amount is per ORDER, not per line item — count each order once
-        // regardless of how many product rows it spans, so the total isn't
-        // inflated by multi-item shipments.
-        const paid = Number(orders[groupStart].paid_amount);
-        if (Number.isFinite(paid)) totalPaid += paid;
-        groupStart = i;
-      }
+    // One shipment split across several product rows reads its order number and
+    // paid amount once, as a merged cell down the group.
+    const { groupOf, totalPaid } = packingShipmentGroups(orders);
+    for (let i = 0; i < orders.length; i++) {
+      if (groupOf[i] !== i) continue;
+      let end = i;
+      while (end + 1 < orders.length && groupOf[end + 1] === i) end += 1;
+      if (end === i) continue;
+      [col.order, col.paid].forEach((c) => {
+        sheet.mergeCells(4 + i, c, 4 + end, c);
+        sheet.getCell(4 + i, c).alignment = { horizontal: 'center', vertical: 'middle' };
+      });
     }
 
     // Total row
@@ -631,20 +770,260 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     setTotalCell(col.description, 'Total');
     setTotalCell(col.quantity, totalQty);
     setTotalCell(col.unit, 'pcs');
-    setTotalCell(col.paid, totalPaid ? Math.round(totalPaid * 100) / 100 : null);
+    setTotalCell(col.paid, totalPaid);
 
-    const stamp = from || to
-      ? `${(from || 'any').replace(/-/g, '')}_${(to || 'any').replace(/-/g, '')}`
-      : new Date().toISOString().slice(0, 10).replace(/-/g, '');
-    const scopeTag = { received: 'Received', all: 'All', not_arrived: 'NotArrived' }[scopeKey];
-    const filename = `CZN_GtradeA_PackingList_${scopeTag}${withImages ? '' : '_NoImages'}_${stamp}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${packingFilename(opts, 'xlsx')}"`);
     await workbook.xlsx.write(res);
     res.end();
   } catch (error) {
     console.error('Export 1688 packing list error:', error);
     res.status(500).json({ success: false, message: 'Export failed' });
+  }
+});
+
+// ---------------------------------------------------------------- PDF export
+// The same packing list as a document you can hand to a driver or attach to a
+// carton: A4 landscape, the same title band / logo / purple header / bordered
+// rows as the sheet, the header repeated on every page.
+const PDF_MARGIN = 24;
+const PDF_CELL_PAD = 3;
+const PDF_FONT_SIZE = 7;
+const PDF_HEADER_SIZE = 7.5;
+const PDF_MIN_ROW_HEIGHT = 20;
+const PDF_TITLE_HEIGHT = 30;
+const PDF_LOGO_HEIGHT = 54;
+const PDF_CONT_HEIGHT = 16;   // slim "continued" strip on pages 2+
+const PDF_FOOTER_HEIGHT = 14;
+const PDF_PURPLE = '#512D70'; // header fill — same as the sheet's FF512D70
+const PDF_BAND = '#E8E4DD';   // title/total band — same as the sheet's FFE8E4DD
+const PDF_INK = '#2D2D2D';
+const PDF_GRID = '#9A9285';
+
+// Roboto ships with the site; a base-14 PDF font would silently drop the
+// accented characters that turn up in machine-translated 1688 titles. Falls
+// back to Helvetica if the font directory isn't where it's expected.
+function registerPdfFonts(doc) {
+  const regular = path.join(PACKING_FONT_DIR, 'Roboto-Regular.ttf');
+  const bold = path.join(PACKING_FONT_DIR, 'Roboto-Bold.ttf');
+  if (fs.existsSync(regular) && fs.existsSync(bold)) {
+    try {
+      doc.registerFont('body', regular);
+      doc.registerFont('bold', bold);
+      return;
+    } catch (e) {
+      console.error('[1688 export] could not load Roboto, falling back:', e?.message || e);
+    }
+  }
+  doc.registerFont('body', 'Helvetica');
+  doc.registerFont('bold', 'Helvetica-Bold');
+}
+
+// Cell values as printable text. The sheet stores numbers so Excel can total
+// them; the page has to show them, so they're formatted here instead.
+const pdfText = (key, value) => {
+  if (value == null || value === '') return '';
+  if (key === 'paid' || key === 'quantity') {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return String(value);
+    return key === 'paid' ? String(Math.round(n * 100) / 100) : String(n);
+  }
+  return String(value);
+};
+
+// GET /export.pdf — the packing list as a printable PDF. Same query params, same
+// rows and same filename stem as /export.xlsx; only the medium differs.
+router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const opts = { ...readPackingQuery(req.query), search: req.query.search };
+    const { withImages } = opts;
+    const { columns, col } = packingColumns(withImages);
+    // Every await happens BEFORE the document is opened, so a DB or image
+    // failure can still answer with a clean JSON 500 instead of a half-written
+    // PDF that a browser would happily save as a corrupt file.
+    const { orders, nerNames, imageBuffers, enrichedCount, trimmedEnrichment } = await buildPackingExport(opts);
+    const { groupOf, totalPaid } = packingShipmentGroups(orders);
+    const logo = await packingLogo();
+    const title = packingTitle({ ...opts, trimmedEnrichment, enrichedCount, total: orders.length });
+
+    const doc = new PDFDocument({
+      size: 'A4',
+      layout: 'landscape',
+      // bottom: 0 disables pdfkit's own text auto-pagination — rows are measured
+      // and broken by hand below, and a second, invisible page break in the
+      // middle of one would tear a row in half.
+      margins: { top: PDF_MARGIN, left: PDF_MARGIN, right: PDF_MARGIN, bottom: 0 },
+      info: { Title: title, Author: 'Cellzen Trading' },
+    });
+    registerPdfFonts(doc);
+
+    const pageW = doc.page.width;
+    const pageH = doc.page.height;
+    const bodyLeft = PDF_MARGIN;
+    const bodyRight = pageW - PDF_MARGIN;
+    const bodyWidth = bodyRight - bodyLeft;
+    const bodyBottom = pageH - PDF_MARGIN - PDF_FOOTER_HEIGHT;
+
+    // Column edges are derived from the sheet's own widths, scaled to the page,
+    // and computed as cumulative fractions so the right-hand edge lands exactly
+    // on the margin instead of drifting by accumulated rounding.
+    const widthTotal = columns.reduce((s, c) => s + c.width, 0);
+    const colX = [];
+    let cum = 0;
+    columns.forEach((c) => {
+      colX.push(bodyLeft + (cum / widthTotal) * bodyWidth);
+      cum += c.width;
+    });
+    colX.push(bodyRight);
+    const colW = columns.map((_, i) => colX[i + 1] - colX[i]);
+    const imgColW = withImages ? colW[col.image - 1] - PDF_CELL_PAD * 2 : 0;
+
+    const line = (x1, y1, x2, y2) => {
+      doc.moveTo(x1, y1).lineTo(x2, y2).lineWidth(0.5).strokeColor(PDF_GRID).stroke();
+    };
+    const textHeight = (text, width, font, size) => (
+      text ? doc.font(font).fontSize(size).heightOfString(text, { width: width - PDF_CELL_PAD * 2, align: 'center' }) : 0
+    );
+    const drawText = (text, x, y, w, h, { font = 'body', size = PDF_FONT_SIZE, color = PDF_INK } = {}) => {
+      if (!text) return;
+      doc.font(font).fontSize(size).fillColor(color);
+      const innerW = w - PDF_CELL_PAD * 2;
+      const th = doc.heightOfString(text, { width: innerW, align: 'center' });
+      doc.text(text, x + PDF_CELL_PAD, y + Math.max(0, (h - th) / 2), { width: innerW, align: 'center' });
+    };
+    const band = (y, h, fill) => doc.rect(bodyLeft, y, bodyWidth, h).fill(fill);
+
+    const headerHeight = Math.max(
+      PDF_MIN_ROW_HEIGHT,
+      ...columns.map((c, i) => textHeight(c.header, colW[i], 'bold', PDF_HEADER_SIZE) + PDF_CELL_PAD * 2)
+    );
+
+    let pageNo = 0;
+    // Title band, logo (first page only) and the header row. Returns the y the
+    // first data row starts at.
+    const drawPageChrome = (first) => {
+      pageNo += 1;
+      let y = PDF_MARGIN;
+      if (first) {
+        band(y, PDF_TITLE_HEIGHT, PDF_BAND);
+        drawText(title, bodyLeft, y, bodyWidth, PDF_TITLE_HEIGHT, { font: 'bold', size: 12 });
+        y += PDF_TITLE_HEIGHT;
+        if (logo) {
+          try {
+            const dim = imageSize(logo.buffer);
+            const h = PDF_LOGO_HEIGHT - 8;
+            const w = dim && dim.width && dim.height ? (dim.width / dim.height) * h : h;
+            doc.image(logo.buffer, bodyLeft + (bodyWidth - w) / 2, y + 4, { width: w, height: h });
+          } catch (e) {
+            console.error('[1688 export] could not draw logo on the PDF:', e?.message || e);
+          }
+        }
+        y += PDF_LOGO_HEIGHT;
+      } else {
+        drawText(`${title}  —  continued`, bodyLeft, y, bodyWidth, PDF_CONT_HEIGHT, { font: 'bold', size: 8 });
+        y += PDF_CONT_HEIGHT;
+      }
+
+      band(y, headerHeight, PDF_PURPLE);
+      columns.forEach((c, i) => {
+        drawText(c.header, colX[i], y, colW[i], headerHeight, { font: 'bold', size: PDF_HEADER_SIZE, color: '#FFFFFF' });
+        line(colX[i], y, colX[i], y + headerHeight);
+      });
+      line(bodyRight, y, bodyRight, y + headerHeight);
+
+      doc.font('body').fontSize(7).fillColor('#7A7368');
+      doc.text(`Page ${pageNo}`, bodyLeft, pageH - PDF_MARGIN - PDF_FOOTER_HEIGHT + 4, { width: bodyWidth, align: 'right' });
+      return y + headerHeight;
+    };
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${packingFilename(opts, 'pdf')}"`);
+    doc.pipe(res);
+
+    let y = drawPageChrome(true);
+    let firstRowOnPage = true;
+    let totalQty = 0;
+    // The two order-level columns that read once per shipment (0-indexed).
+    const mergedCols = new Set([col.order - 1, col.paid - 1]);
+
+    for (let i = 0; i < orders.length; i++) {
+      const o = orders[i];
+      const values = packingRowValues(o, nerNames[i] || deriveShortProductName(o.product_name));
+      totalQty += values.quantity || 0;
+      const cells = columns.map((c) => pdfText(c.key, values[c.key]));
+
+      // Same rule as the sheet: the photo is drawn at the exact width of its
+      // column and the ROW grows to whatever height that implies. The cap is
+      // the page itself — a row taller than the body could never be drawn.
+      const maxImgH = bodyBottom - PDF_MARGIN - PDF_CONT_HEIGHT - headerHeight;
+      const drawn = withImages ? fitImageToColumn(imageBuffers[i], imgColW, maxImgH) : null;
+      const rowH = Math.max(
+        PDF_MIN_ROW_HEIGHT,
+        drawn ? drawn.h + PDF_CELL_PAD * 2 : 0,
+        ...cells.map((t, ci) => textHeight(t, colW[ci], ci === col.name - 1 ? 'bold' : 'body', PDF_FONT_SIZE) + PDF_CELL_PAD * 2)
+      );
+
+      if (y + rowH > bodyBottom) {
+        doc.addPage();
+        y = drawPageChrome(false);
+        firstRowOnPage = true;
+      }
+
+      // A shipment's order number and paid amount read once per group — the
+      // divider between its rows is left out and the value printed only on the
+      // group's first row, which is the merged cell of the sheet drawn by hand.
+      // A group split by a page break restarts, so the value is never lost off
+      // the bottom of a page.
+      const continues = !firstRowOnPage && i > 0 && groupOf[i] === groupOf[i - 1];
+
+      columns.forEach((_c, ci) => {
+        const merged = mergedCols.has(ci);
+        if (!(merged && continues)) line(colX[ci], y, colX[ci + 1], y); // top border
+        line(colX[ci], y, colX[ci], y + rowH);
+        if (merged && continues) return;
+        drawText(cells[ci], colX[ci], y, colW[ci], rowH, { font: ci === col.name - 1 ? 'bold' : 'body' });
+      });
+      line(bodyRight, y, bodyRight, y + rowH);
+
+      if (drawn) {
+        try {
+          const ix = colX[col.image - 1] + PDF_CELL_PAD + Math.max(0, (imgColW - drawn.w) / 2);
+          doc.image(drawn.buffer, ix, y + Math.max(0, (rowH - drawn.h) / 2), { width: drawn.w, height: drawn.h });
+        } catch (e) {
+          console.error('[1688 export] product image draw failed:', e?.message || e);
+        }
+      }
+
+      y += rowH;
+      firstRowOnPage = false;
+    }
+
+    // Total row — same band colour as the sheet's.
+    const totalH = Math.max(PDF_MIN_ROW_HEIGHT, 22);
+    if (y + totalH > bodyBottom) {
+      doc.addPage();
+      y = drawPageChrome(false);
+    }
+    band(y, totalH, PDF_BAND);
+    const totals = { model: 'Total', description: 'Total', quantity: String(totalQty), unit: 'pcs', paid: totalPaid == null ? '' : String(totalPaid) };
+    columns.forEach((c, ci) => {
+      line(colX[ci], y, colX[ci + 1], y);
+      line(colX[ci], y, colX[ci], y + totalH);
+      drawText(totals[c.key] || '', colX[ci], y, colW[ci], totalH, { font: 'bold', size: PDF_FONT_SIZE + 0.5 });
+    });
+    line(bodyRight, y, bodyRight, y + totalH);
+    line(bodyLeft, y + totalH, bodyRight, y + totalH);
+
+    if (!orders.length) {
+      drawText('No 1688 orders match this export.', bodyLeft, y + totalH + 10, bodyWidth, 20, { size: 9 });
+    }
+
+    doc.end();
+  } catch (error) {
+    console.error('Export 1688 packing list PDF error:', error);
+    if (!res.headersSent) res.status(500).json({ success: false, message: 'Export failed' });
+    else res.end();
   }
 });
 

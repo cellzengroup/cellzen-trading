@@ -246,33 +246,41 @@ export async function syncSupplierOrders(force = false) {
 }
 
 // Download the packing list (same search filter as the on-screen table) as a
-// styled .xlsx — title band, logo, purple header row, one row per order with
-// its product photo. Same auth-gated GET -> blob -> anchor click as exportItemsCsv.
+// styled .xlsx or a printable .pdf — title band, logo, purple header row, one
+// row per order with its product photo. Same auth-gated GET -> blob -> anchor
+// click as exportItemsCsv.
 //
-// `scope` picks which slice of the orders lands in the sheet — "received"
+// `scope` picks which slice of the orders lands in the list — "received"
 // (default: only what's on the shelf right now), "all", or "not_arrived"
 // (ordered but never scanned in). `from`/`to` are optional inclusive
 // YYYY-MM-DD bounds on the gtradea order date. `images` false drops the product
 // photos AND the column that holds them, which is what makes a big export
 // finish quickly. All of it is validated server-side; the names must stay in
 // step with EXPORT_SCOPES in backend/inventory/routes/supplierOrders.js.
-export async function exportSupplierOrdersXlsx(
-  search = "",
-  { scope = "received", from = "", to = "", images = true } = {}
-) {
+//
+// Both formats are built from the same rows by the same server code, so the
+// sheet and the page always describe the same shipment — only the medium
+// differs, and so does the extension in the URL and the filename.
+async function exportSupplierOrders(format, search, { scope = "received", from = "", to = "", images = true } = {}) {
   const params = new URLSearchParams();
   if (search) params.set("search", search);
   params.set("scope", scope);
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   if (!images) params.set("images", "0");
-  const res = await authFetch(`/inventory/supplier-orders/export.xlsx?${params}`, { ...STAFF, cache: "no-store" });
+  const res = await authFetch(`/inventory/supplier-orders/export.${format}?${params}`, { ...STAFF, cache: "no-store" });
   if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`);
   // Mirrors the server's own Content-Disposition name so a file saved from the
   // browser and one fetched directly from the API are named the same thing.
   const scopeTag = { received: "Received", all: "All", not_arrived: "NotArrived" }[scope] || "Received";
-  await saveResponseAs(res, `CZN_GtradeA_PackingList_${scopeTag}${images ? "" : "_NoImages"}_${dateStamp(from, to)}.xlsx`);
+  await saveResponseAs(
+    res,
+    `CZN_GtradeA_PackingList_${scopeTag}${images ? "" : "_NoImages"}_${dateStamp(from, to)}.${format}`
+  );
 }
+
+export const exportSupplierOrdersXlsx = (search = "", opts) => exportSupplierOrders("xlsx", search, opts);
+export const exportSupplierOrdersPdf = (search = "", opts) => exportSupplierOrders("pdf", search, opts);
 
 // Download the GtradeA billing report as a styled .xlsx — teal title band, logo,
 // orange header, one row per 1688 line item (date, PR id, order id, product,
