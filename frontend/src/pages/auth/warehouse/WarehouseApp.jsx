@@ -196,6 +196,29 @@ const supplierState = (o) => {
   if (!o.inWarehouse) return "not_received";
   return o.warehouseStatus === "shipped" ? "dispatched" : "received";
 };
+// Can this 1688 row be shipped straight from the 1688 panel? Only if its CN
+// tracking is matched to a box that is still ON THE SHELF — "Not Yet" and
+// "Pending" have no box to ship at all, and "Dispatched" already left. Deliberately
+// checks `warehouseItemId` too: without the id there's nothing to POST /ship to,
+// which is exactly the state a page served by an older backend build is in.
+const supplierShippable = (o) =>
+  !!o.warehouseItemId && o.inWarehouse && o.warehouseStatus === "in_stock";
+
+// A 1688 row rendered as the warehouse item it matched, for the ship confirm.
+// Used only as a FALLBACK when the box isn't in the loaded `items` list (a
+// background refresh hasn't landed yet) — the row already carries every field
+// that dialog shows, so the ship still goes through with the right details
+// rather than a half-empty card.
+const supplierAsItem = (o) => ({
+  id: o.warehouseItemId,
+  code: o.warehouseCode,
+  prCode: o.warehousePrCode,
+  trackingNumber: o.cnTracking,
+  rackId: o.warehouseRack,
+  shipmentFrom: o.warehouseShipmentFrom,
+  status: "in_stock",
+});
+
 const SUPPLIER_SORTS = [
   { value: "date", label: "Date" },
   { value: "received", label: "Received" },
@@ -283,6 +306,7 @@ const IconCamera = (p) => (<svg {...svgBase} {...p}><path d="M23 19a2 2 0 0 1-2 
 const IconKeyboard = (p) => (<svg {...svgBase} {...p}><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" /></svg>);
 const IconClose = (p) => (<svg {...svgBase} strokeWidth="2.2" {...p}><path d="M18 6 6 18M6 6l12 12" /></svg>);
 const IconReport = (p) => (<svg {...svgBase} {...p}><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6" /><path d="M9 17v-4" /><path d="M12 17v-6" /><path d="M15 17v-2" /></svg>);
+const IconTruck = (p) => (<svg {...svgBase} {...p}><path d="M14 17V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h1" /><path d="M9 17h5" /><path d="M18 17h2a1 1 0 0 0 1-1v-3.3a1 1 0 0 0-.2-.6l-2.9-3.7A1 1 0 0 0 17 8h-3" /><circle cx="7" cy="17.5" r="2" /><circle cx="16" cy="17.5" r="2" /></svg>);
 
 /* ------------------------------ small pieces ------------------------------ */
 // Replaces the old in-stock/shipped Status pill — shipped vs. in-stock is
@@ -644,6 +668,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [shipSelectedId, setShipSelectedId] = useState(null);
   const [shipConfirmItems, setShipConfirmItems] = useState(null); // items awaiting ship confirm (1 or many)
   const [shipConfirmIsBatch, setShipConfirmIsBatch] = useState(false); // was the confirm opened by the batch button?
+  const [shipConfirmFromSupplier, setShipConfirmFromSupplier] = useState(false); // opened from the 1688 panel's "Proceed to Shipment"?
   const [batchBusy, setBatchBusy] = useState(false); // a batch ship/delete is in flight
   const [shipLogistics, setShipLogistics] = useState(""); // required at ship time
   // No separate "shipment mode" input at ship time anymore — each item already
@@ -729,6 +754,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     if (!list.length) return;
     setShipLogistics("");
     setShipConfirmIsBatch(false);
+    setShipConfirmFromSupplier(false);
     setShipConfirmItems(list);
   }, []);
   const requestBatchShip = () => {
@@ -738,6 +764,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     if (!list.length) return showToast("Select items to ship first", "warn");
     setShipLogistics("");
     setShipConfirmIsBatch(true);
+    setShipConfirmFromSupplier(false);
     setShipConfirmItems(list);
   };
   const confirmShip = async () => {
@@ -746,6 +773,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     const logistics = shipLogistics.trim();
     if (!logistics) return showToast("Enter the name of the logistics.", "error");
     const wasBatch = shipConfirmIsBatch;
+    const wasSupplier = shipConfirmFromSupplier;
     setShipConfirmItems(null);
     setBatchBusy(true);
     try {
@@ -754,6 +782,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       // single-row ship never exits batch mode, and a partial failure keeps the
       // failed (still-selected) items visible for a retry.
       if (wasBatch && !failed) exitShipBatch();
+      if (wasSupplier) {
+        if (!failed) exitSupplierShip();
+        // Re-read the 1688 list so every row that shared a shipped box flips to
+        // "🚚 Dispatched" now, rather than at the next 20s poll. Authoritative
+        // (the server recomputes the join) instead of patching pills locally,
+        // and it also covers the partial-failure case honestly.
+        loadSupplier();
+      }
     } finally {
       setBatchBusy(false);
     }
@@ -779,6 +815,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       }
       setShipSelectedId(item.id);
       setShipConfirmIsBatch(false);
+      setShipConfirmFromSupplier(false);
       setShipConfirmItems([item]);
     },
     [findItem, showToast]
@@ -1199,6 +1236,17 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const manualSyncRef = useRef(false);      // toast a sync's outcome only when the user clicked it
   const lastKickRef = useRef(0);            // collapses rapid tab-switch bursts into one pull
 
+  // "Proceed to Shipment" — batch dispatch straight from this panel, so goods
+  // can be shipped against the 1688 order they belong to without first hunting
+  // the matching CZN box down in the Ship tab. Same two-step shape as Ship's
+  // "Batch Ship": the button reveals a checkbox on each row, then "Ship
+  // selected" opens the SAME logistics confirm and the rows land in Dispatched.
+  const [supplierShipMode, setSupplierShipMode] = useState(false);
+  const [supplierSel, setSupplierSel] = useState(() => new Set());
+  const exitSupplierShip = () => { setSupplierShipMode(false); setSupplierSel(new Set()); };
+  const toggleSupplierSel = useCallback((id) => setSupplierSel((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
+  const toggleAllSupplier = useCallback((rows, checked) => setSupplierSel((prev) => { const n = new Set(prev); rows.forEach((r) => (checked ? n.add(r.id) : n.delete(r.id))); return n; }), []);
+
   const loadSupplier = useCallback(async () => {
     const reqId = ++supplierReqId.current;
     if (!supplierLoadedOnce.current) setSupplierLoading(true);
@@ -1417,6 +1465,40 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     const hit = (o) => supplierState(o) === supplierSort;
     return [...base].sort((a, b) => Number(hit(b)) - Number(hit(a)));
   }, [supplierOrders, supplierSearch, supplierSort]);
+
+  // The rows "Proceed to Shipment" can actually act on: VISIBLE (so the search
+  // filter bounds it, exactly like Ship's batch) AND still on the shelf. Both
+  // the select-all tick, the "n selected" counter and the ship itself read this
+  // one list, so they can never disagree about what a click will send.
+  const supplierShipRows = useMemo(
+    () => filteredSupplier.filter(supplierShippable),
+    [filteredSupplier]
+  );
+  const supplierSelCount = useMemo(
+    () => supplierShipRows.filter((o) => supplierSel.has(o.id)).length,
+    [supplierShipRows, supplierSel]
+  );
+
+  // Hand the selected 1688 rows to the shared ship confirm as the warehouse
+  // boxes they matched.
+  const requestSupplierShip = () => {
+    const orders = supplierShipRows.filter((o) => supplierSel.has(o.id));
+    if (!orders.length) return showToast("Select received orders to ship first", "warn");
+    // Several 1688 line items routinely share ONE CN tracking — and therefore
+    // one physical box. Ship that box once: a second /ship on the same id comes
+    // back 409 and would be counted as a failure for a shipment that worked.
+    const seen = new Set();
+    const list = [];
+    for (const o of orders) {
+      if (seen.has(o.warehouseItemId)) continue;
+      seen.add(o.warehouseItemId);
+      list.push(items.find((i) => i.id === o.warehouseItemId) || supplierAsItem(o));
+    }
+    setShipLogistics("");
+    setShipConfirmIsBatch(false);
+    setShipConfirmFromSupplier(true);
+    setShipConfirmItems(list);
+  };
 
   // How many rows each scope would export under the current search + date range,
   // shown live next to the three choices so nobody waits out a slow export only
@@ -1978,12 +2060,6 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 </label>
               </div>
             </div>
-            <p className="mb-4 text-xs text-[#2D2D2D]/45">
-              Pulled automatically from gtradea — &quot;Sync now&quot; fetches live. <span className="font-semibold text-[#412460]">📦 Received</span> means that
-              CN tracking is in stock in your warehouse; <span className="font-semibold text-red-600">🚚 Dispatched</span> means it&apos;s since shipped out
-              (shown with the date); <span className="font-semibold text-[#B99353]">⏳ Pending</span> means it has CN tracking but hasn&apos;t been scanned in yet;
-              <span className="font-semibold"> Not Yet</span> means gtradea has no CN tracking for that item at all.
-            </p>
             <div className="mb-4 flex flex-wrap items-center gap-3">
               <SearchInput
                 value={supplierSearch}
@@ -2008,8 +2084,41 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 <IconReport className={`h-3.5 w-3.5 ${reportRunning ? "animate-pulse" : ""}`} />
                 {reportRunning ? "Preparing…" : "Download Report"}
               </button>
+              {!supplierShipMode ? (
+                <button
+                  type="button"
+                  onClick={() => setSupplierShipMode(true)}
+                  disabled={batchBusy}
+                  className={BTN_PRIMARY}
+                >
+                  <IconTruck className="h-3.5 w-3.5" /> Proceed to Shipment
+                </button>
+              ) : (
+                <>
+                  <span className="text-xs font-semibold text-[#412460]">{supplierSelCount} selected</span>
+                  <button
+                    type="button"
+                    onClick={requestSupplierShip}
+                    disabled={supplierSelCount === 0 || batchBusy}
+                    className={BTN_PRIMARY}
+                  >
+                    <IconTruck className="h-3.5 w-3.5" /> {batchBusy ? "Shipping…" : "Ship selected"}
+                  </button>
+                  <button type="button" onClick={exitSupplierShip} disabled={batchBusy} className={BTN_GHOST}>
+                    Cancel
+                  </button>
+                </>
+              )}
             </div>
-            <SupplierOrdersTable rows={filteredSupplier} loading={supplierLoading} />
+            <SupplierOrdersTable
+              rows={filteredSupplier}
+              loading={supplierLoading}
+              selectable={supplierShipMode}
+              selected={supplierSel}
+              shippableRows={supplierShipRows}
+              onToggleSelect={toggleSupplierSel}
+              onToggleAll={(checked) => toggleAllSupplier(supplierShipRows, checked)}
+            />
           </div>
         )}
       </main>
@@ -3370,8 +3479,13 @@ function WarehousePill({ order }) {
   );
 }
 
-// The 1688 orders table (desktop) / card list (mobile). Read-only.
-function SupplierOrdersTable({ rows, loading }) {
+// The 1688 orders table (desktop) / card list (mobile). Read-only apart from the
+// ship checkbox `selectable` turns on ("Proceed to Shipment").
+//
+// `shippableRows` is the subset that may be ticked — passed in rather than
+// recomputed here so the header's select-all, the toolbar's "n selected" counter
+// and the ship action are all driven by the exact same list.
+function SupplierOrdersTable({ rows, loading, selectable = false, selected, shippableRows, onToggleSelect, onToggleAll }) {
   // Track images that failed to load and hide them via STATE, not by mutating the
   // DOM node — an imperative style change would persist across re-renders and could
   // permanently hide a later-valid image for the same row key.
@@ -3388,6 +3502,32 @@ function SupplierOrdersTable({ rows, loading }) {
   const markImgBroken = (url) =>
     setBrokenImgs((prev) => (!url || prev.has(url) ? prev : new Set(prev).add(url)));
   const canShowImg = (url) => url && !brokenImgs.has(url);
+
+  // A row is tickable only if the parent listed it as shippable. Rendered as a
+  // DISABLED checkbox rather than a blank cell for the rest, so the column stays
+  // aligned and hovering explains why a row can't be picked.
+  const shippable = useMemo(
+    () => new Set((shippableRows || []).map((o) => o.id)),
+    [shippableRows]
+  );
+  const shipCheck = (o) =>
+    shippable.has(o.id) ? (
+      <RowCheck
+        checked={!!selected?.has(o.id)}
+        onChange={() => onToggleSelect(o.id)}
+        label={`Select order ${o.orderNumber || o.cnTracking || o.id} for shipment`}
+      />
+    ) : (
+      <input
+        type="checkbox"
+        disabled
+        checked={false}
+        readOnly
+        aria-label="Not shippable — no goods on the shelf for this order"
+        title="Only 📦 Received orders can be shipped — this one has no box on the shelf."
+        className="h-4 w-4 shrink-0 cursor-not-allowed rounded opacity-25"
+      />
+    );
 
   if (loading && (!rows || rows.length === 0)) {
     return (
@@ -3410,6 +3550,7 @@ function SupplierOrdersTable({ rows, loading }) {
         {rows.map((o) => (
           <li key={o.id} className="rounded-2xl bg-white p-4 ring-1 ring-[#ECE9E3]">
             <div className="flex items-start justify-between gap-3">
+              {selectable && <span className="pt-0.5">{shipCheck(o)}</span>}
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">
                   {fmtDay(o.orderedAt)}
@@ -3451,6 +3592,11 @@ function SupplierOrdersTable({ rows, loading }) {
         <table className="w-full min-w-[940px] text-left text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
+              {selectable && (
+                <th className="w-8">
+                  <SelectAllCheck rows={shippableRows} selected={selected} onToggleAll={onToggleAll} />
+                </th>
+              )}
               <th>Date</th>
               <th>PR ID</th>
               <th>Order #</th>
@@ -3463,6 +3609,7 @@ function SupplierOrdersTable({ rows, loading }) {
           <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
             {rows.map((o) => (
               <tr key={o.id} className="transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3">
+                {selectable && <td className="w-8">{shipCheck(o)}</td>}
                 <td className="whitespace-nowrap text-xs text-[#2D2D2D]/55">{fmtDay(o.orderedAt)}</td>
                 <td className="whitespace-nowrap font-bold text-[#412460]">{o.jobCode || "—"}</td>
                 <td className="whitespace-nowrap font-bold text-[#412460]">{o.orderNumber || "—"}</td>

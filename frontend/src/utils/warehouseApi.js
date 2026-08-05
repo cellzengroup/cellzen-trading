@@ -215,6 +215,13 @@ export function unwrapSupplierOrder(row) {
     warehouseStatus: wh.status || "",
     warehouseCode: wh.code || "",
     warehouseShippedAt: wh.shipped_at || null,
+    // The matched box itself — what "Proceed to Shipment" ships from the 1688
+    // panel without a detour through the Ship tab. `warehouseItemId` is the id
+    // shipItem() posts to; the rest just fills the confirm dialog when the
+    // items list hasn't been loaded (or hasn't caught up) yet.
+    warehouseItemId: wh.id || null,
+    warehousePrCode: wh.pr_code || "",
+    warehouseShipmentFrom: wh.shipment_from || "By Air",
   };
 }
 

@@ -127,13 +127,17 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
       if (trackings.length) {
         const items = await WarehouseItem.findAll({
           where: { tracking_number: { [Op.in]: trackings } },
-          attributes: ['tracking_number', 'rack_id', 'status', 'code', 'pr_code', 'shipped_at'],
+          // `id` + `shipment_from` are what let the 1688 panel ship a row
+          // straight from its own table ("Proceed to Shipment"): the id names
+          // the exact box to POST /items/:id/ship, and the mode is what the
+          // confirm dialog shows read-only before you commit.
+          attributes: ['id', 'tracking_number', 'rack_id', 'status', 'code', 'pr_code', 'shipped_at', 'shipment_from'],
         });
         for (const it of items) {
           const key = String(it.tracking_number || '').toUpperCase();
           // Prefer an in-stock match over a shipped one for the same tracking.
           if (!matchMap[key] || it.status === 'in_stock') {
-            matchMap[key] = { rack_id: it.rack_id, status: it.status, code: it.code, pr_code: it.pr_code, shipped_at: it.shipped_at };
+            matchMap[key] = { id: it.id, rack_id: it.rack_id, status: it.status, code: it.code, pr_code: it.pr_code, shipped_at: it.shipped_at, shipment_from: it.shipment_from };
           }
         }
       }
@@ -159,7 +163,7 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
         paid_amount: r.paid_amount,
         ordered_at: r.ordered_at,
         synced_at: r.synced_at,
-        warehouse: m ? { in_warehouse: true, rack_id: m.rack_id, status: m.status, code: m.code, pr_code: m.pr_code, shipped_at: m.shipped_at } : { in_warehouse: false },
+        warehouse: m ? { in_warehouse: true, id: m.id, rack_id: m.rack_id, status: m.status, code: m.code, pr_code: m.pr_code, shipped_at: m.shipped_at, shipment_from: m.shipment_from } : { in_warehouse: false },
       };
     });
   });
@@ -1036,6 +1040,7 @@ const BILLING_TEMPLATE_PATH = path.join(PACKING_TEMPLATE_DIR, 'GtradeA_Billing_T
 const BILLING_TEAL = 'FF267488';   // title band fill
 const BILLING_CREAM = 'FFF4F0EB';  // title band text
 const BILLING_ORANGE = 'FFE94724'; // column header fill
+const BILLING_HEADER_TEXT = 'FFFFFFFF'; // column header text — bold white on the orange
 // The title band reads plainly: "GtradeA Billing" in the family's regular
 // weight, smaller than the template's 17pt SemiBold.
 const BILLING_TITLE_FONT = 'BR Firma Regular';
@@ -1053,7 +1058,20 @@ const BILLING_LOGO_HEIGHT = 101.15;
 // Fraction of the sheet width the logo may occupy. The mark is ~4.8:1, so
 // height-fitting alone would run it most of the way across the page.
 const BILLING_LOGO_MAX_WIDTH = 0.4;
+// Clear space kept above and below the mark inside its band, so it can never
+// crowd the title band above it or the orange column headers below.
+const BILLING_LOGO_MARGIN_PT = 12;
 const BILLING_ROW_HEIGHT = 83.25;
+
+// ---- Excel geometry ---------------------------------------------------------
+// Excel stores drawing anchors in EMU (English Metric Units): 914400 per inch,
+// 12700 per point, 9525 per pixel at 96dpi. A column's `width` is in "characters
+// of the default font", which Excel renders as `width * MDW + padding` pixels —
+// MDW is 7px for the default Calibri 11. These three conversions are the only
+// honest way to place an image at an exact spot on the sheet.
+const EMU_PER_PX = 9525;
+const EMU_PER_PT = 12700;
+const colWidthToPx = (width) => Math.round(width * 7 + 5);
 // The template carries one combined "Product ID" column; this splits it into the
 // PR ID and Order ID the 1688 tab actually shows, which is what was asked for.
 // Widths run wider than the template's so nothing sits tight against a cell
@@ -1063,7 +1081,10 @@ const BILLING_ROW_HEIGHT = 83.25;
 const BILLING_COLUMNS = [
   { key: 'date', header: 'Date', width: 18 },
   { key: 'pr', header: 'PR ID', width: 21 },
-  { key: 'order', header: 'Order ID', width: 32 },
+  // Wide enough to hold a full ORD-YYYYMMDD-NNNNNN on ONE line at 16pt (~225px
+  // of glyphs) with clear space either side of it. At the old 32 the text came
+  // to within a few px of the cell edge and wrapped onto a second line.
+  { key: 'order', header: 'Order ID', width: 42 },
   { key: 'name', header: 'Product Name', width: 42 },
   { key: 'quantity', header: 'Qty', width: 14 },
   { key: 'unit', header: 'Unit', width: 14 },
@@ -1167,36 +1188,46 @@ router.get('/billing-report.xlsx', authenticate, requireStaffOrAdmin, async (req
         if (tplImages.length) {
           const imgData = templateWb.getImage(tplImages[0].imageId);
           const logoId = workbook.addImage({ buffer: imgData.buffer, extension: imgData.extension });
-          const widthsPx = BILLING_COLUMNS.map((c) => c.width * 7.5);
+          // Excel's OWN width-to-pixel rule, not an approximation — the anchor
+          // below is computed against these, so what's centred here is centred
+          // in the file rather than 50px off.
+          const widthsPx = BILLING_COLUMNS.map((c) => colWidthToPx(c.width));
           const totalPx = widthsPx.reduce((a, b) => a + b, 0);
+          const bandPx = (BILLING_LOGO_HEIGHT - 2 * BILLING_LOGO_MARGIN_PT) * (EMU_PER_PT / EMU_PER_PX);
           const dim = imageSize(imgData.buffer);
           // The mark is very wide (1186 x 248, about 4.8:1), so fitting it to the
           // band's HEIGHT alone would stretch it right across the sheet. Take the
           // smaller of the height fit and a width cap, and never upscale — so it
           // keeps the proportions of the original artwork at a sensible size.
-          const scale = Math.min(
-            (BILLING_LOGO_HEIGHT * 1.333 - 16) / dim.height,
-            (totalPx * BILLING_LOGO_MAX_WIDTH) / dim.width,
-            1
-          );
+          const scale = Math.min(bandPx / dim.height, (totalPx * BILLING_LOGO_MAX_WIDTH) / dim.width, 1);
           const w = Math.round(dim.width * scale);
           const h = Math.round(dim.height * scale);
           // Anchor by TOP-LEFT + explicit extent, NOT top-left + bottom-right.
           // A br anchor makes Excel stretch the image to whatever gap it lands in,
-          // and that gap depends on Excel's own column-width-to-pixel rounding —
-          // which is not the 7.5x used here, so the mark came out distorted. `ext`
-          // sets the size outright, so the aspect ratio is exactly the original's.
-          const colAt = (xPx) => {
-            let x = Math.max(0, xPx);
-            for (let i = 0; i < widthsPx.length; i++) {
-              if (x < widthsPx[i]) return i + x / widthsPx[i]; // fractional column
-              x -= widthsPx[i];
-            }
-            return widthsPx.length;
-          };
-          const rowOff = Math.max(0, (BILLING_LOGO_HEIGHT * 1.333 - h) / 2) / (BILLING_LOGO_HEIGHT * 1.333);
+          // and that gap depends on Excel's own column-width-to-pixel rounding, so
+          // the mark came out distorted. `ext` sets the size outright, so the
+          // aspect ratio is exactly the original's.
+          //
+          // The offsets are given as nativeCol/nativeColOff (raw EMU) rather than
+          // a fractional `col`/`row`. ExcelJS's fractional setter multiplies the
+          // fraction by `column.width * 10000` / `row.height * 10000` — units that
+          // are neither pixels nor EMU (a 32-wide column is ~2.18M EMU across, not
+          // 320k), so "34% into column 3" was being written as 11px into column 3.
+          // That is what pushed the logo left of centre and low in its band.
+          let x = Math.round((totalPx - w) / 2);
+          let nativeCol = 0;
+          while (nativeCol < widthsPx.length - 1 && x >= widthsPx[nativeCol]) {
+            x -= widthsPx[nativeCol];
+            nativeCol += 1;
+          }
+          const yPt = Math.max(0, (BILLING_LOGO_HEIGHT - h * (EMU_PER_PX / EMU_PER_PT)) / 2);
           sheet.addImage(logoId, {
-            tl: { col: colAt((totalPx - w) / 2), row: 1 + rowOff },
+            tl: {
+              nativeCol,
+              nativeColOff: Math.round(x * EMU_PER_PX),
+              nativeRow: 1, // 0-based — row 2, the logo band
+              nativeRowOff: Math.round(yPt * EMU_PER_PT),
+            },
             ext: { width: w, height: h },
             editAs: 'oneCell',
           });
@@ -1206,12 +1237,14 @@ router.get('/billing-report.xlsx', authenticate, requireStaffOrAdmin, async (req
       }
     }
 
-    // Row 3 — column headers
+    // Row 3 — column headers. Bold white on the orange band: the labels have to
+    // read as headings against a strong fill, which the regular-weight black they
+    // used to be did not.
     const headerRow = sheet.getRow(3);
     BILLING_COLUMNS.forEach((c, i) => {
       const cell = headerRow.getCell(i + 1);
       cell.value = c.header;
-      cell.font = { name: BILLING_FONT, size: 16 };
+      cell.font = { name: BILLING_EMPHASIS_FONT, size: 16, bold: true, color: { argb: BILLING_HEADER_TEXT } };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BILLING_ORANGE } };
       cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
     });
@@ -1225,7 +1258,10 @@ router.get('/billing-report.xlsx', authenticate, requireStaffOrAdmin, async (req
         const cell = r.getCell(c);
         cell.value = value === '' || value == null ? null : value;
         cell.font = { name: BILLING_FONT, size: 16, ...(extra.font || {}) };
-        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        // The order number reads as ONE token, so it never wraps — the column is
+        // sized to hold it whole with clear space either side. Everything else
+        // wraps as before (product names are free text and genuinely need it).
+        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: c !== BILLING_COL.order };
         cell.border = BILLING_BORDER;
         if (extra.numFmt) cell.numFmt = extra.numFmt;
       };
@@ -1251,7 +1287,9 @@ router.get('/billing-report.xlsx', authenticate, requireStaffOrAdmin, async (req
       if (i - start > 1) {
         [BILLING_COL.pr, BILLING_COL.order].forEach((c) => {
           sheet.mergeCells(FIRST_ROW + start, c, FIRST_ROW + i - 1, c);
-          sheet.getCell(FIRST_ROW + start, c).alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+          // Same one-line rule as the unmerged cells above — merging must not
+          // quietly hand the order number its wrap back.
+          sheet.getCell(FIRST_ROW + start, c).alignment = { horizontal: 'center', vertical: 'middle', wrapText: c !== BILLING_COL.order };
         });
       }
       for (const [a, b] of equalRuns(rows, start, i, (x) => x.price)) {
