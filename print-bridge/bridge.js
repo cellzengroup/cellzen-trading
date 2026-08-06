@@ -49,6 +49,10 @@ const DEFAULTS = {
   bitmapYOffset: 0,     // nudge the whole label image down (+) / up (-), in dots
   bitmapInvert: false,  // set true only if the label prints as a black rectangle
   allowOrigin: "*",     // CORS: your production origin, or "*" for any
+  // Refuse to print (and to take queued jobs) while Windows reports the printer
+  // offline — see printerUsable(). Set false only if a printer that genuinely
+  // works is being reported offline; jobs would then spool blind.
+  requirePrinterOnline: true,
   // Site origin for phone printing. One origin, or several to try in order —
   // accepts a string, a comma-separated string, or an array, e.g.
   //   ["https://www.cellzengroup.com", "https://cellzengroup.com"]
@@ -76,30 +80,124 @@ let tmpCounter = 0;
 
 // --- printer discovery -----------------------------------------------------
 
+// Every installed printer, plus whether Windows can actually reach it right now.
+// That second part is the whole point: Windows keeps a USB printer *installed*
+// long after the cable is unplugged, so simply appearing in this list proves
+// nothing. Win32_Printer.WorkOffline is the flag that flips when the cable is
+// out, the printer is switched off, or someone ticked "Use Printer Offline" —
+// exactly the cases where this PC must not print or claim jobs.
+// (Get-Printer's own PrinterStatus is no use here: it still reads "Normal" for
+// a printer whose cable has been pulled.)
+// Returns [{ name, offline }]; [] if the query itself failed.
 function listPrinters() {
   return new Promise((resolve) => {
     execFile(
       "powershell",
       ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-       "Get-Printer | Select-Object -ExpandProperty Name"],
+       "Get-CimInstance Win32_Printer | ForEach-Object { $_.Name + '|' + $_.WorkOffline }"],
       { windowsHide: true },
       (err, stdout) => {
         if (err || !stdout) return resolve([]);
-        resolve(stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean));
+        const rows = stdout
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .map((line) => {
+            // Split on the LAST "|" so a printer name containing one survives.
+            const i = line.lastIndexOf("|");
+            if (i === -1) return { name: line, offline: false };
+            return { name: line.slice(0, i).trim(), offline: /^true$/i.test(line.slice(i + 1)) };
+          })
+          .filter((p) => p.name);
+        resolve(rows);
       }
     );
   });
 }
 
-function pickPrinter(names) {
-  if (cfg.printerName && names.includes(cfg.printerName)) return cfg.printerName;
-  return (
-    names.find((n) => /720/i.test(n)) ||   // most specific: the DL-720C model number
-    names.find((n) => /deli/i.test(n)) ||  // any Deli printer
-    cfg.printerName ||
-    names[0] ||
-    ""
-  );
+// Rank a printer name as a label-printer candidate: lower is better, 2 = not one.
+function printerRank(name) {
+  if (/720/i.test(name)) return 0;  // most specific: the DL-720C model number
+  if (/deli/i.test(name)) return 1; // any other Deli printer
+  return 2;
+}
+
+function pickPrinter(printers) {
+  const names = printers.map((p) => p.name);
+  // An exact configured name always wins. Trust it too when the printer list
+  // came back empty (PowerShell blocked by policy) — the name is a deliberate
+  // choice, so a failed lookup shouldn't override it.
+  if (cfg.printerName && (names.includes(cfg.printerName) || names.length === 0))
+    return cfg.printerName;
+  // Otherwise only auto-pick something that really is the thermal label printer.
+  // Deliberately NO "else just take the first installed printer": on a PC that
+  // doesn't have the Deli that would quietly spool 60x80mm label jobs to an
+  // office laser or to Microsoft Print to PDF. That matters most in the
+  // several-PCs-one-printer layout — such a PC would also claim phone jobs off
+  // the shared cloud queue and swallow them where nobody is watching.
+  const candidates = printers
+    .filter((p) => printerRank(p.name) < 2)
+    // Model match first (never print 720C labels on a different Deli just
+    // because that one is plugged in), then prefer a connected one.
+    .sort((a, b) =>
+      printerRank(a.name) - printerRank(b.name) ||
+      Number(a.offline) - Number(b.offline)
+    );
+  return candidates.length ? candidates[0].name : "";
+}
+
+// --- "does this PC actually have the printer right now?" -------------------
+// The cable gets moved between PCs, so this is re-detected rather than decided
+// once at startup: every check re-reads the printer list, re-picks the printer,
+// and asks whether Windows can currently reach it. The PC holding the cable
+// starts printing and taking queued jobs within seconds; the one that lost it
+// stops. Nothing to restart, nothing to click, and it is safe to run the bridge
+// on all of the PCs at the same time.
+let lastPrinters = [];
+let printerOnline = false;
+let lastCheckAt = 0;
+let lastReported = null;
+
+// `maxAgeMs` reuses the previous answer if it is that fresh. Pass 0 (the
+// default) to always re-read — printing is rare and human-initiated, and a
+// stale "yes" here is the exact bug this guards against.
+async function printerUsable(maxAgeMs = 0) {
+  const now = Date.now();
+  if (maxAgeMs && now - lastCheckAt < maxAgeMs) return printerOnline;
+  lastCheckAt = now;
+
+  const printers = await listPrinters();
+  lastPrinters = printers;
+  PRINTER = pickPrinter(printers);
+
+  let online;
+  if (!PRINTER) online = false;
+  else if (cfg.requirePrinterOnline === false) online = true;
+  else if (!printers.length) online = true; // couldn't query — don't block printing
+  else {
+    const found = printers.find((p) => p.name === PRINTER);
+    online = Boolean(found) && !found.offline;
+  }
+
+  if (lastReported !== online) {
+    if (online) {
+      console.log(`  >> Printer CONNECTED here (${PRINTER}) — this PC now prints, including queued jobs.`);
+    } else if (PRINTER) {
+      console.log(`  >> Printer "${PRINTER}" is OFFLINE here (cable unplugged or powered off).`);
+      console.log("     Labels will print on whichever PC has the cable.");
+    } else {
+      console.log("  >> No thermal printer on this PC — labels print on whichever PC has the cable.");
+    }
+    lastReported = online;
+  }
+  printerOnline = online;
+  return online;
+}
+
+function offlineReason() {
+  return PRINTER
+    ? `Printer "${PRINTER}" is offline on this PC (cable unplugged or powered off)`
+    : "No thermal printer on this PC";
 }
 
 // --- TSPL label ------------------------------------------------------------
@@ -256,15 +354,24 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "OPTIONS") { cors(res); res.writeHead(204); return res.end(); }
 
+  // `ok` stays true whatever the printer is doing — it identifies this as a
+  // Cellzen bridge (see probeExistingBridge). `online` is the printer answer.
   if (req.method === "GET" && url === "/health")
-    return json(res, 200, { ok: true, printer: PRINTER });
+    return json(res, 200, { ok: true, printer: PRINTER, online: await printerUsable(10000) });
 
   if (req.method === "GET" && url === "/printers") {
-    const names = await listPrinters();
-    return json(res, 200, { ok: true, selected: PRINTER, printers: names });
+    const printers = await listPrinters();
+    return json(res, 200, {
+      ok: true,
+      selected: PRINTER,
+      online: printerOnline,
+      printers: printers.map((p) => p.name),
+      details: printers,
+    });
   }
 
   if (req.method === "GET" && url === "/selftest") {
+    if (!(await printerUsable())) return json(res, 503, { ok: false, error: offlineReason() });
     try { await sendRaw(buildTSPL("CZN00001", 1)); return json(res, 200, { ok: true, printer: PRINTER }); }
     catch (e) { return json(res, 500, { ok: false, error: e.message }); }
   }
@@ -272,6 +379,12 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "POST" && url === "/print") {
     try {
       const body = JSON.parse((await readBody(req)) || "{}");
+      // Refuse rather than spool blind. Windows happily accepts a job into an
+      // offline queue, so printing anyway would report success, the website
+      // would never fall back to the cloud queue, and the label would sit in
+      // this PC's spooler unseen. The error is what hands the job over: the
+      // site queues it and the PC holding the cable prints it seconds later.
+      if (!(await printerUsable())) return json(res, 503, { ok: false, error: offlineReason() });
       // A pre-rendered label image (full shipment design) prints verbatim; a bare
       // code builds a native barcode (rack labels, or a render-failed fallback).
       if (body.bitmap && body.bitmap.data) {
@@ -350,6 +463,12 @@ async function claimPending() {
 }
 
 async function pollOnce() {
+  // Claiming is destructive — the server marks the job 'printing' and, if we
+  // then report a failure, 'error', which is never retried by anyone else. So a
+  // PC that can't print must not claim at all: it stays quiet and the job waits
+  // for the PC that has the cable. Cached briefly so this doesn't spawn a
+  // PowerShell query every couple of seconds.
+  if (!(await printerUsable(5000))) return;
   const res = await claimPending();
   if (res.status === 401) {
     console.error("  Cloud queue: invalid agentToken (must match PRINT_AGENT_TOKEN on the server)");
@@ -384,25 +503,87 @@ async function startCloudPoller() {
   }
 }
 
+// --- single instance -------------------------------------------------------
+// Only one copy can own the port. That's routinely hit in practice: the bridge
+// already starts hidden at login (install-autostart.bat), so double-clicking a
+// launcher afterwards starts a second copy that can't bind. Left unhandled Node
+// throws EADDRINUSE and run-forever.bat restarts it into the same clash every
+// 3 seconds forever. Instead we detect it and exit with this code, which the
+// launcher scripts read as "already running — stop, don't restart".
+const EXIT_ALREADY_RUNNING = 3;
+
+// Ask whoever holds the port whether it's one of us. True only for a Cellzen
+// bridge's /health, so an unrelated program squatting on the port is reported
+// as the different problem it is.
+function probeExistingBridge() {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: "127.0.0.1", port: cfg.port, path: "/health", timeout: 1500 },
+      (res) => {
+        let body = "";
+        res.on("data", (c) => { body += c; });
+        res.on("end", () => {
+          try { resolve(JSON.parse(body).ok === true); } catch { resolve(false); }
+        });
+      }
+    );
+    req.on("timeout", () => { req.destroy(); resolve(false); });
+    req.on("error", () => resolve(false));
+  });
+}
+
+async function onListenError(err) {
+  console.log("");
+  if (!err || err.code !== "EADDRINUSE") {
+    console.error("  The print bridge could not start: " + ((err && err.message) || err));
+    console.log("");
+    return process.exit(1);
+  }
+  if (await probeExistingBridge()) {
+    console.log("  The Cellzen print bridge is ALREADY RUNNING on this PC.");
+    console.log("  Nothing is wrong and nothing to fix — printing works right now.");
+    console.log("  (It starts by itself at login, so you never need to open it.)");
+    console.log("  You can close this window.");
+    console.log("");
+    return process.exit(EXIT_ALREADY_RUNNING);
+  }
+  console.error("  Port " + cfg.port + " is being used by a different program.");
+  console.error("  Either close that program, or pick another \"port\" in config.json");
+  console.error("  (and change PRINT_BRIDGE_URL in the website to match).");
+  console.error("  To see what is holding it:  netstat -ano | findstr :" + cfg.port);
+  console.log("");
+  return process.exit(1);
+}
+
 // Start the service only when run directly (`node bridge.js`). When required as
 // a module (e.g. by a test), just expose the TSPL builders.
 if (require.main === module) {
   (async () => {
-    const names = await listPrinters();
-    PRINTER = pickPrinter(names);
+    const online = await printerUsable(); // also sets PRINTER + lastPrinters
+    const names = lastPrinters.map((p) => p.name + (p.offline ? " (offline)" : ""));
+    server.on("error", onListenError);
     server.listen(cfg.port, "127.0.0.1", () => {
       console.log("");
       console.log("  Cellzen print bridge is running.");
       console.log("  URL            : http://127.0.0.1:" + cfg.port);
       console.log("  Installed      : " + (names.length ? names.join(" | ") : "(no printers found)"));
-      console.log("  Using printer  : " + (PRINTER || "(NONE — set printerName in config.json)"));
+      console.log("  Using printer  : " + (PRINTER || "(none found on this PC)"));
+      console.log("  Printer status : " + (online ? "CONNECTED — this PC prints" : "not connected here — another PC prints"));
       console.log("  Local test     : open http://127.0.0.1:" + cfg.port + "/selftest");
+      // Started regardless of what's plugged in right now: pollOnce() re-checks
+      // before every claim, so the poller simply idles on a PC without the
+      // cable and takes over by itself when the cable is moved to it.
       if (cloudEnabled()) {
         console.log("  Cloud queue    : ON  → " + API_BASES.join(", ") + " (phones can print; polling " + (cfg.pollMs || 2500) + "ms)");
         startCloudPoller();
       } else {
         console.log("  Cloud queue    : OFF (set apiBaseUrl + agentToken in config.json to enable phone printing)");
       }
+      console.log("");
+      console.log("  Safe to run on every PC at once. Whichever one has the USB cable");
+      console.log("  plugged in does the printing; move the cable and it follows, within");
+      console.log("  a few seconds and with nothing to restart.");
+      console.log("");
       console.log("  Keep this window open while staff print. Ctrl+C to stop.");
       console.log("");
     });

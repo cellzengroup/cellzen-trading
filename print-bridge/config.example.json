@@ -19,6 +19,7 @@
   "bitmapYOffset": 0,
   "bitmapInvert": false,
   "allowOrigin": "*",
+  "requirePrinterOnline": true,
   "apiBaseUrl": "",
   "agentToken": "",
   "pollMs": 2500

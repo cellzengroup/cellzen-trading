@@ -58,6 +58,7 @@ To undo it later, double-click `uninstall-autostart.bat`.
 |---|---|---|
 | `port` | Local port the site talks to | `9110` |
 | `printerName` | Exact Windows printer name. Leave `""` to auto-pick the Deli/720. | `""` |
+| `requirePrinterOnline` | Only print / take queued jobs while Windows can actually reach the printer. This is what makes printing follow the USB cable — leave it on. | `true` |
 | `dpi` | Printer resolution (203 dpi = 8 dots/mm) | `203` |
 | `widthMm` / `heightMm` | Label (media) size in mm | `60` × `80` |
 | `gapMm` | Gap between die-cut labels (use `0` for continuous roll) | `3` |
@@ -119,8 +120,52 @@ phone that's logged into the warehouse app can press Print and the label prints
 here within a couple of seconds. (The on-PC browser still prints instantly via
 the local path — no delay there.)
 
+## Several computers, one printer — and moving the USB cable
+
+Install this folder and run `install-autostart.bat` on **every** PC (all 5, or
+however many). Each PC needs `apiBaseUrl` + `agentToken` in its `config.json`
+(the "Phone / mobile printing" section above). Then **plug the USB cable into
+whichever PC you like — printing follows the cable by itself.**
+
+| Where you press Print | What happens |
+|---|---|
+| The PC that has the cable | Prints instantly through its own bridge |
+| Any other PC, or a phone | Goes into the cloud queue; the PC with the cable prints it in ~2 s |
+
+Moving the cable takes a few seconds to register and needs **no restart and no
+clicking**. The PC that lost the cable stops printing and stops taking queued
+jobs; the PC that gained it takes over. Every PC and phone can print at the same
+time, and every label comes out of the one Deli 720C.
+
+Just leave the PC that has the cable logged in, or queued jobs wait until it is.
+
+**Why it can't print to the wrong place.** Windows keeps a printer *installed*
+long after its cable is unplugged, so "is the Deli in the printer list?" proves
+nothing — the bridge instead asks Windows whether the printer is actually
+reachable right now, and re-asks every few seconds. A PC without the cable
+refuses the job (which is what makes the website hand it to the cloud queue) and
+never claims queued jobs. Without that it would silently accept the label into an
+offline Windows queue, report success, and the label would sit in that PC's
+spooler unseen. The bridge also never falls back to "some other installed
+printer", so a label can't come out of an office laser or Print-to-PDF.
+
 ## Troubleshooting
 
+- **`EADDRINUSE` / `address already in use ... 9110`** — this does **not** mean
+  another computer took the printer. It means a bridge is already running *on
+  this same PC*: after `install-autostart.bat` it starts hidden at every login,
+  so opening `start-bridge.bat` yourself starts a second copy with nothing to
+  bind to. Harmless — the bridge now says *"already running"* and closes instead
+  of looping. Close the window; printing already works. You never need to start
+  it by hand, including after moving the cable. To check, open
+  <http://127.0.0.1:9110/health> — `"online":true` means this PC has the cable.
+- **Label doesn't come out after moving the cable** — give it a few seconds, then
+  open <http://127.0.0.1:9110/health> on the PC that now has the cable. If it
+  says `"online":false`, Windows still thinks the printer is disconnected: check
+  it's powered on, and that it isn't marked "Use Printer Offline" in Windows
+  (Settings → Bluetooth & devices → Printers → the Deli → Printer settings). As a
+  last resort set `requirePrinterOnline` to `false` in that PC's `config.json`,
+  but only there — leaving it on the other PCs is what stops them swallowing jobs.
 - **Nothing prints / "OpenPrinter failed"** — the `printerName` doesn't match.
   Open `/printers`, copy the exact name into `config.json`, restart the bridge.
 - **Prints blank or skips labels** — run the gap calibration (step 4), or adjust
