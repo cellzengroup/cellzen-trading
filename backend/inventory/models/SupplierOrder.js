@@ -40,7 +40,17 @@ const SupplierOrder = sequelize
       supplier_url: { type: DataTypes.TEXT, allowNull: true },
       source_product_id: { type: DataTypes.STRING, allowNull: true }, // 1688 offer id
       quantity: { type: DataTypes.INTEGER, allowNull: true },
-      shipping_mode: { type: DataTypes.STRING, allowNull: true },  // air | sea | land
+      shipping_mode: { type: DataTypes.STRING, allowNull: true },  // air | sea | land, as gtradea recorded it
+      // Staff correction of the mode the dangerous-goods classifier works out
+      // from product_name (see services/shipmentMode.js): 'air' | 'land', or
+      // NULL meaning "no correction — use whatever the classifier says".
+      //
+      // Deliberately stores ONLY the override and not the computed answer: the
+      // classifier is deterministic and re-runs on every read, so improving the
+      // lexicon or corpus immediately re-rates every historical row instead of
+      // leaving thousands of stale cached verdicts behind. What a human decided
+      // is the only part that can't be recomputed, so it's the only part stored.
+      ship_mode_override: { type: DataTypes.STRING, allowNull: true },
       order_status: { type: DataTypes.STRING, allowNull: true },
       order_total: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
       // How much of order_total has actually been paid to the supplier so far

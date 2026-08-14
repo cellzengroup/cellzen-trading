@@ -14,6 +14,7 @@ import {
   deleteItem,
   exportItemsCsv,
   loadSupplierOrders,
+  updateSupplierShipMode,
   syncSupplierOrders,
   exportSupplierOrdersXlsx,
   exportSupplierOrdersPdf,
@@ -326,6 +327,58 @@ function ShipmentBadge({ mode }) {
   );
 }
 
+// The Mode cell in the 1688 panel: how this order has to travel, pre-filled
+// from the product description by the backend's dangerous-goods classifier
+// (backend/inventory/services/shipmentMode.js) and editable here.
+//
+// It is a real <select> rather than a badge because the classifier is not
+// infallible — it reads a machine-translated marketing title, and the one
+// person who can see the actual goods is the staff member looking at this row.
+// The auto answer is a starting point they can always overrule.
+//
+// `title` carries the classifier's reasoning ("Restricted for air freight —
+// Lithium battery (\"power bank\")") so hovering explains WHY a row defaulted to
+// By Land, rather than leaving staff to guess whether to trust it.
+function ShipModeSelect({ order, onChange, busy }) {
+  const land = order.shipMode === "land";
+  const manual = !!order.shipModeOverride;
+  const tone = land
+    ? "bg-amber-50 text-amber-700 ring-amber-200 focus:ring-amber-400/40"
+    : "bg-sky-50 text-sky-700 ring-sky-200 focus:ring-sky-400/40";
+  return (
+    <div className="flex items-center gap-1.5">
+      <select
+        value={order.shipMode}
+        disabled={busy}
+        onChange={(e) => onChange(order.id, e.target.value)}
+        title={order.shipModeReason || undefined}
+        aria-label={`Shipment mode for ${order.orderNumber || order.cnTracking || "this order"}`}
+        className={`rounded-full py-1 pl-2.5 pr-6 text-[10px] font-semibold uppercase tracking-wide ring-1 transition-all focus:outline-none focus:ring-2 disabled:opacity-50 ${tone}`}
+      >
+        <option value="air">By Air</option>
+        <option value="land">By Land</option>
+      </select>
+      {/* Nothing is drawn for a row the classifier decided on its own — the
+          dropdown already states the mode, and labelling every untouched row
+          just adds noise to a table staff scan by eye. The undo only appears
+          once someone has actually overridden, which is the only case where
+          there is something to undo. */}
+      {manual && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onChange(order.id, null)}
+          title={`${order.shipModeReason || ""}\n\nClick to undo this manual choice and let the mode be detected from the product again.`}
+          aria-label="Undo manual shipment mode"
+          className="text-xs leading-none text-[#412460]/45 transition-colors hover:text-[#412460] disabled:opacity-50"
+        >
+          ↺
+        </button>
+      )}
+    </div>
+  );
+}
+
 function SectionTitle({ children }) {
   return (
     <h2 className="flex items-center gap-2 text-sm font-bold tracking-tight text-[#2D2D2D]">
@@ -406,6 +459,15 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // validate (see RACK_CODE_PATTERN) — this just tells staff which one to write
   // on a NEW label here.
   const shelfExample = isGtradea ? "GT-01-0001" : "CZN01-01-0001";
+  // Page shell. GtradeA carries far wider tables than Cellzen — its 1688 grid is
+  // 940px and its items grid 900px, against 520-560px on the Cellzen side — so
+  // this section runs one width step wider and a little tighter top and bottom.
+  // Keyed off the mode rather than raised for both, so the Cellzen page keeps
+  // the proportions it was laid out for.
+  const PAGE_MAX_W = isGtradea ? "max-w-7xl" : "max-w-5xl";
+  const HEADER_PAD = isGtradea ? "pb-2 pt-2" : "pb-3 pt-4";
+  const TABS_PAD = isGtradea ? "mt-2 pb-2" : "mt-4 pb-4";
+  const MAIN_PAD = isGtradea ? "pb-28 pt-1 md:pb-6" : "pb-28 pt-1 md:pb-16";
   const navigate = useNavigate();
 
   const [racks, setRacks] = useState([]);
@@ -1247,13 +1309,32 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const toggleSupplierSel = useCallback((id) => setSupplierSel((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
   const toggleAllSupplier = useCallback((rows, checked) => setSupplierSel((prev) => { const n = new Set(prev); rows.forEach((r) => (checked ? n.add(r.id) : n.delete(r.id))); return n; }), []);
 
+  // Mode edits that haven't come back from the server yet, id -> chosen mode.
+  // This tab re-polls every 20s, so without it a poll landing mid-PATCH paints
+  // the row's OLD mode over the staff member's pick and then flips it again a
+  // moment later — the dropdown visibly jumps under their cursor.
+  const modeSavingRef = useRef(new Map());
+  const [modeBusy, setModeBusy] = useState(() => new Set());
+
+  const applyPendingModes = useCallback((rows) => {
+    const pending = modeSavingRef.current;
+    if (!pending.size) return rows;
+    return rows.map((r) => {
+      if (!pending.has(r.id)) return r;
+      const mode = pending.get(r.id);
+      // A null pending value is "clearing the override" — the auto answer is
+      // the server's to compute, so leave the row alone until the reply lands.
+      return mode ? { ...r, shipMode: mode, shipModeOverride: mode, shipModeSource: "staff" } : r;
+    });
+  }, []);
+
   const loadSupplier = useCallback(async () => {
     const reqId = ++supplierReqId.current;
     if (!supplierLoadedOnce.current) setSupplierLoading(true);
     try {
       const { rows, lastSync } = await loadSupplierOrders();
       if (reqId !== supplierReqId.current) return; // a newer request superseded this one
-      setSupplierOrders(rows);
+      setSupplierOrders(applyPendingModes(rows));
       setSupplierSync(lastSync);
       supplierLoadedOnce.current = true;
     } catch (e) {
@@ -1261,7 +1342,39 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     } finally {
       if (reqId === supplierReqId.current) setSupplierLoading(false);
     }
-  }, [showToast]);
+  }, [showToast, applyPendingModes]);
+
+  // Staff correction of one row's shipment mode. `mode` is "air" | "land", or
+  // null to drop the correction and hand the row back to the classifier.
+  // Optimistic, because the dropdown has to feel instant on a warehouse tablet;
+  // the server's answer overwrites the guess as soon as it lands, and a failure
+  // reloads rather than leaving a wrong mode on screen.
+  const setSupplierMode = useCallback(async (id, mode) => {
+    const next = mode || null;
+    modeSavingRef.current.set(id, next);
+    setModeBusy((prev) => new Set(prev).add(id));
+    if (next) {
+      setSupplierOrders((prev) =>
+        prev.map((o) => (o.id === id ? { ...o, shipMode: next, shipModeOverride: next, shipModeSource: "staff" } : o))
+      );
+    }
+    try {
+      const patch = await updateSupplierShipMode(id, next);
+      setSupplierOrders((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+      // The server also retags any box already on the shelf for this tracking
+      // number, so the Ship tab and the label it prints now disagree with the
+      // items list this page is holding. Pull it again rather than leave staff
+      // looking at a stale mode on the row they just corrected.
+      if (patch.warehouseItemsUpdated > 0) loadData();
+    } catch (e) {
+      showToast(e.message || "Failed to update shipment mode", "error");
+      modeSavingRef.current.delete(id);
+      loadSupplier(); // resync the row to whatever the server actually holds
+    } finally {
+      modeSavingRef.current.delete(id);
+      setModeBusy((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    }
+  }, [showToast, loadSupplier, loadData]);
 
   // The sync runs server-side and takes ~30s, so "is a sync happening" is the
   // SERVER's answer (carried on every list response), not local state. Local
@@ -1529,7 +1642,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     <div className="min-h-screen bg-[#F6F4F0] text-[#2D2D2D]">
       {/* Header */}
       <header className="sticky top-0 z-30 bg-[#F6F4F0]/85 backdrop-blur-md">
-        <div className="mx-auto max-w-5xl px-4 pb-3 pt-4 sm:px-6 md:pb-0">
+        <div className={`mx-auto ${PAGE_MAX_W} px-4 ${HEADER_PAD} sm:px-6 md:pb-0`}>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460] text-white shadow-sm">
@@ -1596,7 +1709,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
           </div>
 
           {/* Tabs — segmented control (desktop; mobile uses the hamburger menu) */}
-          <div className="mt-4 hidden overflow-x-auto pb-4 md:block [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className={`${TABS_PAD} hidden overflow-x-auto md:block [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`}>
             <div className="inline-flex rounded-full bg-[#EAE6DF] p-1">
               {TABS.map((t) => (
                 <button
@@ -1617,7 +1730,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-5 px-4 pb-28 pt-1 sm:px-6 md:pb-16">
+      <main className={`mx-auto ${PAGE_MAX_W} space-y-5 px-4 ${MAIN_PAD} sm:px-6`}>
         {error && (
           <div className="rounded-2xl bg-red-50 px-4 py-3 text-xs font-medium text-red-700 ring-1 ring-red-100">
             {error}
@@ -2118,6 +2231,8 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               shippableRows={supplierShipRows}
               onToggleSelect={toggleSupplierSel}
               onToggleAll={(checked) => toggleAllSupplier(supplierShipRows, checked)}
+              onSetMode={setSupplierMode}
+              modeBusy={modeBusy}
             />
           </div>
         )}
@@ -3485,7 +3600,7 @@ function WarehousePill({ order }) {
 // `shippableRows` is the subset that may be ticked — passed in rather than
 // recomputed here so the header's select-all, the toolbar's "n selected" counter
 // and the ship action are all driven by the exact same list.
-function SupplierOrdersTable({ rows, loading, selectable = false, selected, shippableRows, onToggleSelect, onToggleAll }) {
+function SupplierOrdersTable({ rows, loading, selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, modeBusy }) {
   // Track images that failed to load and hide them via STATE, not by mutating the
   // DOM node — an imperative style change would persist across re-renders and could
   // permanently hide a later-valid image for the same row key.
@@ -3579,6 +3694,12 @@ function SupplierOrdersTable({ rows, loading, selectable = false, selected, ship
                 <dt className="text-[#2D2D2D]/45">Qty</dt>
                 <dd className="font-semibold">{o.quantity ?? "—"}</dd>
               </div>
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-[#2D2D2D]/45">Mode</dt>
+                <dd>
+                  <ShipModeSelect order={o} onChange={onSetMode} busy={modeBusy?.has(o.id)} />
+                </dd>
+              </div>
             </dl>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <WarehousePill order={o} />
@@ -3589,7 +3710,7 @@ function SupplierOrdersTable({ rows, loading, selectable = false, selected, ship
 
       {/* Desktop: table */}
       <div className="-mx-1 hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[940px] text-left text-sm">
+        <table className="w-full min-w-[1080px] text-left text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
               {selectable && (
@@ -3601,6 +3722,9 @@ function SupplierOrdersTable({ rows, loading, selectable = false, selected, ship
               <th>PR ID</th>
               <th>Order #</th>
               <th>Product</th>
+              {/* Sits next to Product because that's what it's derived from —
+                  staff read the description and the mode as one thing. */}
+              <th>Mode</th>
               <th className="text-center">Qty</th>
               <th>CN Tracking</th>
               <th>Warehouse</th>
@@ -3628,6 +3752,7 @@ function SupplierOrdersTable({ rows, loading, selectable = false, selected, ship
                     <span className="truncate text-xs text-[#2D2D2D]/80">{o.productName || "—"}</span>
                   </div>
                 </td>
+                <td><ShipModeSelect order={o} onChange={onSetMode} busy={modeBusy?.has(o.id)} /></td>
                 <td className="text-center text-[#2D2D2D]/70">{o.quantity ?? "—"}</td>
                 <td className="max-w-[190px] truncate font-semibold text-[#2D2D2D]/80" title={o.cnTracking}>{o.cnTracking || "—"}</td>
                 <td><WarehousePill order={o} /></td>

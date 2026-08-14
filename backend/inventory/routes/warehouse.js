@@ -4,6 +4,7 @@ const { Op } = require('sequelize');
 const { Rack, WarehouseItem, PrintJob, SupplierOrder, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { withConnectionRetry } = require('../dbRetry');
+const { effectiveOrderMode, toShipmentFrom } = require('../services/shipmentMode');
 
 const router = express.Router();
 
@@ -286,6 +287,9 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     let orderNumber = null;
     let productName = null;
     let prCode = null;
+    // Null until a 1688 order says otherwise, so the model's 'By Air' default
+    // still applies to a plain cellzen put-away.
+    let shipmentFrom = null;
     if (source === 'gtradea') {
       if (!SupplierOrder) {
         return res.status(503).json({ success: false, message: '1688 orders are not configured' });
@@ -302,6 +306,13 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       // The gtradea PR id (job_code, e.g. PR-1029) — captured here so the label
       // that gets printed seconds later already has it, with no second lookup.
       prCode = match.job_code || null;
+      // Same reason for the shipment mode: scanning a box in Store prints its
+      // label immediately, and that label has to read the mode the 1688 panel
+      // shows for this order — the staff override if someone set one, otherwise
+      // what the dangerous-goods classifier worked out. Without this the box
+      // was born on the model's 'By Air' default and a lithium shipment printed
+      // as air freight seconds after being scanned.
+      shipmentFrom = toShipmentFrom(await effectiveOrderMode(match));
     }
 
     // Auto-create the shelf on first sight (spec: a new shelf code is created).
@@ -336,6 +347,9 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
         order_number: orderNumber,
         product_name: productName,
         pr_code: prCode,
+        // Omitted entirely when there's no 1688 match, so the column default
+        // ('By Air') applies rather than an explicit null overwriting it.
+        ...(shipmentFrom ? { shipment_from: shipmentFrom } : {}),
         created_by_user_id: req.user.id,
         created_by_name: req.user.name || null,
       });

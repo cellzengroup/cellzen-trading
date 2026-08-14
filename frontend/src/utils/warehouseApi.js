@@ -207,6 +207,16 @@ export function unwrapSupplierOrder(row) {
     supplierUrl: row.supplier_url || "",
     quantity: row.quantity ?? null,
     shippingMode: row.shipping_mode || "",
+    // How this box has to travel, worked out from the product title by the
+    // backend's dangerous-goods classifier and correctable from the Mode
+    // dropdown in the 1688 panel. `shipMode` is the effective answer;
+    // `shipModeAuto` is what the classifier said before any correction, and
+    // `shipModeOverride` is non-empty only once a human has picked.
+    shipMode: row.ship_mode === "land" ? "land" : "air",
+    shipModeAuto: row.ship_mode_auto === "land" ? "land" : "air",
+    shipModeOverride: row.ship_mode_override || "",
+    shipModeSource: row.ship_mode_source || "", // rule | model | default | staff
+    shipModeReason: row.ship_mode_reason || "",
     orderStatus: row.order_status || "",
     orderedAt: row.ordered_at || null, // when the order was placed on gtradea
     syncedAt: row.synced_at || null,
@@ -232,6 +242,35 @@ export async function loadSupplierOrders(search = "") {
   const json = await readJson(res);
   if (!res.ok || !json.success) throw new Error(json.message || `Failed to load 1688 orders (HTTP ${res.status})`);
   return { rows: (json.data || []).map(unwrapSupplierOrder), lastSync: json.lastSync || null };
+}
+
+// Correct the shipment mode on one 1688 order. `mode` is "air" | "land", or
+// null to drop the correction and go back to the auto-detected answer.
+//
+// Returns the row's mode fields as the server now sees them — including what
+// the classifier says once an override is cleared, which the caller can't work
+// out on its own.
+export async function updateSupplierShipMode(id, mode) {
+  const res = await authFetch(`/inventory/supplier-orders/${encodeURIComponent(id)}/ship-mode`, {
+    ...STAFF,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: mode || null }),
+  });
+  const json = await readJson(res);
+  if (!res.ok || !json.success) throw new Error(json.message || `Failed to update mode (HTTP ${res.status})`);
+  const d = json.data || {};
+  return {
+    shipMode: d.ship_mode === "land" ? "land" : "air",
+    shipModeAuto: d.ship_mode_auto === "land" ? "land" : "air",
+    shipModeOverride: d.ship_mode_override || "",
+    shipModeSource: d.ship_mode_source || "",
+    shipModeReason: d.ship_mode_reason || "",
+    // The server retags any box already on the shelf for this tracking number,
+    // so the Ship confirm and the printed label follow the change too.
+    warehouseShipmentFrom: d.warehouse_shipment_from || "By Air",
+    warehouseItemsUpdated: d.warehouse_items_updated || 0,
+  };
 }
 
 // Trigger an immediate server-side pull from gtradea. Returns the sync summary.

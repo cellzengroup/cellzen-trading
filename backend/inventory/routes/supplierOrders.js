@@ -13,6 +13,7 @@ const { withConnectionRetry } = require('../dbRetry');
 const { downloadImage } = require('../../config/supabase');
 const gtradeaSync = require('../services/gtradeaSync');
 const { extractProductNames } = require('../services/productNames');
+const { classifyShipmentModes, toShipmentFrom } = require('../services/shipmentMode');
 
 const router = express.Router();
 
@@ -53,6 +54,15 @@ const dbGuard = (res) => {
 // Escape LIKE/ILIKE metacharacters so a search containing % or _ is matched
 // literally instead of being treated as a wildcard.
 const escapeLike = (v) => String(v).replace(/[\\%_]/g, (c) => `\\${c}`);
+
+// The only two shipment modes the warehouse ships in. Anything else stored in
+// ship_mode_override (older data, a bad write) reads back as "no override" so
+// the classifier's answer is used rather than an unrenderable value.
+const SHIP_MODES = ['air', 'land'];
+const normalizeShipMode = (v) => {
+  const s = String(v || '').trim().toLowerCase();
+  return SHIP_MODES.includes(s) ? s : null;
+};
 
 // A YYYY-MM-DD query param -> the instant that bounds that calendar day in UTC,
 // or null if it isn't a real date (a typo must not silently drop every row).
@@ -143,9 +153,17 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
       }
     }
 
-    return rows.map((r) => {
+    // By Air / By Land per row, from the product title (see
+    // services/shipmentMode.js). Batched so the classifier is trained once for
+    // the whole page rather than once per row, and computed on READ rather than
+    // stored — improving the lexicon re-rates every historical order for free.
+    const autoModes = await classifyShipmentModes(rows.map((r) => r.product_name || ''));
+
+    return rows.map((r, i) => {
       const key = String(r.china_tracking_no || '').toUpperCase();
       const m = key ? matchMap[key] : null;
+      const auto = autoModes[i];
+      const override = normalizeShipMode(r.ship_mode_override);
       return {
         id: r.id,
         order_number: r.order_number,
@@ -159,6 +177,16 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
         source_product_id: r.source_product_id,
         quantity: r.quantity,
         shipping_mode: r.shipping_mode,
+        // Effective mode the box should travel in, and enough of the working to
+        // explain it in the panel's tooltip: what the classifier decided, which
+        // stage decided it, why, and whether a human has overridden it.
+        ship_mode: override || auto.mode,
+        ship_mode_auto: auto.mode,
+        ship_mode_override: override,
+        ship_mode_source: override ? 'staff' : auto.source,
+        ship_mode_reason: override
+          ? `Set to ${override === 'land' ? 'By Land' : 'By Air'} by warehouse staff (auto-detected ${auto.mode === 'land' ? 'By Land' : 'By Air'}: ${auto.reason})`
+          : auto.reason,
         order_status: r.order_status,
         paid_amount: r.paid_amount,
         ordered_at: r.ordered_at,
@@ -181,6 +209,75 @@ router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
   } catch (error) {
     console.error('List supplier orders error:', error);
     res.status(500).json({ success: false, message: 'Unable to load 1688 orders' });
+  }
+});
+
+// PATCH /:id/ship-mode — record (or clear) a staff correction of the
+// auto-detected shipment mode. Body: { mode: 'air' | 'land' | null }.
+//
+// An explicit null is how a staff member says "I was wrong, go back to the
+// automatic answer" — so the body is read with hasOwnProperty rather than a
+// truthiness check, which would make clearing impossible.
+router.patch('/:id/ship-mode', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    if (!hasKey(req.body || {}, 'mode')) {
+      return res.status(400).json({ success: false, message: 'mode is required (air, land, or null)' });
+    }
+    const raw = req.body.mode;
+    const mode = raw === null || raw === '' ? null : normalizeShipMode(raw);
+    if (raw !== null && raw !== '' && !mode) {
+      return res.status(400).json({ success: false, message: `mode must be one of ${SHIP_MODES.join(', ')} (or null to clear)` });
+    }
+
+    const order = await withConnectionRetry(() => SupplierOrder.findByPk(req.params.id));
+    if (!order) return res.status(404).json({ success: false, message: '1688 order not found' });
+
+    await withConnectionRetry(() => order.update({ ship_mode_override: mode }));
+
+    // Clearing an override hands the row back to the classifier, so the
+    // effective mode has to be recomputed here either way — the client can't
+    // work out what the classifier will say next.
+    const [auto] = await classifyShipmentModes([order.product_name || '']);
+    const effective = mode || auto.mode;
+
+    // Push the decision onto the box itself. warehouse_items.shipment_from is
+    // what the label renderer prints and what /ship inherits, so without this
+    // step correcting the mode here would change the table and nothing else —
+    // the box would still print, and ship, the old way.
+    //
+    // Only IN-STOCK items are touched: an already-shipped item records how it
+    // actually travelled, and rewriting that would be a lie about a completed
+    // shipment.
+    let propagated = 0;
+    if (WarehouseItem && order.china_tracking_no) {
+      const [count] = await withConnectionRetry(() => WarehouseItem.update(
+        { shipment_from: toShipmentFrom(effective) },
+        { where: { tracking_number: order.china_tracking_no, status: 'in_stock' } }
+      ));
+      propagated = count || 0;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        id: order.id,
+        ship_mode: effective,
+        ship_mode_auto: auto.mode,
+        ship_mode_override: mode,
+        ship_mode_source: mode ? 'staff' : auto.source,
+        ship_mode_reason: mode
+          ? `Set to ${toShipmentFrom(mode)} by warehouse staff (auto-detected ${toShipmentFrom(auto.mode)}: ${auto.reason})`
+          : auto.reason,
+        // How many boxes on the shelf were retagged — the panel uses it to tell
+        // staff the change reached the physical stock, not just this table.
+        warehouse_items_updated: propagated,
+        warehouse_shipment_from: toShipmentFrom(effective),
+      },
+    });
+  } catch (error) {
+    console.error('Update 1688 order ship mode error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update shipment mode' });
   }
 });
 
