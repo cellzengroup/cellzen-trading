@@ -558,6 +558,31 @@ const resolveScope = (v) => {
   return hasKey(EXPORT_SCOPES, name) ? name : 'received';
 };
 
+// A SECOND, independent cut across the same rows: which shipment mode the goods
+// travel in. Air and land cargo leave on different consignments through
+// different forwarders, so a packing list is normally handed over one mode at a
+// time — this is what lets staff pull "everything going by air this week"
+// without hand-deleting rows out of the sheet afterwards.
+//
+// Matched on the EFFECTIVE mode (`ship_mode` — the staff override when there is
+// one, otherwise the classifier's answer), which is exactly what the Mode column
+// in the 1688 panel shows, so the export can't disagree with the screen.
+// `air` is the catch-all rather than an equality test on 'air', mirroring the
+// frontend's own `=== "land" ? land : air` reading: a row can never fall out of
+// both lists and quietly go missing from every export.
+const EXPORT_MODES = {
+  all: { label: 'Air + Land', tag: '', match: () => true },
+  air: { label: 'By Air', tag: 'Air', match: (o) => o.ship_mode !== 'land' },
+  land: { label: 'By Land', tag: 'Land', match: (o) => o.ship_mode === 'land' },
+};
+// Same hasOwnProperty guard as resolveScope, and the same "unknown value falls
+// back to the widest answer" rule — a typo'd mode must not silently drop half
+// the shipment out of the list.
+const resolveExportMode = (v) => {
+  const key = String(v || '').trim().toLowerCase();
+  return hasKey(EXPORT_MODES, key) ? key : 'all';
+};
+
 // ============================================================= PACKING LIST
 // Everything below is shared by the two packing-list exports (.xlsx and .pdf):
 // which orders are on the list, what each row says, the title, the logo and the
@@ -567,9 +592,12 @@ const resolveScope = (v) => {
 // Read the export's query params the same way for both formats.
 function readPackingQuery(query) {
   const scopeKey = resolveScope(query.scope);
+  const modeKey = resolveExportMode(query.mode);
   return {
     scopeKey,
     scope: EXPORT_SCOPES[scopeKey],
+    modeKey,
+    mode: EXPORT_MODES[modeKey],
     from: DAY_RE.test(String(query.from || '').trim()) ? String(query.from).trim() : '',
     to: DAY_RE.test(String(query.to || '').trim()) ? String(query.to).trim() : '',
     // Photos are the default (the list is a packing reference), so only an
@@ -592,14 +620,17 @@ function readPackingQuery(query) {
 // rows past this point just carry the offline heuristic name and no thumbnail —
 // which is all a reconciliation-sized export needs anyway.
 async function buildPackingExport(opts) {
-  const { scopeKey, scope, from, to, withImages } = opts;
+  const { scopeKey, scope, modeKey, mode, from, to, withImages } = opts;
   const allOrders = await fetchSupplierOrders(opts.search, { from, to });
-  const orders = allOrders.filter(scope.match);
+  // Both cuts, applied together: the warehouse state (scope) AND the shipment
+  // mode. `ship_mode` is computed by fetchSupplierOrders for every row, so this
+  // costs nothing extra beyond the rows it drops.
+  const orders = allOrders.filter((o) => scope.match(o) && mode.match(o));
 
   const enriched = orders.slice(0, PACKING_ENRICH_MAX_ROWS);
   const trimmedEnrichment = orders.length > enriched.length;
   if (trimmedEnrichment) {
-    console.warn(`[1688 export] ${orders.length} rows (scope=${scopeKey}) — photos/LLM names limited to the first ${enriched.length}.`);
+    console.warn(`[1688 export] ${orders.length} rows (scope=${scopeKey}, mode=${modeKey}) — photos/LLM names limited to the first ${enriched.length}.`);
   }
 
   // Resolve the product name up front (see productNames.js — a wrong name here
@@ -631,27 +662,35 @@ async function buildPackingExport(opts) {
 // The heading printed INTO the document, not just into the filename: these
 // lists get emailed and printed, and a "Not Arrived Yet" chase list that reads
 // like a packing list of goods on hand is the kind of mix-up that ships the
-// wrong carton. A trimmed export says so on its face too — a reader who sees
+// wrong carton — as is an air-only list that a forwarder reads as the whole
+// consignment, which is why the mode is named here too. A trimmed export says
+// so on its face too — a reader who sees
 // photos stop halfway down otherwise has no way to tell that from missing
 // product data. Only photos are called out: a row past the cap still gets a
 // product name, just from the offline heuristic rather than the model, so
 // nothing is actually absent from those cells. Moot without images.
-function packingTitle({ scope, from, to, withImages, trimmedEnrichment, enrichedCount, total }) {
+function packingTitle({ scope, mode, from, to, withImages, trimmedEnrichment, enrichedCount, total }) {
+  // Only when it narrows something: an unqualified heading already means "both
+  // modes", and " — Received Only · Air + Land" reads like a third option.
+  const modeLabel = mode && mode.tag ? ` · ${mode.label}` : '';
   const rangeLabel = from && to ? ` (${from} to ${to})` : from ? ` (from ${from})` : to ? ` (up to ${to})` : '';
   const trimLabel = trimmedEnrichment && withImages
     ? `  ·  photos on the first ${enrichedCount} of ${total} rows`
     : '';
-  return `Packing List of 1688 Orders — ${scope.label}${rangeLabel}${trimLabel}`;
+  return `Packing List of 1688 Orders — ${scope.label}${modeLabel}${rangeLabel}${trimLabel}`;
 }
 
 // Kept in step with the same expression in frontend/src/utils/warehouseApi.js,
 // so a file saved from the browser and one fetched from the API match.
-function packingFilename({ scopeKey, withImages, from, to }, ext) {
+function packingFilename({ scopeKey, modeKey, withImages, from, to }, ext) {
   const stamp = from || to
     ? `${(from || 'any').replace(/-/g, '')}_${(to || 'any').replace(/-/g, '')}`
     : new Date().toISOString().slice(0, 10).replace(/-/g, '');
   const scopeTag = { received: 'Received', all: 'All', not_arrived: 'NotArrived' }[scopeKey];
-  return `CZN_GtradeA_PackingList_${scopeTag}${withImages ? '' : '_NoImages'}_${stamp}.${ext}`;
+  // Empty for the both-modes default, so the file everyone already knows keeps
+  // exactly the name it has today and only a narrowed export gets a new one.
+  const modeTag = EXPORT_MODES[modeKey] ? EXPORT_MODES[modeKey].tag : '';
+  return `CZN_GtradeA_PackingList_${scopeTag}${modeTag ? `_${modeTag}` : ''}${withImages ? '' : '_NoImages'}_${stamp}.${ext}`;
 }
 
 // The Cellzen mark, pulled straight out of the hand-styled template file so
@@ -735,8 +774,9 @@ function packingShipmentGroups(orders) {
 // purple header row, one row per order with its product photo embedded.
 //
 // Query: ?search= (same matcher as the list) &scope=received|all|not_arrived
-// (default received) &from=YYYY-MM-DD &to=YYYY-MM-DD (both optional, inclusive,
-// on the gtradea ORDER date) &images=0 to drop the product photos.
+// (default received) &mode=all|air|land (default all — the effective By Air /
+// By Land mode of each row) &from=YYYY-MM-DD &to=YYYY-MM-DD (both optional,
+// inclusive, on the gtradea ORDER date) &images=0 to drop the product photos.
 router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;

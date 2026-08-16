@@ -298,19 +298,25 @@ export async function syncSupplierOrders(force = false) {
 //
 // `scope` picks which slice of the orders lands in the list — "received"
 // (default: only what's on the shelf right now), "all", or "not_arrived"
-// (ordered but never scanned in). `from`/`to` are optional inclusive
+// (ordered but never scanned in). `mode` cuts the same rows by how they travel
+// — "all" (default), "air" or "land" — so an air consignment can be handed over
+// without the land rows in the sheet. `from`/`to` are optional inclusive
 // YYYY-MM-DD bounds on the gtradea order date. `images` false drops the product
 // photos AND the column that holds them, which is what makes a big export
 // finish quickly. All of it is validated server-side; the names must stay in
-// step with EXPORT_SCOPES in backend/inventory/routes/supplierOrders.js.
+// step with EXPORT_SCOPES / EXPORT_MODES in
+// backend/inventory/routes/supplierOrders.js.
 //
 // Both formats are built from the same rows by the same server code, so the
 // sheet and the page always describe the same shipment — only the medium
 // differs, and so does the extension in the URL and the filename.
-async function exportSupplierOrders(format, search, { scope = "received", from = "", to = "", images = true } = {}) {
+async function exportSupplierOrders(format, search, { scope = "received", mode = "all", from = "", to = "", images = true } = {}) {
   const params = new URLSearchParams();
   if (search) params.set("search", search);
   params.set("scope", scope);
+  // Omitted for the default so the URL staff see (and any bookmarked one)
+  // doesn't grow a param that changes nothing.
+  if (mode && mode !== "all") params.set("mode", mode);
   if (from) params.set("from", from);
   if (to) params.set("to", to);
   if (!images) params.set("images", "0");
@@ -319,9 +325,10 @@ async function exportSupplierOrders(format, search, { scope = "received", from =
   // Mirrors the server's own Content-Disposition name so a file saved from the
   // browser and one fetched directly from the API are named the same thing.
   const scopeTag = { received: "Received", all: "All", not_arrived: "NotArrived" }[scope] || "Received";
+  const modeTag = { air: "_Air", land: "_Land" }[mode] || "";
   await saveResponseAs(
     res,
-    `CZN_GtradeA_PackingList_${scopeTag}${images ? "" : "_NoImages"}_${dateStamp(from, to)}.${format}`
+    `CZN_GtradeA_PackingList_${scopeTag}${modeTag}${images ? "" : "_NoImages"}_${dateStamp(from, to)}.${format}`
   );
 }
 

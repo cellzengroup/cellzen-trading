@@ -253,6 +253,17 @@ const EXPORT_SCOPES = [
   },
 ];
 
+// The second cut the export offers, across whichever scope is picked: how the
+// goods travel. Air and land cargo leave on separate consignments, so the list
+// is usually pulled one mode at a time. `match` mirrors the server's
+// EXPORT_MODES — same "anything not land is air" reading as unwrapSupplierOrder,
+// so no row is missing from both lists.
+const EXPORT_MODES = [
+  { value: "all", label: "Air + Land", hint: "Both modes", match: () => true },
+  { value: "air", label: "By Air", hint: "General cargo", match: (o) => o.shipMode !== "land" },
+  { value: "land", label: "By Land", hint: "Restricted goods", match: (o) => o.shipMode === "land" },
+];
+
 // A row's gtradea order date as a UTC calendar day (YYYY-MM-DD), which is both
 // what the table's Date column shows and what the server's from/to compare
 // against — so a range picked here selects exactly the rows the user can see.
@@ -1485,6 +1496,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const supplierExporting = !!exportingFormat;
   const [exportOpen, setExportOpen] = useState(false);
   const [exportScope, setExportScope] = useState("received");
+  const [exportShipMode, setExportShipMode] = useState("all"); // all | air | land
   const [exportFrom, setExportFrom] = useState("");
   const [exportTo, setExportTo] = useState("");
   const [exportImages, setExportImages] = useState(true);
@@ -1511,6 +1523,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       const download = format === "pdf" ? exportSupplierOrdersPdf : exportSupplierOrdersXlsx;
       await download(supplierSearch, {
         scope: exportScope,
+        mode: exportShipMode,
         from: exportFrom,
         to: exportTo,
         images: exportImages,
@@ -1613,10 +1626,17 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     setShipConfirmItems(list);
   };
 
-  // How many rows each scope would export under the current search + date range,
-  // shown live next to the three choices so nobody waits out a slow export only
-  // to open an empty sheet. Counted off the rows already loaded here; the file
-  // itself is still built server-side from the same filters.
+  // How many rows each scope and each shipment mode would export under the
+  // current search + date range, shown live next to the choices so nobody waits
+  // out a slow export only to open an empty sheet. Counted off the rows already
+  // loaded here; the file itself is still built server-side from the same
+  // filters.
+  //
+  // The two sets are counted with the OTHER control held where the user left it,
+  // so each number answers the question actually being asked of it: "how many if
+  // I switch to this scope (keeping By Air)", and "how many go by air (within
+  // Received Only)". Counting either one unfiltered would advertise rows the
+  // export then drops.
   const exportCounts = useMemo(() => {
     const inRange = (o) => {
       if (!exportFrom && !exportTo) return true;
@@ -1627,8 +1647,17 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       return true;
     };
     const rows = filteredSupplier.filter(inRange);
-    return Object.fromEntries(EXPORT_SCOPES.map((s) => [s.value, rows.filter(s.match).length]));
-  }, [filteredSupplier, exportFrom, exportTo]);
+    const pickedMode = EXPORT_MODES.find((m) => m.value === exportShipMode) || EXPORT_MODES[0];
+    const pickedScope = EXPORT_SCOPES.find((s) => s.value === exportScope) || EXPORT_SCOPES[0];
+    return {
+      scope: Object.fromEntries(
+        EXPORT_SCOPES.map((s) => [s.value, rows.filter((o) => s.match(o) && pickedMode.match(o)).length])
+      ),
+      mode: Object.fromEntries(
+        EXPORT_MODES.map((m) => [m.value, rows.filter((o) => m.match(o) && pickedScope.match(o)).length])
+      ),
+    };
+  }, [filteredSupplier, exportFrom, exportTo, exportScope, exportShipMode]);
 
   // Synchronous auth gate: redirect DURING render (not in an effect) so a
   // logged-out visitor goes straight to the login without the warehouse panel
@@ -2384,171 +2413,222 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             aria-modal="true"
             aria-label="Export 1688 orders"
             onClick={(e) => e.stopPropagation()}
-            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"
+            className="flex max-h-[90vh] w-full max-w-md flex-col overflow-hidden rounded-3xl bg-white shadow-2xl"
           >
-            <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
-              <IconDownload className="h-5 w-5" />
-            </span>
-            <h3 className="text-base font-bold">What do you want to export?</h3>
-            <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              Builds the styled packing list from the orders{" "}
-              {supplierSearch.trim() ? <>matching &ldquo;{supplierSearch.trim()}&rdquo;</> : "on this tab"} — as an
-              Excel sheet to work in, or a PDF to print and send.
-            </p>
+            {/* Only the CHOICES scroll — the action row below is pinned. There
+                are five controls here now, which is past one phone screen, and a
+                Cancel/Export row that scrolls out of reach is the one part of a
+                dialog that always has to be within reach. min-h-0 because a flex
+                child won't shrink below its content otherwise, and the panel
+                would grow past 90vh instead of scrolling inside it. */}
+            <div className="min-h-0 flex-1 overflow-y-auto p-6">
+              <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
+                <IconDownload className="h-5 w-5" />
+              </span>
+              <h3 className="text-base font-bold">What do you want to export?</h3>
+              <p className="mt-1 text-xs text-[#2D2D2D]/55">
+                Builds the styled packing list from the orders{" "}
+                {supplierSearch.trim() ? <>matching &ldquo;{supplierSearch.trim()}&rdquo;</> : "on this tab"} — as an
+                Excel sheet to work in, or a PDF to print and send.
+              </p>
 
-            <div className="mt-5 space-y-2">
-              {EXPORT_SCOPES.map((s) => {
-                const active = exportScope === s.value;
-                return (
-                  <label
-                    key={s.value}
-                    className={`flex cursor-pointer gap-3 rounded-2xl p-3.5 ring-1 transition-all ${
-                      active
-                        ? "bg-[#412460]/[0.06] ring-[#412460]/40"
-                        : "bg-[#F6F4F0] ring-transparent hover:ring-[#E6E2DB]"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="export-scope"
-                      value={s.value}
-                      checked={active}
-                      onChange={() => setExportScope(s.value)}
-                      className="mt-0.5 h-4 w-4 shrink-0 accent-[#412460]"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-baseline justify-between gap-2">
-                        <span className="text-sm font-semibold text-[#2D2D2D]">
-                          {s.label}
-                          {s.value === "received" && (
-                            <span className="ml-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#412460]/60">
-                              Default
-                            </span>
-                          )}
+              <div className="mt-5 space-y-2">
+                {EXPORT_SCOPES.map((s) => {
+                  const active = exportScope === s.value;
+                  return (
+                    <label
+                      key={s.value}
+                      className={`flex cursor-pointer gap-3 rounded-2xl p-3.5 ring-1 transition-all ${
+                        active
+                          ? "bg-[#412460]/[0.06] ring-[#412460]/40"
+                          : "bg-[#F6F4F0] ring-transparent hover:ring-[#E6E2DB]"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="export-scope"
+                        value={s.value}
+                        checked={active}
+                        onChange={() => setExportScope(s.value)}
+                        className="mt-0.5 h-4 w-4 shrink-0 accent-[#412460]"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-baseline justify-between gap-2">
+                          <span className="text-sm font-semibold text-[#2D2D2D]">
+                            {s.label}
+                            {s.value === "received" && (
+                              <span className="ml-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#412460]/60">
+                                Default
+                              </span>
+                            )}
+                          </span>
+                          <span className="shrink-0 text-xs font-semibold text-[#412460]">
+                            {exportCounts.scope[s.value]}
+                          </span>
                         </span>
-                        <span className="shrink-0 text-xs font-semibold text-[#412460]">
-                          {exportCounts[s.value]}
-                        </span>
+                        <span className="mt-0.5 block text-[11px] leading-snug text-[#2D2D2D]/55">{s.hint}</span>
                       </span>
-                      <span className="mt-0.5 block text-[11px] leading-snug text-[#2D2D2D]/55">{s.hint}</span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
+                    </label>
+                  );
+                })}
+              </div>
 
-            <div className="mt-5">
-              <div className="flex items-center justify-between">
-                <span className={LABEL}>By date — optional</span>
-                {(exportFrom || exportTo) && (
-                  <button
-                    type="button"
-                    onClick={() => { setExportFrom(""); setExportTo(""); }}
-                    className="text-[11px] font-semibold text-[#412460]/70 transition-colors hover:text-[#412460]"
-                  >
-                    Clear
-                  </button>
+              {/* Shipment mode — the cut that decides which forwarder the sheet
+                  goes to, so it sits directly under the scope rather than with
+                  the formatting options at the bottom. */}
+              <div className="mt-5">
+                <span className={LABEL}>Shipment mode</span>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {EXPORT_MODES.map((m) => {
+                    const active = exportShipMode === m.value;
+                    return (
+                      <button
+                        key={m.value}
+                        type="button"
+                        onClick={() => setExportShipMode(m.value)}
+                        aria-pressed={active}
+                        className={`rounded-2xl px-3 py-2.5 text-left ring-1 transition-all ${
+                          active
+                            ? "bg-[#412460]/[0.06] ring-[#412460]/40"
+                            : "bg-[#F6F4F0] ring-transparent hover:ring-[#E6E2DB]"
+                        }`}
+                      >
+                        <span className="flex items-baseline justify-between gap-1">
+                          <span className="text-xs font-semibold text-[#2D2D2D]">{m.label}</span>
+                          <span className="shrink-0 text-[11px] font-semibold text-[#412460]">
+                            {exportCounts.mode[m.value]}
+                          </span>
+                        </span>
+                        <span className="mt-0.5 block text-[10px] leading-snug text-[#2D2D2D]/50">{m.hint}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mt-1.5 text-[11px] text-[#2D2D2D]/45">
+                  Uses each order&apos;s Mode column — the staff correction where there is one, otherwise the
+                  auto-detected answer.
+                </p>
+              </div>
+
+              <div className="mt-5">
+                <div className="flex items-center justify-between">
+                  <span className={LABEL}>By date — optional</span>
+                  {(exportFrom || exportTo) && (
+                    <button
+                      type="button"
+                      onClick={() => { setExportFrom(""); setExportTo(""); }}
+                      className="text-[11px] font-semibold text-[#412460]/70 transition-colors hover:text-[#412460]"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <label className="block">
+                    <span className="mb-1 block text-[10px] text-[#2D2D2D]/45">From</span>
+                    <input
+                      type="date"
+                      value={exportFrom}
+                      max={exportTo || undefined}
+                      onChange={(e) => setExportFrom(e.target.value)}
+                      className={FIELD}
+                    />
+                  </label>
+                  <label className="block">
+                    <span className="mb-1 block text-[10px] text-[#2D2D2D]/45">To</span>
+                    <input
+                      type="date"
+                      value={exportTo}
+                      min={exportFrom || undefined}
+                      onChange={(e) => setExportTo(e.target.value)}
+                      className={FIELD}
+                    />
+                  </label>
+                </div>
+                <p className="mt-1.5 text-[11px] text-[#2D2D2D]/45">
+                  Bounds the 1688 order date, both ends included. Leave blank for every date.
+                </p>
+              </div>
+
+              <div className="mt-5">
+                <span className={LABEL}>Product photos</span>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {[
+                    { on: true, label: "With images", hint: "Photo in every row" },
+                    { on: false, label: "Without images", hint: "Faster, much smaller file" },
+                  ].map((opt) => (
+                    <button
+                      key={String(opt.on)}
+                      type="button"
+                      onClick={() => setExportImages(opt.on)}
+                      aria-pressed={exportImages === opt.on}
+                      className={`rounded-2xl px-3 py-2.5 text-left ring-1 transition-all ${
+                        exportImages === opt.on
+                          ? "bg-[#412460]/[0.06] ring-[#412460]/40"
+                          : "bg-[#F6F4F0] ring-transparent hover:ring-[#E6E2DB]"
+                      }`}
+                    >
+                      <span className="block text-xs font-semibold text-[#2D2D2D]">{opt.label}</span>
+                      <span className="mt-0.5 block text-[10px] leading-snug text-[#2D2D2D]/50">{opt.hint}</span>
+                    </button>
+                  ))}
+                </div>
+                {!exportImages && (
+                  <p className="mt-1.5 text-[11px] text-[#2D2D2D]/45">
+                    The Product Image column is left out entirely, so there&apos;s no empty gap in the sheet.
+                  </p>
                 )}
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <label className="block">
-                  <span className="mb-1 block text-[10px] text-[#2D2D2D]/45">From</span>
-                  <input
-                    type="date"
-                    value={exportFrom}
-                    max={exportTo || undefined}
-                    onChange={(e) => setExportFrom(e.target.value)}
-                    className={FIELD}
-                  />
-                </label>
-                <label className="block">
-                  <span className="mb-1 block text-[10px] text-[#2D2D2D]/45">To</span>
-                  <input
-                    type="date"
-                    value={exportTo}
-                    min={exportFrom || undefined}
-                    onChange={(e) => setExportTo(e.target.value)}
-                    className={FIELD}
-                  />
-                </label>
-              </div>
-              <p className="mt-1.5 text-[11px] text-[#2D2D2D]/45">
-                Bounds the 1688 order date, both ends included. Leave blank for every date.
-              </p>
             </div>
 
-            <div className="mt-5">
-              <span className={LABEL}>Product photos</span>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {[
-                  { on: true, label: "With images", hint: "Photo in every row" },
-                  { on: false, label: "Without images", hint: "Faster, much smaller file" },
-                ].map((opt) => (
-                  <button
-                    key={String(opt.on)}
-                    type="button"
-                    onClick={() => setExportImages(opt.on)}
-                    aria-pressed={exportImages === opt.on}
-                    className={`rounded-2xl px-3 py-2.5 text-left ring-1 transition-all ${
-                      exportImages === opt.on
-                        ? "bg-[#412460]/[0.06] ring-[#412460]/40"
-                        : "bg-[#F6F4F0] ring-transparent hover:ring-[#E6E2DB]"
-                    }`}
-                  >
-                    <span className="block text-xs font-semibold text-[#2D2D2D]">{opt.label}</span>
-                    <span className="mt-0.5 block text-[10px] leading-snug text-[#2D2D2D]/50">{opt.hint}</span>
-                  </button>
-                ))}
-              </div>
-              {!exportImages && (
-                <p className="mt-1.5 text-[11px] text-[#2D2D2D]/45">
-                  The Product Image column is left out entirely, so there&apos;s no empty gap in the sheet.
+            {/* Pinned action row. The warning travels WITH the buttons rather
+                than staying up in the scroll body, so the reason an export is
+                blocked (or will come out empty) is on screen at the moment it's
+                clicked. Excel leads — it's the working copy staff fill the
+                Ctn. No / KG / CBM columns into. The PDF is the same list frozen
+                for printing and emailing, so it sits beside it rather than under
+                a menu. */}
+            <div className="shrink-0 border-t border-[#E6E2DB] bg-white px-6 py-4">
+              {exportRangeInvalid ? (
+                <p className="mb-3 text-[11px] font-semibold text-red-600">
+                  &ldquo;From&rdquo; is after &ldquo;To&rdquo; — no order can fall in that range.
                 </p>
-              )}
-            </div>
+              ) : exportCounts.scope[exportScope] === 0 ? (
+                // Not a hard block: the sheet is built server-side from the full
+                // order table, and these counts only see what this tab has loaded.
+                <p className="mb-3 text-[11px] font-semibold text-[#B99353]">
+                  No loaded orders match this choice — the sheet may come out empty.
+                </p>
+              ) : null}
 
-            {exportRangeInvalid ? (
-              <p className="mt-3 text-[11px] font-semibold text-red-600">
-                &ldquo;From&rdquo; is after &ldquo;To&rdquo; — no order can fall in that range.
-              </p>
-            ) : exportCounts[exportScope] === 0 ? (
-              // Not a hard block: the sheet is built server-side from the full
-              // order table, and these counts only see what this tab has loaded.
-              <p className="mt-3 text-[11px] font-semibold text-[#B99353]">
-                No loaded orders match this choice — the sheet may come out empty.
-              </p>
-            ) : null}
-
-            {/* Excel leads — it's the working copy staff fill the Ctn. No / KG /
-                CBM columns into. The PDF is the same list frozen for printing
-                and emailing, so it sits beside it rather than under a menu. */}
-            <div className="mt-6 flex flex-wrap items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setExportOpen(false)}
-                disabled={supplierExporting}
-                className={`${BTN_GHOST} disabled:cursor-not-allowed disabled:opacity-40`}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => handleExportSupplier("pdf")}
-                disabled={supplierExporting || exportRangeInvalid}
-                className={`${BTN_GHOST} disabled:cursor-not-allowed disabled:opacity-40`}
-              >
-                <IconDownload className={`h-3.5 w-3.5 ${exportingFormat === "pdf" ? "animate-pulse" : ""}`} />
-                {exportingFormat === "pdf" ? "Exporting…" : "Export as PDF"}
-              </button>
-              <button
-                type="button"
-                onClick={() => handleExportSupplier("xlsx")}
-                disabled={supplierExporting || exportRangeInvalid}
-                className={BTN_PRIMARY}
-              >
-                <IconDownload className={`h-3.5 w-3.5 ${exportingFormat === "xlsx" ? "animate-pulse" : ""}`} />
-                {exportingFormat === "xlsx" ? "Exporting…" : "Export as Excel"}
-              </button>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setExportOpen(false)}
+                  disabled={supplierExporting}
+                  className={`${BTN_GHOST} disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportSupplier("pdf")}
+                  disabled={supplierExporting || exportRangeInvalid}
+                  className={`${BTN_GHOST} disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  <IconDownload className={`h-3.5 w-3.5 ${exportingFormat === "pdf" ? "animate-pulse" : ""}`} />
+                  {exportingFormat === "pdf" ? "Exporting…" : "Export as PDF"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExportSupplier("xlsx")}
+                  disabled={supplierExporting || exportRangeInvalid}
+                  className={BTN_PRIMARY}
+                >
+                  <IconDownload className={`h-3.5 w-3.5 ${exportingFormat === "xlsx" ? "animate-pulse" : ""}`} />
+                  {exportingFormat === "xlsx" ? "Exporting…" : "Export as Excel"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
