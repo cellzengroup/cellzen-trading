@@ -429,7 +429,7 @@ const PACKING_COLUMNS = [
   { key: 'unit', header: 'Unit', width: 14 },
   { key: 'kg', header: 'KG', width: 14 },
   { key: 'cbm', header: 'CBM', width: 14 },
-  { key: 'paid', header: 'Paid Amount', width: 16 },
+  { key: 'paid', header: 'Amount', width: 16 },
 ];
 // -> { columns: [...], col: { marka: 1, ctn: 2, ... } }, 1-indexed for ExcelJS.
 const packingColumns = (withImages) => {
@@ -464,6 +464,18 @@ const PACKING_IMG_MAX_HEIGHT_PX = 400; // px (300pt)
 // Photos are re-encoded at twice their on-screen width: Excel draws them at
 // 96dpi but these lists get printed, and a 1:1 thumbnail prints soft.
 const PACKING_IMG_RENDER_PX = PACKING_IMG_COL_PX * 2;
+// EMU (English Metric Units) per pixel — the unit every drawing anchor in an
+// xlsx is expressed in. Shared by the logo and the product photos so the two
+// placements can't drift apart on the conversion.
+const EMU_PER_PX = 9525;
+
+// ---- Row 2, the logo band. Its height, and how tall the Cellzen mark is drawn
+// inside it. The height is the one the hand-styled template used, so the mark
+// keeps the size staff are used to; only its WIDTH is derived (from the mark's
+// own aspect ratio) rather than fixed, because a fixed width squashes whatever
+// image the template happens to hold.
+const PACKING_LOGO_BAND_PT = 105;
+const PACKING_LOGO_HEIGHT_PX = 94.5;
 
 // Size one downloaded photo to `targetWidth`, preserving its aspect ratio, in
 // whatever unit the caller works in (px for the sheet, pt for the PDF).
@@ -570,10 +582,15 @@ const resolveScope = (v) => {
 // `air` is the catch-all rather than an equality test on 'air', mirroring the
 // frontend's own `=== "land" ? land : air` reading: a row can never fall out of
 // both lists and quietly go missing from every export.
+// `heading` is what the title band across the top of the sheet/page says, and
+// it's deliberately the loudest thing on the document: a forwarder reads the
+// heading, not the filename, and an air consignment handed over under a generic
+// "Packing List" is the mix-up this whole filter exists to prevent. Empty for
+// the both-modes default, which needs no qualifier.
 const EXPORT_MODES = {
-  all: { label: 'Air + Land', tag: '', match: () => true },
-  air: { label: 'By Air', tag: 'Air', match: (o) => o.ship_mode !== 'land' },
-  land: { label: 'By Land', tag: 'Land', match: (o) => o.ship_mode === 'land' },
+  all: { label: 'Air + Land', tag: '', heading: '', match: () => true },
+  air: { label: 'By Air', tag: 'Air', heading: ' - By Air', match: (o) => o.ship_mode !== 'land' },
+  land: { label: 'By Land', tag: 'Land', heading: ' - By Land', match: (o) => o.ship_mode === 'land' },
 };
 // Same hasOwnProperty guard as resolveScope, and the same "unknown value falls
 // back to the widest answer" rule — a typo'd mode must not silently drop half
@@ -656,28 +673,23 @@ async function buildPackingExport(opts) {
     });
   }
 
-  return { orders, nerNames, imageBuffers, enrichedCount: enriched.length, trimmedEnrichment };
+  // `trimmedEnrichment` isn't returned: it used to be printed in the title band
+  // and now has no reader on the document. The console.warn above is still the
+  // ops signal that an export was big enough to lose its photos.
+  return { orders, nerNames, imageBuffers };
 }
 
 // The heading printed INTO the document, not just into the filename: these
-// lists get emailed and printed, and a "Not Arrived Yet" chase list that reads
-// like a packing list of goods on hand is the kind of mix-up that ships the
-// wrong carton — as is an air-only list that a forwarder reads as the whole
-// consignment, which is why the mode is named here too. A trimmed export says
-// so on its face too — a reader who sees
-// photos stop halfway down otherwise has no way to tell that from missing
-// product data. Only photos are called out: a row past the cap still gets a
-// product name, just from the offline heuristic rather than the model, so
-// nothing is actually absent from those cells. Moot without images.
-function packingTitle({ scope, mode, from, to, withImages, trimmedEnrichment, enrichedCount, total }) {
-  // Only when it narrows something: an unqualified heading already means "both
-  // modes", and " — Received Only · Air + Land" reads like a third option.
-  const modeLabel = mode && mode.tag ? ` · ${mode.label}` : '';
-  const rangeLabel = from && to ? ` (${from} to ${to})` : from ? ` (from ${from})` : to ? ` (up to ${to})` : '';
-  const trimLabel = trimmedEnrichment && withImages
-    ? `  ·  photos on the first ${enrichedCount} of ${total} rows`
-    : '';
-  return `Packing List of 1688 Orders — ${scope.label}${modeLabel}${rangeLabel}${trimLabel}`;
+// lists get emailed, printed and handed over, and the mode a consignment
+// travels in is the one thing a forwarder must not have to infer — hence
+// "GtradeA Packing List - By Air" and nothing else.
+//
+// Deliberately JUST the name and the mode. The scope, the date range and the
+// photo-trim notice all used to trail it here; they made the band read like a
+// query string at the exact moment someone is skimming for what the document IS.
+// Scope and dates still ride in the filename, which is what gets archived.
+function packingTitle({ mode }) {
+  return `GtradeA Packing List${mode ? mode.heading : ''}`;
 }
 
 // Kept in step with the same expression in frontend/src/utils/warehouseApi.js,
@@ -712,6 +724,64 @@ async function packingLogo() {
   }
 }
 
+// Where the Cellzen mark sits inside the row-2 band: dead centre, horizontally
+// and vertically.
+//
+// COMPUTED, not copied out of the template. The band is a merge across every
+// column and which columns those are changes — ?images=0 drops one, moving the
+// band's centre by a whole column — so the template's fixed offsets only ever
+// looked right for one of the two exports. They were also measured against a
+// different row height, which left the mark sitting high in the band, and they
+// pinned a width, which squashed a mark whose real aspect ratio didn't match.
+//
+// Returns an ExcelJS anchor built the way the product photos' is — an integer
+// column plus an EMU offset into it — so it lands on an exact pixel instead of
+// relying on fractional-column rounding.
+function packingLogoAnchor(columns, logo) {
+  const colPx = columns.map((c) => excelColWidthPx(c.width));
+  const bandW = colPx.reduce((s, w) => s + w, 0);
+  const bandH = PACKING_LOGO_BAND_PT / 0.75; // pt -> px at Excel's 96dpi
+
+  // Same rule the PDF draws it by: fixed height, width from the mark's own
+  // proportions. A mark whose dimensions can't be read is drawn square rather
+  // than not at all — a stretched logo still beats a missing one.
+  let h = PACKING_LOGO_HEIGHT_PX;
+  let w = h;
+  try {
+    const dim = imageSize(logo.buffer);
+    if (dim && dim.width && dim.height) w = (dim.width / dim.height) * h;
+  } catch (e) {
+    console.error('[1688 export] could not read logo dimensions:', e?.message || e);
+  }
+  // Nothing wider than the band can be centred in it — fit to the width instead.
+  if (w > bandW) {
+    h = (h / w) * bandW;
+    w = bandW;
+  }
+
+  // An absolute x across the band -> the column it falls in, plus the offset
+  // into that column. Clamped to the last column so a right edge landing exactly
+  // on the band's end doesn't run off it.
+  const at = (x) => {
+    let col = 0;
+    let rem = x;
+    while (col < colPx.length - 1 && rem >= colPx[col]) {
+      rem -= colPx[col];
+      col += 1;
+    }
+    return { col, off: Math.round(rem * EMU_PER_PX) };
+  };
+  const left = at((bandW - w) / 2);
+  const right = at((bandW - w) / 2 + w);
+  const top = (bandH - h) / 2;
+
+  return {
+    tl: { col: left.col, row: 1, nativeCol: left.col, nativeRow: 1, nativeColOff: left.off, nativeRowOff: Math.round(top * EMU_PER_PX) },
+    br: { col: right.col, row: 1, nativeCol: right.col, nativeRow: 1, nativeColOff: right.off, nativeRowOff: Math.round((top + h) * EMU_PER_PX) },
+    editAs: 'oneCell',
+  };
+}
+
 // One row's cell values, keyed by column. Brand/model/description are gtradea
 // data gaps backfilled with sane placeholders rather than left blank, since the
 // list is used as a physical packing reference. Values are returned raw — the
@@ -736,7 +806,7 @@ function packingRowValues(o, name) {
     unit: 'pcs',
     kg: null,          // filled in by hand at packing time
     cbm: null,         // filled in by hand at packing time
-    // Paid Amount — from gtradea's procurement/China-ops view, packing list
+    // Amount — the paid figure from gtradea's procurement/China-ops view, packing list
     // only (not shown on the 1688 tab).
     paid: o.paid_amount != null ? Number(o.paid_amount) : null,
   };
@@ -784,7 +854,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     const { withImages } = opts;
     const { columns, col } = packingColumns(withImages);
     const nominalHeight = withImages ? PACKING_ROW_HEIGHT : PACKING_ROW_HEIGHT_NO_IMG;
-    const { orders, nerNames, imageBuffers, enrichedCount, trimmedEnrichment } = await buildPackingExport(opts);
+    const { orders, nerNames, imageBuffers } = await buildPackingExport(opts);
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Packing List');
@@ -793,7 +863,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     // Row 1 — title band.
     sheet.mergeCells(1, 1, 1, columns.length);
     const titleCell = sheet.getCell(1, 1);
-    titleCell.value = packingTitle({ ...opts, trimmedEnrichment, enrichedCount, total: orders.length });
+    titleCell.value = packingTitle(opts);
     titleCell.font = { size: 17, bold: true, name: 'Arial', color: { argb: 'FF2D2D2D' } };
     titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E4DD' } };
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -801,16 +871,12 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
 
     // Row 2 — logo band.
     sheet.mergeCells(2, 1, 2, columns.length);
-    sheet.getRow(2).height = 105;
+    sheet.getRow(2).height = PACKING_LOGO_BAND_PT;
     const logo = await packingLogo();
     if (logo) {
       try {
         const logoId = workbook.addImage({ buffer: logo.buffer, extension: logo.extension });
-        sheet.addImage(logoId, {
-          tl: { col: 5, row: 1, nativeCol: 5, nativeRow: 1, nativeColOff: 839416, nativeRowOff: 150000 },
-          br: { col: 7, row: 1, nativeCol: 7, nativeRow: 1, nativeColOff: 85760, nativeRowOff: 1050000 },
-          editAs: 'oneCell',
-        });
+        sheet.addImage(logoId, packingLogoAnchor(columns, logo));
       } catch (e) {
         console.error('[1688 export] could not place logo:', e?.message || e);
       }
@@ -856,13 +922,12 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       if (drawn) {
         try {
           const imgId = workbook.addImage({ buffer: drawn.buffer, extension: drawn.ext });
-          const PX_TO_EMU = 9525;
           const imgCol0 = col.image - 1; // ExcelJS anchors are 0-indexed
           const rowHeightPx = row.height / 0.75;
           // padX is 0 for anything that isn't height-capped — that IS the
           // exact-width fit. padY centres a photo shorter than its row.
-          const padX = Math.round(Math.max(0, (PACKING_IMG_COL_PX - drawn.w) / 2) * PX_TO_EMU);
-          const padY = Math.round(Math.max(0, (rowHeightPx - drawn.h) / 2) * PX_TO_EMU);
+          const padX = Math.round(Math.max(0, (PACKING_IMG_COL_PX - drawn.w) / 2) * EMU_PER_PX);
+          const padY = Math.round(Math.max(0, (rowHeightPx - drawn.h) / 2) * EMU_PER_PX);
           sheet.addImage(imgId, {
             tl: { col: imgCol0, row: r - 1, nativeCol: imgCol0, nativeRow: r - 1, nativeColOff: padX, nativeRowOff: padY },
             br: {
@@ -870,8 +935,8 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
               row: r - 1,
               nativeCol: imgCol0,
               nativeRow: r - 1,
-              nativeColOff: Math.round(padX + drawn.w * PX_TO_EMU),
-              nativeRowOff: Math.round(padY + drawn.h * PX_TO_EMU),
+              nativeColOff: Math.round(padX + drawn.w * EMU_PER_PX),
+              nativeRowOff: Math.round(padY + drawn.h * EMU_PER_PX),
             },
             editAs: 'oneCell',
           });
@@ -897,21 +962,24 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       });
     }
 
-    // Total row
+    // Total row — banded EDGE TO EDGE in one colour rather than shaded only
+    // under the cells that carry a figure, which left the band broken into
+    // patches and read as if the blank columns belonged to the data above.
     const totalRow = sheet.getRow(r);
     totalRow.height = 40;
-    const setTotalCell = (c, value) => {
+    for (let c = 1; c <= columns.length; c++) {
       const cell = totalRow.getCell(c);
-      cell.value = value;
       cell.font = { size: 12, bold: true, name: 'Arial' };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8E4DD' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
-    };
-    setTotalCell(col.model, 'Total');
-    setTotalCell(col.description, 'Total');
-    setTotalCell(col.quantity, totalQty);
-    setTotalCell(col.unit, 'pcs');
-    setTotalCell(col.paid, totalPaid);
+    }
+    // ONE "Total" label, in the column immediately left of the figures it
+    // introduces — the second one under Model Number read like a column heading
+    // for a total that wasn't there.
+    totalRow.getCell(col.description).value = 'Total';
+    totalRow.getCell(col.quantity).value = totalQty;
+    totalRow.getCell(col.unit).value = 'pcs';
+    totalRow.getCell(col.paid).value = totalPaid;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${packingFilename(opts, 'xlsx')}"`);
@@ -983,10 +1051,10 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
     // Every await happens BEFORE the document is opened, so a DB or image
     // failure can still answer with a clean JSON 500 instead of a half-written
     // PDF that a browser would happily save as a corrupt file.
-    const { orders, nerNames, imageBuffers, enrichedCount, trimmedEnrichment } = await buildPackingExport(opts);
+    const { orders, nerNames, imageBuffers } = await buildPackingExport(opts);
     const { groupOf, totalPaid } = packingShipmentGroups(orders);
     const logo = await packingLogo();
-    const title = packingTitle({ ...opts, trimmedEnrichment, enrichedCount, total: orders.length });
+    const title = packingTitle(opts);
 
     const doc = new PDFDocument({
       size: 'A4',
@@ -1147,7 +1215,10 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
       y = drawPageChrome(false);
     }
     band(y, totalH, PDF_BAND);
-    const totals = { model: 'Total', description: 'Total', quantity: String(totalQty), unit: 'pcs', paid: totalPaid == null ? '' : String(totalPaid) };
+    // One 'Total' label, same column as the sheet's — the page and the sheet
+    // have to read identically or a reader checking one against the other stops
+    // trusting either.
+    const totals = { description: 'Total', quantity: String(totalQty), unit: 'pcs', paid: totalPaid == null ? '' : String(totalPaid) };
     columns.forEach((c, ci) => {
       line(colX[ci], y, colX[ci + 1], y);
       line(colX[ci], y, colX[ci], y + totalH);
@@ -1204,11 +1275,13 @@ const BILLING_ROW_HEIGHT = 83.25;
 // Excel stores drawing anchors in EMU (English Metric Units): 914400 per inch,
 // 12700 per point, 9525 per pixel at 96dpi. A column's `width` is in "characters
 // of the default font", which Excel renders as `width * MDW + padding` pixels —
-// MDW is 7px for the default Calibri 11. These three conversions are the only
-// honest way to place an image at an exact spot on the sheet.
-const EMU_PER_PX = 9525;
+// MDW is 7px for the default Calibri 11. These conversions are the only honest
+// way to place an image at an exact spot on the sheet. EMU_PER_PX and the
+// column-width formula are shared with the packing list (EMU_PER_PX /
+// excelColWidthPx above) — both sheets have to agree on them or the same logo
+// lands in two different places.
 const EMU_PER_PT = 12700;
-const colWidthToPx = (width) => Math.round(width * 7 + 5);
+const colWidthToPx = excelColWidthPx;
 // The template carries one combined "Product ID" column; this splits it into the
 // PR ID and Order ID the 1688 tab actually shows, which is what was asked for.
 // Widths run wider than the template's so nothing sits tight against a cell

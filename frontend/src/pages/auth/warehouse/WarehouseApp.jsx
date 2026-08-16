@@ -253,6 +253,13 @@ const EXPORT_SCOPES = [
   },
 ];
 
+// The carriers offered in the Ship dialog's logistics dropdown. Suggestions,
+// not a whitelist — SearchSelect keeps `allowCustom`, and the backend still
+// takes any non-empty name, so a one-off carrier can be typed straight in
+// without a code change. Cellzen Trading leads: it's the in-house fleet and the
+// most common answer.
+const LOGISTICS_CARRIERS = ["Cellzen Trading", "RK Logistics", "FR Logistics"];
+
 // The second cut the export offers, across whichever scope is picked: how the
 // goods travel. Air and land cargo leave on separate consignments, so the list
 // is usually pulled one mode at a time. `match` mirrors the server's
@@ -2784,8 +2791,8 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   <SearchSelect
                     value={shipLogistics}
                     onChange={setShipLogistics}
-                    options={["RK Logistics", "FR Logistics"]}
-                    placeholder="Search or type, e.g. RK Logistics"
+                    options={LOGISTICS_CARRIERS}
+                    placeholder="Search or type, e.g. Cellzen Trading"
                     allowCustom
                   />
                 </div>
