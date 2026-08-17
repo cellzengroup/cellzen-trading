@@ -309,7 +309,9 @@ export async function syncSupplierOrders(force = false) {
 //
 // Both formats are built from the same rows by the same server code, so the
 // sheet and the page always describe the same shipment — only the medium
-// differs, and so does the extension in the URL and the filename.
+// differs. They are named differently all the same: the sheet is the packing
+// list a forwarder works from and carries the mode (BYAIR / BYLAND), while the
+// pdf is filed as the report of the same handover.
 async function exportSupplierOrders(format, search, { scope = "received", mode = "all", from = "", to = "", images = true } = {}) {
   const params = new URLSearchParams();
   if (search) params.set("search", search);
@@ -323,12 +325,15 @@ async function exportSupplierOrders(format, search, { scope = "received", mode =
   const res = await authFetch(`/inventory/supplier-orders/export.${format}?${params}`, { ...STAFF, cache: "no-store" });
   if (!res.ok) throw new Error(`Export failed (HTTP ${res.status})`);
   // Mirrors the server's own Content-Disposition name so a file saved from the
-  // browser and one fetched directly from the API are named the same thing.
-  const scopeTag = { received: "Received", all: "All", not_arrived: "NotArrived" }[scope] || "Received";
-  const modeTag = { air: "_Air", land: "_Land" }[mode] || "";
+  // browser and one fetched directly from the API are named the same thing —
+  // see packingFilename() in backend/inventory/routes/supplierOrders.js for why
+  // the scope, the photo flag and the date range are left out of both.
+  const stamp = todayStamp();
   await saveResponseAs(
     res,
-    `CZN_GtradeA_PackingList_${scopeTag}${modeTag}${images ? "" : "_NoImages"}_${dateStamp(from, to)}.${format}`
+    format === "pdf"
+      ? `${stamp}_GtradeA_Report.pdf`
+      : `${stamp}_${mode === "land" ? "BYLAND" : "BYAIR"}_CZNGT_PL.${format}`
   );
 }
 

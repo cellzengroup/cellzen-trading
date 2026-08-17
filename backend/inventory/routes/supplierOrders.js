@@ -587,10 +587,13 @@ const resolveScope = (v) => {
 // heading, not the filename, and an air consignment handed over under a generic
 // "Packing List" is the mix-up this whole filter exists to prevent. Empty for
 // the both-modes default, which needs no qualifier.
+// The filename's own mode word is NOT taken from here — packingFilename() tests
+// for `land` directly, because the sheet only distinguishes the two ways goods
+// travel, not the three ways staff can ask for them.
 const EXPORT_MODES = {
-  all: { label: 'Air + Land', tag: '', heading: '', match: () => true },
-  air: { label: 'By Air', tag: 'Air', heading: ' - By Air', match: (o) => o.ship_mode !== 'land' },
-  land: { label: 'By Land', tag: 'Land', heading: ' - By Land', match: (o) => o.ship_mode === 'land' },
+  all: { label: 'Air + Land', heading: '', match: () => true },
+  air: { label: 'By Air', heading: ' - By Air', match: (o) => o.ship_mode !== 'land' },
+  land: { label: 'By Land', heading: ' - By Land', match: (o) => o.ship_mode === 'land' },
 };
 // Same hasOwnProperty guard as resolveScope, and the same "unknown value falls
 // back to the widest answer" rule — a typo'd mode must not silently drop half
@@ -694,15 +697,23 @@ function packingTitle({ mode }) {
 
 // Kept in step with the same expression in frontend/src/utils/warehouseApi.js,
 // so a file saved from the browser and one fetched from the API match.
-function packingFilename({ scopeKey, modeKey, withImages, from, to }, ext) {
-  const stamp = from || to
-    ? `${(from || 'any').replace(/-/g, '')}_${(to || 'any').replace(/-/g, '')}`
-    : new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const scopeTag = { received: 'Received', all: 'All', not_arrived: 'NotArrived' }[scopeKey];
-  // Empty for the both-modes default, so the file everyone already knows keeps
-  // exactly the name it has today and only a narrowed export gets a new one.
-  const modeTag = EXPORT_MODES[modeKey] ? EXPORT_MODES[modeKey].tag : '';
-  return `CZN_GtradeA_PackingList_${scopeTag}${modeTag ? `_${modeTag}` : ''}${withImages ? '' : '_NoImages'}_${stamp}.${ext}`;
+//
+// One shape per medium, both stamped with the day the export was taken:
+//   20260817_BYAIR_CZNGT_PL.xlsx  — the sheet, named after the consignment it packs
+//   20260817_GtradeA_Report.pdf   — the printable report
+//
+// Only `land` earns its own tag; every other mode — including the Air + Land
+// default — reads BYAIR, the same catch-all rule EXPORT_MODES.air uses to pick
+// rows, so the name can't claim a narrower cut than the sheet actually holds.
+//
+// Scope, the photo flag and the date range are deliberately NOT encoded. These
+// names get typed into emails and read down the phone to forwarders, and the
+// document itself states what it covers. The cost is real and accepted: two
+// exports of different scopes on the same day collide in a downloads folder.
+function packingFilename({ modeKey }, ext) {
+  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  if (ext === 'pdf') return `${stamp}_GtradeA_Report.pdf`;
+  return `${stamp}_${modeKey === 'land' ? 'BYLAND' : 'BYAIR'}_CZNGT_PL.${ext}`;
 }
 
 // The Cellzen mark, pulled straight out of the hand-styled template file so
