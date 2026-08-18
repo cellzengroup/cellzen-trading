@@ -28,6 +28,10 @@ export function unwrapItem(row) {
     source: row.source || "cellzen",
     orderNumber: row.order_number || "",
     productName: row.product_name || "",
+    boxCode: row.box_code || "",   // the id of the BOX (GTP-000123) — see boxCode()
+    // Every product in this parcel, lowest id first. One entry for an ordinary
+    // box; several when a supplier put more than one product in the same bag.
+    itemCodes: Array.isArray(row.item_codes) ? row.item_codes.filter(Boolean) : (row.item_code ? [row.item_code] : []),
     itemCode: row.item_code || "", // gtradea item code (GTI-100119) — see goodsCode()
     prCode: row.pr_code || "",     // gtradea PR / job id (PR-1029) — no longer displayed
   };
@@ -46,6 +50,24 @@ export function unwrapItem(row) {
 // localStorage instant-paint cache, and a cache written by an older build has no
 // itemCode at all — falling back through prCode/code here keeps those rendering.
 export const goodsCode = (item) => item?.itemCode || item?.prCode || item?.code || "";
+
+// What the label's BARCODE carries, and the big line printed under it: the id of
+// the box itself. A box can hold several products, so no product id can honestly
+// name it — see box_code in models/WarehouseItem.js.
+//
+// Falls back to the product id for boxes stored before box ids existed, and for
+// the localStorage instant-paint cache, which a older build wrote without one.
+// Those older labels stay scannable because the resolver still matches every id
+// a box has ever been printed with.
+export const boxCode = (item) => item?.boxCode || goodsCode(item);
+
+// The products inside, for the list printed under the box id. Falls back to the
+// single denormalized code so a cached or pre-list row still prints something.
+export const productCodes = (item) => {
+  const list = Array.isArray(item?.itemCodes) ? item.itemCodes.filter(Boolean) : [];
+  if (list.length) return list;
+  return item?.itemCode ? [item.itemCode] : [];
+};
 
 export function unwrapRack(row) {
   if (!row) return null;
@@ -239,6 +261,7 @@ export function unwrapSupplierOrder(row) {
     // items list hasn't been loaded (or hasn't caught up) yet.
     warehouseItemId: wh.id || null,
     warehouseItemCode: wh.item_code || "",
+    warehouseBoxCode: wh.box_code || "",
     warehousePrCode: wh.pr_code || "",
     warehouseShipmentFrom: wh.shipment_from || "By Air",
   };

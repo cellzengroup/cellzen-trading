@@ -110,6 +110,22 @@ async function generateItemCode(orderNumber) {
   return `CZN-${String((row?.max_seq || 0) + 1).padStart(5, '0')}`;
 }
 
+// Mint the id of the BOX: GTP-000001, GTP-000002, … One per physical parcel,
+// never shared — unlike `code`, which every box of one order deliberately shares.
+// This is what the label's barcode carries, so it must resolve to exactly one row.
+//
+// Same shape as a gtradea product id (three letters, dash, six digits) on purpose:
+// the barcode is then exactly as wide for a box of four products as for a box of
+// one, which is the whole reason the box id exists.
+async function generateBoxCode() {
+  const [[row]] = await sequelize.query(
+    `SELECT MAX((substring(box_code from '[0-9]{1,9}'))::int) AS max_seq
+       FROM warehouse_items
+      WHERE box_code ILIKE 'GTP%'`
+  );
+  return `GTP-${String((row?.max_seq || 0) + 1).padStart(6, '0')}`;
+}
+
 // ============================================================ RACKS
 
 // GET /racks — every rack (shared), newest first
@@ -184,11 +200,11 @@ router.get('/items/export.csv', authenticate, requireStaffOrAdmin, async (req, r
       const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
       return `"${safe.replace(/"/g, '""')}"`;
     };
-    const header = ['Product ID', 'Code', 'Order #', 'Tracking', 'Rack', 'Status', 'Stored By', 'Stored At', 'Shipped By', 'Shipped At'];
+    const header = ['Box ID', 'Product ID', 'Code', 'Order #', 'Tracking', 'Rack', 'Status', 'Stored By', 'Stored At', 'Shipped By', 'Shipped At'];
     const lines = [header.join(',')];
     for (const r of rows) {
       lines.push([
-        r.item_code, r.code, r.order_number, r.tracking_number, r.rack_id, r.status,
+        r.box_code, r.item_code, r.code, r.order_number, r.tracking_number, r.rack_id, r.status,
         r.created_by_name, r.createdAt, r.shipped_by_name, r.shipped_at,
       ].map(esc).join(','));
     }
@@ -214,7 +230,8 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     if (search) {
       const s = `%${escapeLike(String(search).trim())}%`;
       where[Op.or] = [
-        { item_code: { [Op.iLike]: s } }, // gtradea item code — what's printed on the box
+        { box_code: { [Op.iLike]: s } },  // the id the barcode carries
+        { item_code: { [Op.iLike]: s } }, // a product inside the box
         // Boxes stored before this change were labelled with the PR id, and
         // those labels are still on shelves — keep matching them so an old
         // sticker doesn't become unsearchable.
@@ -239,7 +256,10 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       // columns existed as well as any that the migration backfill couldn't match
       // (e.g. gtradea only published the job code after the box was scanned in).
       if (SupplierOrder) {
-        const need = found.filter((r) => r.source === 'gtradea' && r.tracking_number && (!r.item_code || !r.pr_code || !r.order_number || !r.product_name));
+        // Every gtradea row, not only the ones missing a field: the label now
+        // lists EVERY product in the parcel, and that list has to be built for
+        // rows whose own columns are already complete.
+        const need = found.filter((r) => r.source === 'gtradea' && r.tracking_number);
         if (need.length) {
           const trackings = [...new Set(need.map((r) => r.tracking_number))];
           const orders = await SupplierOrder.findAll({
@@ -254,7 +274,16 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
             order: [['item_code', 'ASC NULLS LAST']],
           });
           const map = {};
-          for (const o of orders) { if (!map[o.china_tracking_no]) map[o.china_tracking_no] = o; }
+          const codesByTracking = {};
+          for (const o of orders) {
+            if (!map[o.china_tracking_no]) map[o.china_tracking_no] = o;
+            // The query is already ordered by item_code, so pushing in order
+            // keeps each parcel's product list stable between reads — the label
+            // must not reorder itself every time it is printed.
+            if (o.item_code && !(codesByTracking[o.china_tracking_no] || []).includes(o.item_code)) {
+              (codesByTracking[o.china_tracking_no] ||= []).push(o.item_code);
+            }
+          }
           for (const r of found) {
             const m = r.source === 'gtradea' ? map[r.tracking_number] : null;
             if (m) {
@@ -262,6 +291,16 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
               if (!r.pr_code) r.pr_code = m.job_code;
               if (!r.order_number) r.order_number = m.order_number;
               if (!r.product_name) r.product_name = m.product_name;
+            }
+            // Not a model column — setDataValue is what carries it through
+            // toJSON to the client. Guarded rather than called outright: this is
+            // the warehouse's busiest endpoint, and a row that is a plain object
+            // rather than a model instance would otherwise take the whole list
+            // down with a 500 instead of just missing one field.
+            if (r.source === 'gtradea') {
+              const codes = codesByTracking[r.tracking_number] || (r.item_code ? [r.item_code] : []);
+              if (typeof r.setDataValue === 'function') r.setDataValue('item_codes', codes);
+              else r.item_codes = codes;
             }
           }
         }
@@ -402,6 +441,7 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     try {
       item = await WarehouseItem.create({
         code: await generateItemCode(orderNumber),
+        box_code: await generateBoxCode(),
         tracking_number: trackingNumber,
         rack_id: rackId,
         status: 'in_stock',
@@ -417,10 +457,33 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
         created_by_name: req.user.name || null,
       });
     } catch (error) {
-      if (error.name === 'SequelizeUniqueConstraintError') {
+      // MAX(box_code)+1 is not atomic, so two put-aways in the same instant can
+      // pick the same number. That collision is on box_code, not tracking, and it
+      // is safely retryable — the second scan just takes the next number. A
+      // tracking collision means the box really is already stored, so it still 409s.
+      const dupBox = error.name === 'SequelizeUniqueConstraintError'
+        && String(error.parent?.constraint || '').includes('box_code');
+      if (dupBox) {
+        item = await WarehouseItem.create({
+          code: await generateItemCode(orderNumber),
+          box_code: await generateBoxCode(),
+          tracking_number: trackingNumber,
+          rack_id: rackId,
+          status: 'in_stock',
+          source,
+          order_number: orderNumber,
+          product_name: productName,
+          pr_code: prCode,
+          item_code: itemCode,
+          ...(shipmentFrom ? { shipment_from: shipmentFrom } : {}),
+          created_by_user_id: req.user.id,
+          created_by_name: req.user.name || null,
+        });
+      } else if (error.name === 'SequelizeUniqueConstraintError') {
         return res.status(409).json({ success: false, message: 'Already in stock — this tracking number is already stored' });
+      } else {
+        throw error;
       }
-      throw error;
     }
     res.status(201).json({ success: true, data: item });
   } catch (error) {

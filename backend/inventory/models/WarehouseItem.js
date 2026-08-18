@@ -107,6 +107,20 @@ const WarehouseItem = sequelize
         type: DataTypes.STRING,
         allowNull: true,
       },
+      // The id of the BOX itself — GTP-000123, minted here and nowhere else.
+      // This, not a product id, is what the label's barcode carries.
+      //
+      // Why a box needs its own id: a parcel can hold several products, so no
+      // product id can honestly name the box. item_code below names ONE of them;
+      // this names the thing the sticker is stuck to. Deliberately the same
+      // shape as a product id — three letters, a dash, six digits — so the
+      // barcode is exactly as wide as it has always been, whatever the box holds.
+      //
+      // Unique: two boxes sharing a barcode would be unresolvable at the scanner.
+      box_code: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
       product_name: {
         type: DataTypes.TEXT,
         allowNull: true, // denormalized product name from the matched 1688 order
@@ -116,6 +130,8 @@ const WarehouseItem = sequelize
       timestamps: true,
       indexes: [
         { fields: ['rack_id'] },
+        // One box, one barcode — the scanner has to land on exactly one row.
+        { name: 'warehouse_items_box_code_unique', unique: true, fields: ['box_code'] },
         { fields: ['status'] },
         { fields: ['source'] },
         { fields: ['created_by_user_id'] },

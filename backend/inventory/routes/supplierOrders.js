@@ -142,13 +142,13 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
           // straight from its own table ("Proceed to Shipment"): the id names
           // the exact box to POST /items/:id/ship, and the mode is what the
           // confirm dialog shows read-only before you commit.
-          attributes: ['id', 'tracking_number', 'rack_id', 'status', 'code', 'pr_code', 'item_code', 'shipped_at', 'shipment_from'],
+          attributes: ['id', 'tracking_number', 'rack_id', 'status', 'code', 'pr_code', 'item_code', 'box_code', 'shipped_at', 'shipment_from'],
         });
         for (const it of items) {
           const key = String(it.tracking_number || '').toUpperCase();
           // Prefer an in-stock match over a shipped one for the same tracking.
           if (!matchMap[key] || it.status === 'in_stock') {
-            matchMap[key] = { id: it.id, rack_id: it.rack_id, status: it.status, code: it.code, pr_code: it.pr_code, item_code: it.item_code, shipped_at: it.shipped_at, shipment_from: it.shipment_from };
+            matchMap[key] = { id: it.id, rack_id: it.rack_id, status: it.status, code: it.code, pr_code: it.pr_code, item_code: it.item_code, box_code: it.box_code, shipped_at: it.shipped_at, shipment_from: it.shipment_from };
           }
         }
       }
@@ -195,7 +195,7 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
         paid_amount: r.paid_amount,
         ordered_at: r.ordered_at,
         synced_at: r.synced_at,
-        warehouse: m ? { in_warehouse: true, id: m.id, rack_id: m.rack_id, status: m.status, code: m.code, pr_code: m.pr_code, item_code: m.item_code, shipped_at: m.shipped_at, shipment_from: m.shipment_from } : { in_warehouse: false },
+        warehouse: m ? { in_warehouse: true, id: m.id, rack_id: m.rack_id, status: m.status, code: m.code, pr_code: m.pr_code, item_code: m.item_code, box_code: m.box_code, shipped_at: m.shipped_at, shipment_from: m.shipment_from } : { in_warehouse: false },
       };
     });
   });

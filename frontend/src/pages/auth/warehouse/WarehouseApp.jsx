@@ -39,6 +39,7 @@ const isShelf = (text) => RACK_CODE_PATTERN.test(String(text || "").trim());
 // printed on the box, so they're what staff type. The PR id stays searchable
 // because boxes labelled before the switch still carry it.
 const itemMatches = (i, f) =>
+  (i.boxCode || "").toLowerCase().includes(f) ||
   (i.itemCode || "").toLowerCase().includes(f) ||
   (i.prCode || "").toLowerCase().includes(f) ||
   (i.code || "").toLowerCase().includes(f) ||
@@ -219,6 +220,7 @@ const supplierAsItem = (o) => ({
   // exact item, where the box it matched only carries whichever code won for a
   // shared parcel.
   itemCode: o.itemCode || o.warehouseItemCode,
+  boxCode: o.warehouseBoxCode,
   prCode: o.warehousePrCode,
   trackingNumber: o.cnTracking,
   rackId: o.warehouseRack,
@@ -642,8 +644,9 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     return m;
   }, [items]);
 
-  // Resolve a scanned/typed code to an item. The item code counts as a match
-  // because that's what the printed label's barcode now encodes — scanning a box
+  // Resolve a scanned/typed code to an item. The BOX id is what the printed
+  // label's barcode now encodes, so it has to match first. The product code
+  // still counts too — scanning a box
   // has to find it. The PR id and the internal CZN code still match too, so the
   // two earlier generations of label keep working: there are boxes on the
   // shelves carrying each of them, and a scanner can't tell you which era a
@@ -659,6 +662,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       if (!c) return null;
       const matches = items.filter(
         (i) =>
+          (i.boxCode || "").toLowerCase() === c ||
           (i.itemCode || "").toLowerCase() === c ||
           (i.prCode || "").toLowerCase() === c ||
           (i.code || "").toLowerCase() === c ||
@@ -1017,6 +1021,25 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             </div>
             <div className="mt-0.5 break-all text-2xl font-black tracking-tight">{goodsCode(item)}</div>
             <dl className="mt-3 space-y-1.5 text-xs">
+              {/* What the printed barcode actually carries. Shown so a staff
+                  member holding a scanned box can reconcile it against this
+                  card — the barcode names the BOX, this panel leads with the
+                  product, and without this row nothing on screen matches the
+                  number they just scanned. */}
+              {item.boxCode ? (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Box ID</dt>
+                  <dd className="min-w-0 break-all font-semibold text-[#412460]">{item.boxCode}</dd>
+                </div>
+              ) : null}
+              {/* Every product in the parcel, when it holds more than one — the
+                  same list the label prints. */}
+              {item.itemCodes && item.itemCodes.length > 1 ? (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Inside</dt>
+                  <dd className="min-w-0 break-all font-semibold">{item.itemCodes.join(", ")}</dd>
+                </div>
+              ) : null}
               <div className="flex gap-2">
                 <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Shelf</dt>
                 <dd className="min-w-0 break-all font-semibold">{item.rackId || "—"}</dd>

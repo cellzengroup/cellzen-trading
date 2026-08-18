@@ -14,7 +14,7 @@
 // Rack/shelf labels are unchanged: a simple native barcode (no logo/icons).
 
 import { toCanvas } from "bwip-js";
-import { enqueuePrintJob, goodsCode } from "./warehouseApi";
+import { enqueuePrintJob, goodsCode, boxCode, productCodes } from "./warehouseApi";
 import { CELLZEN_LOGO_SVG, LABEL_ICONS_SVG } from "./labelAssets";
 import { GTRADEA_LABEL_ART, ART_W, ART_H } from "./gtradeaLabelArt";
 
@@ -478,11 +478,14 @@ function drawLabelArt(ctx, { scale, dx, dy }) {
 // the shelf code has to move with the "Shelf No:" label above it.
 const GT_FIELDS = {
   shelf:    { x: 385.6, top: 49.4,  bottom: 73.5,  right: 559, weight: "700", ref: "GT-01-003", group: "head" },
-  // ref updated from the old "PR-1028" to a real item code. Both are caps +
+  // ref is a real box id. It and the old product id are both caps + digits of
+  // the same length, so the type size and baseline derived from it are unchanged.
+  // (Previously "PR-1028", then "GTI-100119".) Kept honest about what prints here.
+  // Historical note: both are caps +
   // digits with no descender, so the ink box — and therefore the type size and
   // baseline this field derives from it — is unchanged; the string is only kept
   // honest about what actually prints here.
-  item:     { x: 118,   top: 341.4, bottom: 365.5, right: 521, weight: "700", ref: "GTI-100119", center: 189, group: "code" },
+  item:     { x: 118,   top: 341.4, bottom: 365.5, right: 521, weight: "700", ref: "GTP-000123", center: 189, group: "code" },
   order:    { x: 37.5,  top: 493.6, bottom: 515.5, right: 521, weight: "700", ref: "ORD-20260730-195740" },
   tracking: { x: 37.4,  top: 594.6, bottom: 616.5, right: 521, weight: "700", ref: "435291915403962" },
   stamp:    { x: 36.7,  top: 710.2, bottom: 725.3, right: 393, weight: "400", ref: "July 30, 2026 05:48 PM" },
@@ -560,6 +563,71 @@ function drawLabelBarcode(ctx, code, t) {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(bc, Math.round(x), Math.round(y), w, bc.height);
   ctx.imageSmoothingEnabled = true;
+  // Hand back the rect actually drawn: the product list centres on the BARS, and
+  // guessing at their position from the artboard maths lands a few dots off.
+  return { x: Math.round(x), w };
+}
+
+// The other products in the same parcel, listed under the box id.
+//
+// Only drawn when there IS another one — a box holding a single product says
+// everything it needs to in the id line above, so its label is unchanged.
+//
+// The band is the clear stock between that id line and the first rule, measured
+// off the rendered artwork rather than derived from it (y 332..378 in printer
+// dots). Rows are capped to the WIDTH OF THE BARS so each one centres under the
+// barcode instead of drifting across the label, and the type steps down — then
+// wraps to a second row — rather than ever crossing out of the band.
+// Bottom pulled 3 dots off the rule: centred in the full band, a two-row list
+// came within 2 dots of it, which print tolerance would close.
+const GT_LIST_BAND = { top: 332, bottom: 375 };
+const GT_LIST_PX_MAX = 20;
+const GT_LIST_PX_MIN = 13;
+
+function drawProductList(ctx, codes, bar) {
+  if (!bar || !Array.isArray(codes) || codes.length < 2) return;
+
+  const rowsFor = (n) => {
+    const per = Math.ceil(codes.length / n);
+    const out = [];
+    for (let i = 0; i < codes.length; i += per) out.push(codes.slice(i, i + per).join("   "));
+    return out;
+  };
+  // Only ever shrinks, and measures the real glyphs rather than assuming an
+  // advance width — the label font is not guaranteed to be monospace.
+  const sizeFor = (rows) => {
+    let px = GT_LIST_PX_MAX;
+    for (const line of rows) {
+      ctx.font = `500 ${px}px ${FONT_STACK}`;
+      const w = ctx.measureText(line).width;
+      if (w > bar.w) px = Math.max(1, Math.floor(px * (bar.w / w)));
+    }
+    return px;
+  };
+
+  let rows = rowsFor(1);
+  let px = sizeFor(rows);
+  if (px < GT_LIST_PX_MIN) { rows = rowsFor(2); px = sizeFor(rows); }
+  // Still too small to read at two rows: list what fits and say how many are
+  // left, rather than printing a line nobody can make out.
+  if (px < GT_LIST_PX_MIN) {
+    const shown = codes.slice(0, 2);
+    rows = [`${shown.join("   ")}  +${codes.length - shown.length}`];
+    px = Math.max(GT_LIST_PX_MIN, sizeFor(rows));
+  }
+
+  const cx = bar.x + bar.w / 2;
+  const cy = (GT_LIST_BAND.top + GT_LIST_BAND.bottom) / 2;
+  const lh = px * 1.2; // tight leading — the band is only 43 dots of stock
+  const first = cy - ((rows.length - 1) * lh) / 2;
+
+  ctx.save();
+  ctx.fillStyle = INK;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `500 ${px}px ${FONT_STACK}`;
+  rows.forEach((line, i) => ctx.fillText(line, cx, Math.round(first + i * lh)));
+  ctx.restore();
 }
 
 async function renderGtradeaLabel(item, shipmentMode = null) {
@@ -574,7 +642,9 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
 
   const t = artTransform();
   drawLabelArt(ctx, t);
-  drawLabelBarcode(ctx, goodsCode(item), t);
+  // The BOX id, not a product id: a parcel can hold several products, so no
+  // product id can honestly name the thing this sticker is stuck to.
+  const bar = drawLabelBarcode(ctx, boxCode(item), t);
 
   // The shipment panel always reads one way or the other — it's part of the
   // fixed artwork, so it can never be left blank. Fall back to the mode already
@@ -582,7 +652,8 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   const mode = normalizeShipmentMode(shipmentMode) || normalizeShipmentMode(item.shipmentFrom) || "air";
 
   drawField(ctx, GT_FIELDS.shelf, item.rackId || "-", t);
-  drawField(ctx, GT_FIELDS.item, goodsCode(item), t);
+  drawField(ctx, GT_FIELDS.item, boxCode(item), t);
+  drawProductList(ctx, productCodes(item), bar);
   drawField(ctx, GT_FIELDS.order, item.orderNumber || "-", t);
   drawField(ctx, GT_FIELDS.tracking, item.trackingNumber || "-", t);
   drawField(ctx, GT_FIELDS.stamp, formatLabelStamp(item.createdAt), t);
