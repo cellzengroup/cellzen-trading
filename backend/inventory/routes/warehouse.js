@@ -81,8 +81,9 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // sequential number is the max existing CZN number + 1, zero-padded to 5 digits.
 //
 // NOTE: for gtradea items this code is no longer what staff see — the label,
-// its barcode and the GtradeA panel show the gtradea PR id (pr_code). `code`
-// stays as the stable internal key that groups the boxes of one order together.
+// its barcode and the GtradeA panel show the gtradea item code (item_code).
+// `code` stays as the stable internal key that groups the boxes of one order
+// together.
 async function generateItemCode(orderNumber) {
   if (orderNumber) {
     const existing = await WarehouseItem.findOne({
@@ -183,11 +184,11 @@ router.get('/items/export.csv', authenticate, requireStaffOrAdmin, async (req, r
       const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
       return `"${safe.replace(/"/g, '""')}"`;
     };
-    const header = ['PR ID', 'Code', 'Order #', 'Tracking', 'Rack', 'Status', 'Stored By', 'Stored At', 'Shipped By', 'Shipped At'];
+    const header = ['Product ID', 'Code', 'Order #', 'Tracking', 'Rack', 'Status', 'Stored By', 'Stored At', 'Shipped By', 'Shipped At'];
     const lines = [header.join(',')];
     for (const r of rows) {
       lines.push([
-        r.pr_code, r.code, r.order_number, r.tracking_number, r.rack_id, r.status,
+        r.item_code, r.code, r.order_number, r.tracking_number, r.rack_id, r.status,
         r.created_by_name, r.createdAt, r.shipped_by_name, r.shipped_at,
       ].map(esc).join(','));
     }
@@ -213,7 +214,11 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     if (search) {
       const s = `%${escapeLike(String(search).trim())}%`;
       where[Op.or] = [
-        { pr_code: { [Op.iLike]: s } },   // gtradea PR id — what's printed on the box
+        { item_code: { [Op.iLike]: s } }, // gtradea item code — what's printed on the box
+        // Boxes stored before this change were labelled with the PR id, and
+        // those labels are still on shelves — keep matching them so an old
+        // sticker doesn't become unsearchable.
+        { pr_code: { [Op.iLike]: s } },
         { code: { [Op.iLike]: s } },
         { order_number: { [Op.iLike]: s } },
         { tracking_number: { [Op.iLike]: s } },
@@ -227,29 +232,64 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       // refresh. id is unique and never changes, so it pins down one order.
       const found = await WarehouseItem.findAll({ where, order: [['createdAt', 'DESC'], ['id', 'ASC']], limit: 5000 });
 
-      // For GtradeA items, resolve the linked 1688 PR id + order # + product from
-      // the live supplier_orders (matched by CN tracking) whenever it wasn't
-      // captured at put-away time — so the PR id and order # always show once the
+      // For GtradeA items, resolve the linked 1688 item code + PR id + order # +
+      // product from the live supplier_orders (matched by CN tracking) whenever
+      // it wasn't captured at put-away time — so the ids always show once the
       // item's tracking is a known 1688 order. Covers rows stored before those
       // columns existed as well as any that the migration backfill couldn't match
       // (e.g. gtradea only published the job code after the box was scanned in).
       if (SupplierOrder) {
-        const need = found.filter((r) => r.source === 'gtradea' && r.tracking_number && (!r.pr_code || !r.order_number || !r.product_name));
+        const need = found.filter((r) => r.source === 'gtradea' && r.tracking_number && (!r.item_code || !r.pr_code || !r.order_number || !r.product_name));
         if (need.length) {
           const trackings = [...new Set(need.map((r) => r.tracking_number))];
           const orders = await SupplierOrder.findAll({
             where: { china_tracking_no: { [Op.in]: trackings } },
-            attributes: ['china_tracking_no', 'job_code', 'order_number', 'product_name'],
+            attributes: ['china_tracking_no', 'job_code', 'item_code', 'order_number', 'product_name'],
+            // One tracking can carry several items (two variants in one parcel),
+            // and unlike job_code their item_codes DIFFER — so the row that wins
+            // decides which id gets printed. Order by item_code so the winner is
+            // always the same one, instead of whatever the planner happened to
+            // return first. NULLS LAST keeps a row that has an item_code ahead of
+            // one that doesn't, so a missing code never shadows a real one.
+            order: [['item_code', 'ASC NULLS LAST']],
           });
           const map = {};
           for (const o of orders) { if (!map[o.china_tracking_no]) map[o.china_tracking_no] = o; }
           for (const r of found) {
             const m = r.source === 'gtradea' ? map[r.tracking_number] : null;
             if (m) {
+              if (!r.item_code) r.item_code = m.item_code;
               if (!r.pr_code) r.pr_code = m.job_code;
               if (!r.order_number) r.order_number = m.order_number;
               if (!r.product_name) r.product_name = m.product_name;
             }
+          }
+        }
+
+        // Fallback by ORDER NUMBER for boxes the tracking join couldn't reach:
+        // gtradea sometimes stops publishing a tracking it once had, and the box
+        // outlives that. Without this those boxes keep displaying the PR id — the
+        // very id this replaced. Order-level, so on a multi-line order it can name
+        // the wrong line; that's the same granularity pr_code had, so it
+        // identifies the box no less precisely than before.
+        //
+        // Sits OUTSIDE the tracking block on purpose: `need` only collects rows
+        // that have a tracking number, so a box without one would never reach this
+        // if it were nested in there. Guarded by its own filter, so it costs a
+        // query only when something is actually missing, and it runs after the
+        // tracking pass so an exact parcel match always wins.
+        const stillMissing = found.filter((r) => r.source === 'gtradea' && !r.item_code && r.order_number);
+        if (stillMissing.length) {
+          const orderNos = [...new Set(stillMissing.map((r) => r.order_number))];
+          const byOrder = await SupplierOrder.findAll({
+            where: { order_number: { [Op.in]: orderNos }, item_code: { [Op.ne]: null } },
+            attributes: ['order_number', 'item_code'],
+            order: [['item_code', 'ASC']], // same MIN pick as every other path
+          });
+          const omap = {};
+          for (const o of byOrder) { if (!omap[o.order_number]) omap[o.order_number] = o.item_code; }
+          for (const r of stillMissing) {
+            if (omap[r.order_number]) r.item_code = omap[r.order_number];
           }
         }
       }
@@ -287,6 +327,7 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     let orderNumber = null;
     let productName = null;
     let prCode = null;
+    let itemCode = null;
     // Null until a 1688 order says otherwise, so the model's 'By Air' default
     // still applies to a plain cellzen put-away.
     let shipmentFrom = null;
@@ -294,18 +335,39 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       if (!SupplierOrder) {
         return res.status(503).json({ success: false, message: '1688 orders are not configured' });
       }
+      // Ordered by item_code, NOT synced_at: a parcel with two items in it has
+      // two candidate rows, and this pick decides which item_code goes on the
+      // box. The list route resolves the same way (see GET /items), so a box
+      // shows the same id at put-away as it does on every later read — with
+      // synced_at the two could disagree, and the printed label would stop
+      // matching the panel the next time gtradea re-synced.
       const match = await SupplierOrder.findOne({
         where: { china_tracking_no: trackingNumber },
-        order: [['synced_at', 'DESC']],
+        order: [['item_code', 'ASC NULLS LAST']],
       });
       if (!match) {
         return res.status(422).json({ success: false, message: "This tracking number doesn't exist in the orders" });
       }
       orderNumber = match.order_number || null;
       productName = match.product_name || null;
-      // The gtradea PR id (job_code, e.g. PR-1029) — captured here so the label
-      // that gets printed seconds later already has it, with no second lookup.
+      // The gtradea item code (GTI-100119) — this is what the label that gets
+      // printed seconds later shows and encodes, captured here so printing needs
+      // no second lookup. job_code (PR-1029) rides along for traceability back
+      // to the procurement job, but is no longer displayed anywhere.
+      itemCode = match.item_code || null;
       prCode = match.job_code || null;
+      // The matched parcel row can still be missing its item code — a row the
+      // poller wrote before this field was mapped, for instance. Fall back to the
+      // order's own code rather than letting the box be stored with nothing but a
+      // PR id, which is what the label would then print.
+      if (!itemCode && match.order_number) {
+        const byOrder = await SupplierOrder.findOne({
+          where: { order_number: match.order_number, item_code: { [Op.ne]: null } },
+          attributes: ['item_code'],
+          order: [['item_code', 'ASC']],
+        });
+        itemCode = byOrder?.item_code || null;
+      }
       // Same reason for the shipment mode: scanning a box in Store prints its
       // label immediately, and that label has to read the mode the 1688 panel
       // shows for this order — the staff override if someone set one, otherwise
@@ -347,6 +409,7 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
         order_number: orderNumber,
         product_name: productName,
         pr_code: prCode,
+        item_code: itemCode,
         // Omitted entirely when there's no 1688 match, so the column default
         // ('By Air') applies rather than an explicit null overwriting it.
         ...(shipmentFrom ? { shipment_from: shipmentFrom } : {}),

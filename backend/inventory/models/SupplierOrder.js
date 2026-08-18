@@ -27,6 +27,12 @@ const SupplierOrder = sequelize
       },
       job_id: { type: DataTypes.STRING, allowNull: true },        // gtradea procurement job id
       job_code: { type: DataTypes.STRING, allowNull: true },      // e.g. PR-1006
+      // gtradea's PER-ITEM id (procurement_item.item_code, e.g. GTI-100119) —
+      // the "Product ID" column of gtradea's own China Operations table. This,
+      // not job_code, is the id staff read everywhere now: one job_code (PR-1006)
+      // covers every line of a procurement request, while item_code names ONE
+      // line, so two variants of the same product are finally distinguishable.
+      item_code: { type: DataTypes.STRING, allowNull: true },
       order_number: { type: DataTypes.STRING, allowNull: true },  // e.g. ORD-20260714-553812
       gtradea_order_id: { type: DataTypes.STRING, allowNull: true },
       // Normalised (trim + UPPERCASE) so it matches directly against
@@ -70,6 +76,7 @@ const SupplierOrder = sequelize
       timestamps: true,
       indexes: [
         { fields: ['china_tracking_no'] }, // drives the warehouse-match lookup
+        { fields: ['item_code'] },         // scanning a label resolves by this id
         { fields: ['order_number'] },
         { fields: ['status'] },
         { fields: ['ordered_at'] }, // newest-order-first listing

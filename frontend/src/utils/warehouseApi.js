@@ -28,19 +28,24 @@ export function unwrapItem(row) {
     source: row.source || "cellzen",
     orderNumber: row.order_number || "",
     productName: row.product_name || "",
-    prCode: row.pr_code || "", // gtradea PR id (PR-1029) — see goodsCode() below
+    itemCode: row.item_code || "", // gtradea item code (GTI-100119) — see goodsCode()
+    prCode: row.pr_code || "",     // gtradea PR / job id (PR-1029) — no longer displayed
   };
 }
 
-// The id staff actually see for an item: the gtradea PR id when there is one,
+// The id staff actually see for an item: the gtradea ITEM CODE when there is one,
 // otherwise the internal CZN goods number. This is what the label prints, what
 // its barcode encodes, and what the GtradeA panel / detail cards show — so a box
-// on the shelf carries the same id as the PR row on gtradea.
+// on the shelf carries the same id as the China Operations row on gtradea.
+//
+// The PR id sits in the middle of that fallback rather than being dropped: boxes
+// stored before item codes existed were labelled with it, those labels are still
+// on the shelves, and this is what keeps scanning one of them resolving.
 //
 // A FUNCTION rather than a field on unwrapItem: items also come back from the
 // localStorage instant-paint cache, and a cache written by an older build has no
-// prCode at all — falling back through `code` here keeps those rows rendering.
-export const goodsCode = (item) => item?.prCode || item?.code || "";
+// itemCode at all — falling back through prCode/code here keeps those rendering.
+export const goodsCode = (item) => item?.itemCode || item?.prCode || item?.code || "";
 
 export function unwrapRack(row) {
   if (!row) return null;
@@ -199,6 +204,9 @@ export function unwrapSupplierOrder(row) {
     id: row.id,
     orderNumber: row.order_number || "",
     jobCode: row.job_code || "",
+    // gtradea's per-item "Product ID" (GTI-100119) — the id this row is known by
+    // everywhere now. Unlike jobCode it names THIS line, not the whole request.
+    itemCode: row.item_code || "",
     cnTracking: row.china_tracking_no || "",
     npTracking: row.nepal_tracking_no || "",
     status: row.status || "",
@@ -230,6 +238,7 @@ export function unwrapSupplierOrder(row) {
     // shipItem() posts to; the rest just fills the confirm dialog when the
     // items list hasn't been loaded (or hasn't caught up) yet.
     warehouseItemId: wh.id || null,
+    warehouseItemCode: wh.item_code || "",
     warehousePrCode: wh.pr_code || "",
     warehouseShipmentFrom: wh.shipment_from || "By Air",
   };
@@ -341,7 +350,7 @@ export const exportSupplierOrdersXlsx = (search = "", opts) => exportSupplierOrd
 export const exportSupplierOrdersPdf = (search = "", opts) => exportSupplierOrders("pdf", search, opts);
 
 // Download the GtradeA billing report as a styled .xlsx — teal title band, logo,
-// orange header, one row per 1688 line item (date, PR id, order id, product,
+// orange header, one row per 1688 line item (date, item code, order id, product,
 // quantity, unit, price). `from`/`to` are optional inclusive YYYY-MM-DD bounds
 // on the gtradea order date; omitting both is the all-time report.
 export async function exportBillingReportXlsx(search = "", { from = "", to = "" } = {}) {

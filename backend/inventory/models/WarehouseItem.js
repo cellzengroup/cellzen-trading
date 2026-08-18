@@ -79,13 +79,31 @@ const WarehouseItem = sequelize
         allowNull: true, // 1688 ORD-… linked at put-away (gtradea items only)
       },
       // The gtradea PROCUREMENT REQUEST id (supplier_orders.job_code, e.g.
-      // PR-1029) for the matched 1688 order. This — not the internal `code`
-      // above — is what the printed label, its barcode, and the GtradeA panel
-      // show, so a box on the shelf carries the same id staff see on gtradea.
-      // Denormalized at put-away (and resolved on read for pre-existing rows)
-      // so printing never has to wait on a second lookup. Null for cellzen
-      // items and for a 1688 order gtradea hasn't given a job code.
+      // PR-1029) for the matched 1688 order. NO LONGER the displayed id — see
+      // item_code below, which replaced it on the label, the barcode and every
+      // panel. Still captured because it's the only link back to the
+      // procurement JOB a box belongs to (item_code names a single line), which
+      // is what you need to look the box up on gtradea's job page.
       pr_code: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+      // The gtradea PER-ITEM id (supplier_orders.item_code, e.g. GTI-100119) —
+      // gtradea's own "Product ID". This is what the printed label, its barcode
+      // and every panel now show, so a box on the shelf carries the same id as
+      // the China Operations row on gtradea. Denormalized at put-away (and
+      // resolved on read for pre-existing rows) so printing never waits on a
+      // second lookup. Null for cellzen items and for a 1688 order gtradea
+      // hasn't given an item code.
+      //
+      // CAVEAT, inherent to the id: a warehouse item is keyed by CN TRACKING,
+      // and one tracking number can carry several procurement items (e.g.
+      // GTI-100117 and GTI-100118 are two variants in one parcel). job_code was
+      // unambiguous there — every item of a job shares it — but item_code is
+      // not, so the resolution picks the LOWEST item_code for the tracking.
+      // Lowest, not "first row seen": the pick has to be stable, or the same box
+      // would print a different id depending on which row the query returned.
+      item_code: {
         type: DataTypes.STRING,
         allowNull: true,
       },

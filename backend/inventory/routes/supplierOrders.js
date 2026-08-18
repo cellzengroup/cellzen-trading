@@ -89,6 +89,7 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
       { order_number: { [Op.iLike]: s } },
       { china_tracking_no: { [Op.iLike]: s } },
       { product_name: { [Op.iLike]: s } },
+      { item_code: { [Op.iLike]: s } }, // the Product ID staff read off the box
       { job_code: { [Op.iLike]: s } },
     ];
   }
@@ -141,13 +142,13 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
           // straight from its own table ("Proceed to Shipment"): the id names
           // the exact box to POST /items/:id/ship, and the mode is what the
           // confirm dialog shows read-only before you commit.
-          attributes: ['id', 'tracking_number', 'rack_id', 'status', 'code', 'pr_code', 'shipped_at', 'shipment_from'],
+          attributes: ['id', 'tracking_number', 'rack_id', 'status', 'code', 'pr_code', 'item_code', 'shipped_at', 'shipment_from'],
         });
         for (const it of items) {
           const key = String(it.tracking_number || '').toUpperCase();
           // Prefer an in-stock match over a shipped one for the same tracking.
           if (!matchMap[key] || it.status === 'in_stock') {
-            matchMap[key] = { id: it.id, rack_id: it.rack_id, status: it.status, code: it.code, pr_code: it.pr_code, shipped_at: it.shipped_at, shipment_from: it.shipment_from };
+            matchMap[key] = { id: it.id, rack_id: it.rack_id, status: it.status, code: it.code, pr_code: it.pr_code, item_code: it.item_code, shipped_at: it.shipped_at, shipment_from: it.shipment_from };
           }
         }
       }
@@ -168,6 +169,9 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
         id: r.id,
         order_number: r.order_number,
         job_code: r.job_code,
+        // gtradea's per-item "Product ID" — the id the 1688 tab now shows in
+        // place of job_code, and the one printed on the box.
+        item_code: r.item_code,
         china_tracking_no: r.china_tracking_no,
         nepal_tracking_no: r.nepal_tracking_no,
         status: r.status,
@@ -191,7 +195,7 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
         paid_amount: r.paid_amount,
         ordered_at: r.ordered_at,
         synced_at: r.synced_at,
-        warehouse: m ? { in_warehouse: true, id: m.id, rack_id: m.rack_id, status: m.status, code: m.code, pr_code: m.pr_code, shipped_at: m.shipped_at, shipment_from: m.shipment_from } : { in_warehouse: false },
+        warehouse: m ? { in_warehouse: true, id: m.id, rack_id: m.rack_id, status: m.status, code: m.code, pr_code: m.pr_code, item_code: m.item_code, shipped_at: m.shipped_at, shipment_from: m.shipment_from } : { in_warehouse: false },
       };
     });
   });
@@ -802,12 +806,17 @@ function packingRowValues(o, name) {
     marka: 'CZN-GT',   // fixed shipping mark for every carton in this batch
     ctn: null,         // Ctn. No — filled in by hand once cartons are packed
     order: o.order_number || '-',
-    // Goods No. — the id physically printed on the box's label: the gtradea PR
-    // id (PR-1029), same as the GtradeA panel's "Received · PR-…" pill. Falls
-    // back to the internal CZN code only for a box stored before gtradea
-    // published a job code for its order. Blank until it's actually received —
-    // never a made-up sequence.
-    goods: o.warehouse && o.warehouse.in_warehouse ? (o.warehouse.pr_code || o.job_code || o.warehouse.code) : null,
+    // Goods No. — the id physically printed on the box's label: the gtradea item
+    // code (GTI-100119), same as the GtradeA panel's "Received · GTI-…" pill.
+    // Prefers the order's OWN item_code over the warehouse row's: this list has
+    // one line per procurement item, so each line can name its exact item, while
+    // the warehouse row only carries whichever code won for the shared parcel.
+    // Falls back through the PR id and the internal CZN code for boxes stored
+    // before item codes existed. Blank until it's actually received — never a
+    // made-up sequence.
+    goods: o.warehouse && o.warehouse.in_warehouse
+      ? (o.item_code || o.warehouse.item_code || o.warehouse.pr_code || o.job_code || o.warehouse.code)
+      : null,
     image: null,       // the photo is drawn into this cell
     name,
     brand: 'GT',       // gtradea doesn't track a real brand — generic house brand
@@ -1293,15 +1302,17 @@ const BILLING_ROW_HEIGHT = 83.25;
 // lands in two different places.
 const EMU_PER_PT = 12700;
 const colWidthToPx = excelColWidthPx;
-// The template carries one combined "Product ID" column; this splits it into the
-// PR ID and Order ID the 1688 tab actually shows, which is what was asked for.
+// The template carries one combined id column; this splits it into the Product ID
+// and Order ID the 1688 tab actually shows, which is what was asked for.
 // Widths run wider than the template's so nothing sits tight against a cell
 // border — the ids and the product name are the long values, so they get the
 // most room. The price header carries the currency, since the ¥ in the cells is
 // part of a number format and can be easy to miss.
 const BILLING_COLUMNS = [
   { key: 'date', header: 'Date', width: 18 },
-  { key: 'pr', header: 'PR ID', width: 21 },
+  // One code per LINE (GTI-100119), so unlike the Order ID beside it this column
+  // is never merged down a group — see the merge loop below.
+  { key: 'item', header: 'Product ID', width: 21 },
   // Wide enough to hold a full ORD-YYYYMMDD-NNNNNN on ONE line at 16pt (~225px
   // of glyphs) with clear space either side of it. At the old 32 the text came
   // to within a few px of the cell edge and wrapped onto a second line.
@@ -1327,6 +1338,12 @@ const billingDateCell = (ts) => {
 // Two rows belong to the same billing group when they're the same order AND the
 // same PR. The order number has to be present to claim that — a pair of blank
 // ids is not evidence of anything, and merging on it would fuse unrelated lines.
+//
+// Deliberately still keyed on the PR (job) id even though the sheet now DISPLAYS
+// the per-item code: a group is "the line items of one procurement request", and
+// that is exactly what the PR id names. Keying it on item_code instead would put
+// every line in a group of its own — no two lines ever share one — and silently
+// kill the price merge, making an order-level charge count once per line.
 const sameBillingGroup = (a, b) => !!a.orderId && a.orderId === b.orderId && a.prId === b.prId;
 
 // Maximal runs of equal adjacent values in `rows[start..end)`, as [from, to)
@@ -1367,9 +1384,12 @@ router.get('/billing-report.xlsx', authenticate, requireStaffOrAdmin, async (req
 
     const rows = orders.map((o, i) => ({
       date: billingDateCell(o.ordered_at),
-      // The PR id printed on the box, same precedence as the packing list's
-      // Goods No. — the warehouse's own pr_code once scanned in, else whatever
-      // job code gtradea published for the order.
+      // The item code printed on the box, same precedence as the packing list's
+      // Goods No. — this row's OWN item code first (each line names its exact
+      // item), then whatever the warehouse box carries, then the older PR ids for
+      // lines that predate item codes.
+      itemCode: o.item_code || (o.warehouse && (o.warehouse.item_code || o.warehouse.pr_code)) || o.job_code || '',
+      // Not shown on the sheet — the grouping key only. See sameBillingGroup.
       prId: (o.warehouse && o.warehouse.pr_code) || o.job_code || '',
       orderId: o.order_number || '',
       name: nerNames[i] || deriveShortProductName(o.product_name),
@@ -1487,7 +1507,7 @@ router.get('/billing-report.xlsx', authenticate, requireStaffOrAdmin, async (req
         if (extra.numFmt) cell.numFmt = extra.numFmt;
       };
       setCell(BILLING_COL.date, row.date, { numFmt: BILLING_DATE_FMT });
-      setCell(BILLING_COL.pr, row.prId);
+      setCell(BILLING_COL.item, row.itemCode);
       setCell(BILLING_COL.order, row.orderId);
       // Medium rather than bold: the weight comes from the face itself, so it
       // stays in the family instead of Excel synthesising a heavier one.
@@ -1498,15 +1518,19 @@ router.get('/billing-report.xlsx', authenticate, requireStaffOrAdmin, async (req
       r.height = BILLING_ROW_HEIGHT;
     });
 
-    // Merge down: the PR/Order ids across every line item of one order, and the
-    // price across each run of line items carrying the SAME charge. A group whose
-    // lines were each priced separately keeps one price cell per line.
+    // Merge down: the Order id across every line item of one order, and the price
+    // across each run of line items carrying the SAME charge. A group whose lines
+    // were each priced separately keeps one price cell per line.
+    //
+    // The Product ID column is NOT in this list any more (the PR id used to be):
+    // its value is per line, so merging it would show the first line's code and
+    // hide every other line's behind it.
     let total = 0;
     let start = 0;
     for (let i = 1; i <= rows.length; i++) {
       if (i < rows.length && sameBillingGroup(rows[start], rows[i])) continue;
       if (i - start > 1) {
-        [BILLING_COL.pr, BILLING_COL.order].forEach((c) => {
+        [BILLING_COL.order].forEach((c) => {
           sheet.mergeCells(FIRST_ROW + start, c, FIRST_ROW + i - 1, c);
           // Same one-line rule as the unmerged cells above — merging must not
           // quietly hand the order number its wrap back.

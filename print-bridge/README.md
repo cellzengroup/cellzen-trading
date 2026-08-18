@@ -4,7 +4,7 @@ A tiny local service that lets the website print labels **directly** to the
 Deli 720C thermal printer on **60 × 80 mm** stock, no browser print dialog.
 
 - **Shipment labels** print the full approved design (CELLZEN logo, Code-128
-  barcode of the goods code — the gtradea PR id like `PR-1029` where the item has
+  barcode of the goods code — the gtradea item code like `GTI-100119` where the item has
   one — plus the Shelf / Order / Tracking number lines, handling icons, footer).
   The website renders the whole label once and sends it as an image; the bridge
   prints it verbatim.

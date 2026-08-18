@@ -34,10 +34,12 @@ const isShelf = (text) => RACK_CODE_PATTERN.test(String(text || "").trim());
 
 // Does an item match the free-text search `f` (already lowercased)? One predicate
 // for the Dashboard / Ship / Dispatched lists so they can never disagree on what
-// a search matches. The gtradea PR id and 1688 order # are in here alongside the
-// internal CZN code — those are what the GtradeA panel shows and what's printed
-// on the box, so they're what staff type.
+// a search matches. The gtradea item code and 1688 order # are in here alongside
+// the internal CZN code — those are what the GtradeA panel shows and what's
+// printed on the box, so they're what staff type. The PR id stays searchable
+// because boxes labelled before the switch still carry it.
 const itemMatches = (i, f) =>
+  (i.itemCode || "").toLowerCase().includes(f) ||
   (i.prCode || "").toLowerCase().includes(f) ||
   (i.code || "").toLowerCase().includes(f) ||
   (i.orderNumber || "").toLowerCase().includes(f) ||
@@ -213,6 +215,10 @@ const supplierShippable = (o) =>
 const supplierAsItem = (o) => ({
   id: o.warehouseItemId,
   code: o.warehouseCode,
+  // The row's own item code first: this IS the procurement line, so it names the
+  // exact item, where the box it matched only carries whichever code won for a
+  // shared parcel.
+  itemCode: o.itemCode || o.warehouseItemCode,
   prCode: o.warehousePrCode,
   trackingNumber: o.cnTracking,
   rackId: o.warehouseRack,
@@ -220,13 +226,44 @@ const supplierAsItem = (o) => ({
   status: "in_stock",
 });
 
+// The 1688 panel's two dropdowns — "Sort by" and, to its right, "Mode". Both are
+// FILTERS and they STACK: Received + By Air leaves exactly the received orders that
+// still have to fly, which is the whole reason the pair exists. Narrowing rather
+// than re-ordering also keeps rows still — nothing shuffles position under the
+// viewer mid-poll, a row only enters or leaves the set it belongs to, and whatever
+// is left stays in the server's newest-first order.
+//
+// Shared convention: the option with NO `match` is that dropdown's "everything"
+// choice. Both the filter and the counts read an option through `supplierMatcher`,
+// so a label can never advertise a count the filter then disagrees with.
 const SUPPLIER_SORTS = [
-  { value: "date", label: "Date" },
-  { value: "received", label: "Received" },
-  { value: "dispatched", label: "Dispatched" },
-  { value: "not_updated", label: "Not Yet" },
-  { value: "not_received", label: "Pending" },
+  { value: "date", label: "Date" }, // no `match`: every state
+  { value: "received", label: "Received", match: (o) => supplierState(o) === "received" },
+  { value: "dispatched", label: "Dispatched", match: (o) => supplierState(o) === "dispatched" },
+  { value: "not_updated", label: "Not Yet", match: (o) => supplierState(o) === "not_updated" },
+  { value: "not_received", label: "Pending", match: (o) => supplierState(o) === "not_received" },
 ];
+
+// Mirrors the server's EXPORT_MODES (backend/inventory/routes/supplierOrders.js):
+// land is the explicit value and air is everything else, so the two counts always
+// add up — a row with no mode recorded still lands in exactly one of them.
+const SUPPLIER_MODES = [
+  { value: "all", label: "All modes" }, // no `match`: both
+  { value: "land", label: "By Land", match: (o) => o.shipMode === "land" },
+  { value: "air", label: "By Air", match: (o) => o.shipMode !== "land" },
+];
+
+// One look for both dropdowns — they sit side by side, so any drift between them
+// would read as an accident.
+const FILTER_LABEL = "text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45";
+const FILTER_SELECT =
+  "rounded-full bg-white py-2.5 pl-3 pr-7 text-xs font-semibold text-[#2D2D2D]/70 ring-1 ring-[#E6E2DB] transition-all focus:outline-none focus:ring-2 focus:ring-[#412460]/30";
+
+const MATCH_ALL = () => true;
+// Any option — including a stored value that no longer exists — as a predicate. An
+// unknown value resolves to "everything" rather than silently emptying the table.
+const supplierMatcher = (options, value) =>
+  options.find((o) => o.value === value)?.match || MATCH_ALL;
 
 // The three slices the packing-list export offers. `match` mirrors the server's
 // EXPORT_SCOPES in backend/inventory/routes/supplierOrders.js — it exists only
@@ -605,13 +642,15 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     return m;
   }, [items]);
 
-  // Resolve a scanned/typed code to an item. The PR id counts as a match because
-  // that's what the printed label's barcode now encodes — scanning a box has to
-  // find it. The internal CZN code still matches too, so labels printed before
-  // the switch keep working.
+  // Resolve a scanned/typed code to an item. The item code counts as a match
+  // because that's what the printed label's barcode now encodes — scanning a box
+  // has to find it. The PR id and the internal CZN code still match too, so the
+  // two earlier generations of label keep working: there are boxes on the
+  // shelves carrying each of them, and a scanner can't tell you which era a
+  // sticker came from.
   //
-  // A PR id (like the CZN code before it) is shared by every box of one 1688
-  // order, so a scan can hit several rows. An IN-STOCK one wins: otherwise
+  // A code can still hit several rows (the CZN code and the PR id are both
+  // shared across the boxes of one order). An IN-STOCK one wins: otherwise
   // scanning a box that's still on the shelf could surface a sibling that already
   // shipped and answer "already shipped".
   const findItem = useCallback(
@@ -620,6 +659,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       if (!c) return null;
       const matches = items.filter(
         (i) =>
+          (i.itemCode || "").toLowerCase() === c ||
           (i.prCode || "").toLowerCase() === c ||
           (i.code || "").toLowerCase() === c ||
           (i.trackingNumber || "").toLowerCase() === c
@@ -973,7 +1013,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0 sm:flex-1">
             <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#2D2D2D]/45">
-              {item.prCode ? "PR ID" : "Item"}
+              {item.itemCode || item.prCode ? "Product ID" : "Item"}
             </div>
             <div className="mt-0.5 break-all text-2xl font-black tracking-tight">{goodsCode(item)}</div>
             <dl className="mt-3 space-y-1.5 text-xs">
@@ -1231,7 +1271,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const keepSavedSheet = () => { if (savedTimer.current) clearTimeout(savedTimer.current); };
   // Straight to the printer, one copy, no dialog — this is the scan → print path
   // staff run all day at the shelf, and the item already carries everything the
-  // label needs (PR id, order #, tracking) from the put-away response.
+  // label needs (item code, order #, tracking) from the put-away response.
   const printSavedItemNow = () => {
     keepSavedSheet();
     if (savedItem) doPrintLabel(savedItem, 1, savedItem.shipmentFrom === "By Land" ? "By Land" : "By Air");
@@ -1308,7 +1348,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [supplierOrders, setSupplierOrders] = useState([]);
   const [supplierLoading, setSupplierLoading] = useState(false);
   const [supplierSearch, setSupplierSearch] = useState("");
-  const [supplierSort, setSupplierSort] = useState("date"); // date | received | not_updated | not_received
+  const [supplierSort, setSupplierSort] = useState("date"); // date | received | dispatched | not_updated | not_received
+  // Named …Filter because `setSupplierMode` below is already taken by the writer
+  // that changes ONE row's shipment mode. This one writes nothing to the server —
+  // it only narrows what the table shows.
+  const [supplierModeFilter, setSupplierModeFilter] = useState("all"); // all | land | air
   const [supplierSync, setSupplierSync] = useState(null); // last server sync status
   const [supplierSyncing, setSupplierSyncing] = useState(false);
   const supplierReqId = useRef(0);          // guards against out-of-order responses
@@ -1578,26 +1622,52 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     }
   };
 
-  const filteredSupplier = useMemo(() => {
+  // The search box on its own, before either dropdown narrows it. Kept separate
+  // because the export dialog counts against THIS list: the export posts
+  // `supplierSearch` plus its own scope/mode/date choices to the server and knows
+  // nothing of the panel's two dropdowns, so bounding its preview by them as well
+  // would promise counts the download never produces.
+  const searchedSupplier = useMemo(() => {
     const f = supplierSearch.trim().toLowerCase();
-    const base = !f
-      ? supplierOrders
-      : supplierOrders.filter(
-          (o) =>
-            (o.orderNumber || "").toLowerCase().includes(f) ||
-            (o.cnTracking || "").toLowerCase().includes(f) ||
-            (o.productName || "").toLowerCase().includes(f) ||
-            (o.jobCode || "").toLowerCase().includes(f)
-        );
-    // "Date" is the default and is deliberately a NO-OP: the server already returns
-    // newest-order-first, so rows keep the same place every poll. A row must not
-    // jump around the table just because its status changed under you.
-    if (supplierSort === "date") return base;
-    // Any other choice floats just that state to the top. Sort is stable, so within
-    // each group the date order is preserved.
-    const hit = (o) => supplierState(o) === supplierSort;
-    return [...base].sort((a, b) => Number(hit(b)) - Number(hit(a)));
-  }, [supplierOrders, supplierSearch, supplierSort]);
+    if (!f) return supplierOrders;
+    return supplierOrders.filter(
+      (o) =>
+        (o.orderNumber || "").toLowerCase().includes(f) ||
+        (o.cnTracking || "").toLowerCase().includes(f) ||
+        (o.productName || "").toLowerCase().includes(f) ||
+        (o.itemCode || "").toLowerCase().includes(f) ||
+        (o.jobCode || "").toLowerCase().includes(f)
+    );
+  }, [supplierOrders, supplierSearch]);
+
+  // What the table shows: the search, narrowed by BOTH dropdowns at once. Row order
+  // is left exactly as the server sent it (newest first) — the pair narrows the set
+  // rather than reshuffling it, so no row ever changes place under the viewer.
+  const filteredSupplier = useMemo(() => {
+    const byState = supplierMatcher(SUPPLIER_SORTS, supplierSort);
+    const byMode = supplierMatcher(SUPPLIER_MODES, supplierModeFilter);
+    if (byState === MATCH_ALL && byMode === MATCH_ALL) return searchedSupplier;
+    return searchedSupplier.filter((o) => byState(o) && byMode(o));
+  }, [searchedSupplier, supplierSort, supplierModeFilter]);
+
+  // The (n) on every option: how many rows you would be left with if you picked it,
+  // each side counted with the OTHER dropdown held where the user left it — the same
+  // rule the export dialog's two selectors follow. So "By Air (12)" under Received
+  // means twelve RECEIVED orders fly, which is exactly the question being asked of
+  // it. Counting either side unfiltered would advertise rows the pair filters away.
+  const supplierCounts = useMemo(() => {
+    const tally = (options, other) =>
+      Object.fromEntries(
+        options.map((x) => [
+          x.value,
+          searchedSupplier.filter((o) => (x.match || MATCH_ALL)(o) && other(o)).length,
+        ])
+      );
+    return {
+      sort: tally(SUPPLIER_SORTS, supplierMatcher(SUPPLIER_MODES, supplierModeFilter)),
+      mode: tally(SUPPLIER_MODES, supplierMatcher(SUPPLIER_SORTS, supplierSort)),
+    };
+  }, [searchedSupplier, supplierSort, supplierModeFilter]);
 
   // The rows "Proceed to Shipment" can actually act on: VISIBLE (so the search
   // filter bounds it, exactly like Ship's batch) AND still on the shelf. Both
@@ -1653,7 +1723,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       if (exportTo && day > exportTo) return false;
       return true;
     };
-    const rows = filteredSupplier.filter(inRange);
+    const rows = searchedSupplier.filter(inRange);
     const pickedMode = EXPORT_MODES.find((m) => m.value === exportShipMode) || EXPORT_MODES[0];
     const pickedScope = EXPORT_SCOPES.find((s) => s.value === exportScope) || EXPORT_SCOPES[0];
     return {
@@ -1664,7 +1734,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         EXPORT_MODES.map((m) => [m.value, rows.filter((o) => m.match(o) && pickedScope.match(o)).length])
       ),
     };
-  }, [filteredSupplier, exportFrom, exportTo, exportScope, exportShipMode]);
+  }, [searchedSupplier, exportFrom, exportTo, exportScope, exportShipMode]);
 
   // Synchronous auth gate: redirect DURING render (not in an effect) so a
   // logged-out visitor goes straight to the login without the warehouse panel
@@ -2194,16 +2264,35 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   <IconRefresh className={`h-3.5 w-3.5 ${syncInFlight ? "animate-spin" : ""}`} />
                   {syncInFlight ? "Syncing…" : "Sync now"}
                 </button>
+                {/* Two dropdowns, Mode to the right of Sort by. They narrow the
+                    table together — see SUPPLIER_SORTS / SUPPLIER_MODES above. */}
                 <label className="flex items-center gap-2">
-                  <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45">Sort by</span>
+                  <span className={FILTER_LABEL}>Sort by</span>
                   <select
                     value={supplierSort}
                     onChange={(e) => setSupplierSort(e.target.value)}
-                    aria-label="Sort 1688 orders by"
-                    className="rounded-full bg-white py-2.5 pl-3 pr-7 text-xs font-semibold text-[#2D2D2D]/70 ring-1 ring-[#E6E2DB] transition-all focus:outline-none focus:ring-2 focus:ring-[#412460]/30"
+                    aria-label="Filter 1688 orders by warehouse state"
+                    className={FILTER_SELECT}
                   >
                     {SUPPLIER_SORTS.map((s) => (
-                      <option key={s.value} value={s.value}>{s.label}</option>
+                      <option key={s.value} value={s.value}>
+                        {`${s.label} (${supplierCounts.sort[s.value] ?? 0})`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2">
+                  <span className={FILTER_LABEL}>Mode</span>
+                  <select
+                    value={supplierModeFilter}
+                    onChange={(e) => setSupplierModeFilter(e.target.value)}
+                    aria-label="Filter 1688 orders by shipment mode"
+                    className={FILTER_SELECT}
+                  >
+                    {SUPPLIER_MODES.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {`${m.label} (${supplierCounts.mode[m.value] ?? 0})`}
+                      </option>
                     ))}
                   </select>
                 </label>
@@ -2262,6 +2351,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             <SupplierOrdersTable
               rows={filteredSupplier}
               loading={supplierLoading}
+              filtered={!!supplierSearch.trim() || supplierSort !== "date" || supplierModeFilter !== "all"}
               selectable={supplierShipMode}
               selected={supplierSel}
               shippableRows={supplierShipRows}
@@ -2314,9 +2404,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             </span>
             <h3 className="text-base font-bold">Billing report</h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              Date, PR ID, Order ID, product, quantity and price for every 1688 line item
-              {supplierSearch.trim() ? <> matching &ldquo;{supplierSearch.trim()}&rdquo;</> : null}. Lines
-              belonging to one order share a single ID and price cell.
+              Date, Product ID, Order ID, product, quantity and price for every 1688 line item
+              {supplierSearch.trim() ? <> matching &ldquo;{supplierSearch.trim()}&rdquo;</> : null}. Each
+              line keeps its own Product ID; lines belonging to one order share a single Order ID
+              and price cell.
             </p>
 
             <div className="mt-5 space-y-2">
@@ -2992,9 +3083,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             </span>
             <h3 className="text-center text-lg font-bold">Item stored</h3>
             {/* The id that's about to be printed, biggest thing on the sheet —
-                staff confirm it against the gtradea PR row at a glance. */}
+                staff confirm it against the gtradea China Operations row at a
+                glance. */}
             <p className="mt-2 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/40">
-              {savedItem.prCode ? "PR ID" : "Goods number"}
+              {savedItem.itemCode || savedItem.prCode ? "Product ID" : "Goods number"}
             </p>
             <p className="break-all text-center text-xl font-black tracking-tight text-[#412460]">{goodsCode(savedItem)}</p>
             <dl className="mt-5 divide-y divide-[#F1EFEA] text-sm">
@@ -3337,10 +3429,10 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
   // Boxes that share one goods number (all boxes of the same 1688 order — see
   // generateItemCode() in backend/inventory/routes/warehouse.js) are grouped
   // under a single summary row with a "packages" count + expand toggle, rather
-  // than repeating the same PR id on every row. Grouping still keys off the
-  // internal `code`, not the displayed PR id: it's on every row (a box stored
-  // before gtradea published its job code has no PR id yet), so it keeps the
-  // boxes of one order together regardless.
+  // than repeating the same goods number on every row. Grouping still keys off
+  // the internal `code`, not the displayed item code: it's on every row (a box
+  // stored before gtradea published an item code for its order has none yet), so
+  // it keeps the boxes of one order together regardless.
   const [expanded, setExpanded] = useState(() => new Set());
   const toggleExpand = (code) =>
     setExpanded((prev) => {
@@ -3403,6 +3495,9 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
           const isGroup = count > 1;
           const isOpen = isGroup && expanded.has(head.code);
           const modes = new Set(group.map((g) => g.shipmentFrom || "By Air"));
+          // Same rule as the desktop table — see the comment there.
+          const codes = new Set(group.map(goodsCode).filter(Boolean));
+          const codeLabel = codes.size === 1 ? [...codes][0] : codes.size ? `${codes.size} products` : "";
           return (
             <li key={head.code || head.id} className="overflow-hidden rounded-2xl bg-white shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3]">
               <div
@@ -3429,8 +3524,8 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                 </div>
                 <dl className="mt-3 space-y-1.5 text-xs">
                   <div className="flex justify-between gap-3">
-                    <dt className="text-[#2D2D2D]/45">PR ID</dt>
-                    <dd className="font-semibold text-[#412460]">{goodsCode(head)}</dd>
+                    <dt className="text-[#2D2D2D]/45">Product ID</dt>
+                    <dd className={`font-semibold ${codes.size > 1 ? "text-[#2D2D2D]/45" : "text-[#412460]"}`}>{codeLabel || "—"}</dd>
                   </div>
                   {isGroup ? (
                     <div className="flex justify-between gap-3">
@@ -3503,7 +3598,10 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                           </span>
                         )}
                         <div className="min-w-0 flex-1 text-xs">
-                          <div className="break-all font-medium text-[#2D2D2D]/80">{it.trackingNumber || "—"}</div>
+                          {/* This package's own Product ID, leading the card for
+                              the same reason the desktop child row carries it. */}
+                          <div className="break-all font-bold text-[#412460]">{goodsCode(it) || "—"}</div>
+                          <div className="mt-1 break-all font-medium text-[#2D2D2D]/80">{it.trackingNumber || "—"}</div>
                           <div className="mt-1 text-[#2D2D2D]/45">Shelf <span className="font-semibold text-[#412460]">{it.rackId || "—"}</span></div>
                         </div>
                         <ShipmentBadge mode={it.shipmentFrom} />
@@ -3551,9 +3649,9 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                   <SelectAllCheck rows={rows} selected={selected} onToggleAll={onToggleAll} />
                 </th>
               )}
-              <th>PR ID</th>
-              <th>Shelf</th>
               <th>Order #</th>
+              <th>Shelf</th>
+              <th>Product ID</th>
               <th>Packages</th>
               <th>Tracking</th>
               <th>Shipment</th>
@@ -3569,6 +3667,15 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
               const shelves = new Set(group.map((g) => g.rackId || "—"));
               const shelfLabel = shelves.size === 1 ? [...shelves][0] : `${shelves.size} shelves`;
               const modes = new Set(group.map((g) => g.shipmentFrom || "By Air"));
+              // A group is one 1688 ORDER, and its packages can be different
+              // PRODUCTS — each box resolves its own Product ID from its own CN
+              // tracking. So the summary row must not print one box's id as if it
+              // covered the order: it says "n products" and each package carries
+              // its own, the same way Shelf collapses to "n shelves" and Shipment
+              // to "Mixed". (The old PR id could safely be shown here because one
+              // procurement request covered every package.)
+              const codes = new Set(group.map(goodsCode).filter(Boolean));
+              const codeLabel = codes.size === 1 ? [...codes][0] : codes.size ? `${codes.size} products` : "";
 
               return (
                 <Fragment key={head.code || head.id}>
@@ -3585,9 +3692,9 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                         )}
                       </td>
                     )}
-                    <td className="whitespace-nowrap font-bold text-[#412460]">{goodsCode(head)}</td>
-                    <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{shelfLabel}</span></td>
                     <td className="whitespace-nowrap font-semibold text-[#2D2D2D]/80">{head.orderNumber || "—"}</td>
+                    <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{shelfLabel}</span></td>
+                    <td className={`whitespace-nowrap font-bold ${codes.size > 1 ? "text-[#2D2D2D]/45" : "text-[#412460]"}`}>{codeLabel || "—"}</td>
                     <td>
                       {isGroup ? (
                         <button
@@ -3623,7 +3730,10 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                       )}
                       <td className="pl-6 text-xs text-[#2D2D2D]/30">↳</td>
                       <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{it.rackId || "—"}</span></td>
-                      <td className="text-xs text-[#2D2D2D]/30">—</td>
+                      {/* This package's OWN Product ID — the whole reason the
+                          group expands. It used to be a dash on the assumption
+                          that every package shared the summary row's id. */}
+                      <td className="whitespace-nowrap font-bold text-[#412460]">{goodsCode(it) || "—"}</td>
                       <td className="text-xs text-[#2D2D2D]/30">—</td>
                       <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={it.trackingNumber}>{it.trackingNumber || "—"}</td>
                       <td><ShipmentBadge mode={it.shipmentFrom} /></td>
@@ -3643,8 +3753,9 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
 // Where this 1688 line item stands, in four distinct states:
 //   no CN tracking yet on gtradea    -> "Not Yet" (nothing to receive against)
 //   has tracking, not scanned in     -> "Pending" (boxed — goods are on the way)
-//   has tracking, scanned in         -> "Received" (bold purple; the PR ID has
-//                                       its own column, so it isn't repeated here)
+//   has tracking, scanned in         -> "Received" (bold purple; the Product ID
+//                                       has its own column, so it isn't repeated
+//                                       here)
 //   has tracking, scanned in, shipped -> "Dispatched" + the day it shipped
 // "Not Yet" is deliberately the ONLY state with no box around it: an order with no
 // tracking can never match a warehouse item, so it isn't waiting on the warehouse
@@ -3687,7 +3798,7 @@ function WarehousePill({ order }) {
 // `shippableRows` is the subset that may be ticked — passed in rather than
 // recomputed here so the header's select-all, the toolbar's "n selected" counter
 // and the ship action are all driven by the exact same list.
-function SupplierOrdersTable({ rows, loading, selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, modeBusy }) {
+function SupplierOrdersTable({ rows, loading, filtered = false, selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, modeBusy }) {
   // Track images that failed to load and hide them via STATE, not by mutating the
   // DOM node — an imperative style change would persist across re-renders and could
   // permanently hide a later-valid image for the same row key.
@@ -3741,7 +3852,14 @@ function SupplierOrdersTable({ rows, loading, selectable = false, selected, ship
   if (!rows || rows.length === 0) {
     return (
       <EmptyState>
-        No 1688 orders yet. They appear here automatically once gtradea has procurement data — or tap &quot;Sync now&quot;.
+        {/* Now that the search and the two dropdowns can each empty the table on
+            their own, "nothing has synced yet" would be a flat lie — and would send
+            staff hunting a sync problem that isn't there. */}
+        {filtered ? (
+          "No 1688 orders match the current search and filters."
+        ) : (
+          <>No 1688 orders yet. They appear here automatically once gtradea has procurement data — or tap &quot;Sync now&quot;.</>
+        )}
       </EmptyState>
     );
   }
@@ -3756,7 +3874,7 @@ function SupplierOrdersTable({ rows, loading, selectable = false, selected, ship
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">
                   {fmtDay(o.orderedAt)}
-                  {o.jobCode && <span className="rounded bg-[#412460]/8 px-1.5 py-0.5 tracking-normal text-[#412460]">{o.jobCode}</span>}
+                  {(o.itemCode || o.jobCode) && <span className="rounded bg-[#412460]/8 px-1.5 py-0.5 tracking-normal text-[#412460]">{o.itemCode || o.jobCode}</span>}
                 </div>
                 <div className="mt-0.5 break-all text-sm font-bold text-[#412460]">{o.orderNumber || "—"}</div>
                 <p className="mt-1 break-words text-xs text-[#2D2D2D]/70">{o.productName || "—"}</p>
@@ -3806,7 +3924,7 @@ function SupplierOrdersTable({ rows, loading, selectable = false, selected, ship
                 </th>
               )}
               <th>Date</th>
-              <th>PR ID</th>
+              <th>Product ID</th>
               <th>Order #</th>
               <th>Product</th>
               {/* Sits next to Product because that's what it's derived from —
@@ -3822,7 +3940,7 @@ function SupplierOrdersTable({ rows, loading, selectable = false, selected, ship
               <tr key={o.id} className="transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3">
                 {selectable && <td className="w-8">{shipCheck(o)}</td>}
                 <td className="whitespace-nowrap text-xs text-[#2D2D2D]/55">{fmtDay(o.orderedAt)}</td>
-                <td className="whitespace-nowrap font-bold text-[#412460]">{o.jobCode || "—"}</td>
+                <td className="whitespace-nowrap font-bold text-[#412460]">{o.itemCode || o.jobCode || "—"}</td>
                 <td className="whitespace-nowrap font-bold text-[#412460]">{o.orderNumber || "—"}</td>
                 <td className="max-w-[300px]">
                   <div className="flex items-center gap-2">

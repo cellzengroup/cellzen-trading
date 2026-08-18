@@ -15,16 +15,18 @@ opening gtradea.com itself.
 |---|---|
 | Sync status | "Synced 2:41 PM" (grey) normally, or "⚠ Sync failing: …" (amber) if the last pull errored — never shows a reassuring "Synced" label when the last attempt actually failed |
 | "Sync now" button | Manually triggers an immediate pull; spins while a sync (yours or anyone else's) is in flight |
-| "Sort by" dropdown | Date (default, no-op) / Received / Not Updated / Not Received |
-| Search box | Filters by order #, CN tracking, product name, or job code |
-| `SupplierOrdersTable` | Date, order #, product (+ photo), quantity, CN tracking, warehouse-status pill |
+| "Sort by" dropdown | Warehouse state: Date (default, everything) / Received / Dispatched / Not Yet / Pending |
+| "Mode" dropdown | Sits to the right of "Sort by". Shipment mode: All modes (default) / By Land / By Air |
+| | **Both are filters and they stack** — Received + By Air leaves exactly the received orders that still have to fly. Every option carries an `(n)`: how many rows you'd be left with if you picked it, counted with the *other* dropdown held where you left it |
+| Search box | Filters by order #, CN tracking, product name, item code, or job code |
+| `SupplierOrdersTable` | Date, **Product ID** (gtradea's per-item `GTI-…` code, stored as `item_code`), order #, product (+ photo), quantity, CN tracking, warehouse-status pill |
 
 ## State
 
 | State | Meaning |
 |---|---|
 | `supplierOrders` | The loaded rows |
-| `supplierSearch`, `supplierSort` | Filter text and sort mode |
+| `supplierSearch`, `supplierSort`, `supplierModeFilter` | Filter text, warehouse-state filter, shipment-mode filter. `supplierModeFilter` is named that way because `setSupplierMode` is already the writer that changes *one row's* shipment mode on the server — this one writes nothing |
 | `supplierSync` | The last-sync status object the server returns alongside every list/status response (`{ at, ok, error, syncing, … }`) |
 | `supplierSyncing` | Local flag covering just the gap between clicking "Sync now" and the first status reply — the source of truth after that is the server's `syncing` flag |
 | `supplierLoadedOnce` (ref) | Only shows the full-page spinner on the very first load; a background refresh never blanks the table |
@@ -99,14 +101,44 @@ The "Sync now" button handler.
    completion would incorrectly be announced as this click's result.
 4. Reloads the list either way to pick up the fresh `syncing: true` state.
 
+### `searchedSupplier` (`useMemo`)
+The search box applied on its own, before either dropdown. Kept as its own
+list because **the export dialog counts against this one** — the export posts
+`supplierSearch` plus its own scope/mode/date choices to the server and knows
+nothing of the panel's two dropdowns, so bounding its preview by them too
+would promise counts the download never produces.
+
 ### `filteredSupplier` (`useMemo`)
-Applies the search filter, then sorting:
-- **`"date"` (default) is a deliberate no-op** — the server already returns
-  newest-order-first, so leaving it alone means a row never jumps position
-  in the table just because its *status* changed under the viewer's eyes
-  mid-poll.
-- Any other sort choice stably floats matching rows (by `supplierState`) to
-  the top, preserving date order within each group.
+`searchedSupplier` narrowed by **both** dropdowns at once — an intersection,
+not two competing sorts. Row order is left exactly as the server sent it
+(newest-order-first): the pair narrows the set rather than reshuffling it, so
+a row never jumps position in the table just because its *status* changed
+under the viewer's eyes mid-poll — it only enters or leaves the set it
+belongs to.
+
+Both dropdowns share one convention: **an option with no `match` is that
+dropdown's "everything" choice** (`Date`, `All modes`). `supplierMatcher()`
+turns any option — or a stored value that no longer exists — into a
+predicate, resolving the unknown case to "everything" rather than silently
+emptying the table.
+
+- Warehouse-state choices match on `supplierState`.
+- Shipment-mode choices match on `shipMode`: land is the explicit value, air
+  is everything else. That mirrors the server's `EXPORT_MODES`, so the two
+  always sum to the row count and a row with no mode recorded still lands in
+  exactly one of them.
+
+### `supplierCounts` (`useMemo`)
+The `(n)` on every option in both dropdowns: how many rows you'd be left with
+if you picked it. Each side is counted with the **other** dropdown held where
+the user left it — the same rule the export dialog's two selectors already
+follow. So "By Air (12)" under a Received selection means twelve *received*
+orders fly, which is exactly the question being asked of it; counting either
+side unfiltered would advertise rows the pair then filters away.
+
+Two invariants fall out of this and are covered by the checks: the two modes
+always partition the current state selection (`land + air = all modes`), and
+the four states always partition the current mode selection.
 
 ## Backend contract
 

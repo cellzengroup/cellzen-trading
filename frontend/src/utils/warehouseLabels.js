@@ -1,8 +1,8 @@
 // Warehouse label + barcode generation.
 //
 // Shipment (item) labels use the approved 60 x 80 mm design: CELLZEN logo, a
-// Code-128 barcode of the item's goods code (the gtradea PR id where there is
-// one — see goodsCode() in warehouseApi.js), the Shelf / Order / Tracking
+// Code-128 barcode of the item's goods code (the gtradea item code where there
+// is one — see goodsCode() in warehouseApi.js), the Shelf / Order / Tracking
 // number lines, the handling-icon row, and the footer.
 // The whole label is rendered ONCE onto a canvas at exact printer
 // resolution (480 x 640 dots = 60 x 80 mm at 8 dots/mm ≈ 203 dpi). That single
@@ -47,7 +47,30 @@ const LOGO_TOP = 16;
 const LOGO_W = 270;
 const BARCODE_TOP = 122;
 const BARCODE_MAX_W = 468;
-const BARCODE_HEIGHT = 10; // bwip-js bar height (BARS ONLY) with no mode banner
+// Module scale (printer dots per narrow bar), PINNED rather than chosen per code.
+//
+// It used to step 4 -> 3 -> 2, taking the widest scale whose barcode still fit
+// BARCODE_MAX_W. That silently made the barcode a different SIZE for different
+// ids, and the id got longer when the label moved from the PR id to the gtradea
+// item code: PR-1072 fits at scale 4 (420 dots wide), but GTI-100119 needs 508
+// there — over the 468 the 60 mm stock allows — so it would have dropped to
+// scale 3. And because bwip-js multiplies bar height by the scale too, dropping
+// a scale shrank the bars VERTICALLY as well (114 -> 86 dots), not just
+// horizontally. Two boxes side by side would have carried visibly different
+// barcodes.
+//
+// 3 is simply the widest scale a 10-character code fits in at 60 mm, so it is
+// the one every id can share. Keep it an integer: a module has to land on whole
+// printer dots or the bars blur and stop scanning.
+const BARCODE_SCALE = 3;
+// Bar height in printer DOTS (bars only — the number underneath is drawn
+// separately). Expressed in dots rather than bwip-js's millimetres so it stays
+// fixed no matter what BARCODE_SCALE is: bwip takes mm at 72dpi and multiplies
+// by the scale, so asking for a constant mm value would make the printed height
+// swing with the scale. 114 and 79 are what the old scale-4 render produced, so
+// the bars come off the printer exactly as tall as they always have.
+const BARCODE_BAR_DOTS = 114;
+const barMm = (dots, scale) => dots / (2.8346 * scale); // dots -> bwip-js mm@72dpi
 // The goods number, drawn by us under the bars (smaller + letter-spaced).
 const CODE_GAP = 12; // space between the bars and the number
 const CODE_SIZE = 42;
@@ -62,7 +85,7 @@ const MODE_BAR_H = 32;
 const MODE_BAR_FONT = 19;
 const MODE_BAR_SPACING = 2;
 const BARCODE_TOP_WITH_MODE = MODE_BAR_TOP + MODE_BAR_H + 14;
-const BARCODE_HEIGHT_WITH_MODE = 7; // vs. BARCODE_HEIGHT for the normal barcode
+const BARCODE_BAR_DOTS_WITH_MODE = 79; // vs. BARCODE_BAR_DOTS for the normal barcode
 const CODE_GAP_WITH_MODE = 10;
 const CODE_SIZE_WITH_MODE = 32; // vs. CODE_SIZE for the normal barcode's number
 
@@ -172,10 +195,11 @@ function barcodeDataUrl(text) {
 // A Code-128 barcode + human-readable text for the shipment label. `scale` is
 // device px per module; the canvas is drawn 1:1 so a module = `scale` printer
 // dots — keep it an integer so the bars land on dot boundaries and scan cleanly.
-// `barHeight` is the bwip-js bar height (BARS ONLY — the goods number is drawn
-// separately below); it's shrunk when the shipment-mode banner is showing so
-// the whole barcode band still fits above the info lines.
-function shipmentBarcodeCanvas(text, scale, barHeight = BARCODE_HEIGHT) {
+// `barHeight` is the bwip-js bar height in mm@72dpi (BARS ONLY — the goods
+// number is drawn separately below); pass it through barMm() so it's expressed
+// in printer dots. It's shrunk when the shipment-mode banner is showing so the
+// whole barcode band still fits above the info lines.
+function shipmentBarcodeCanvas(text, scale, barHeight = barMm(BARCODE_BAR_DOTS, scale)) {
   return barcodeCanvas(text, {
     scale,
     height: barHeight,
@@ -397,7 +421,7 @@ const ART_EDGE_KEEP = 2;     // printer dots of white to preserve at the trim
 // Groups tagged in gtradeaLabelArt.js, nudged as units.
 const ART_GROUPS = {
   head: { dy: 30 },  // gtradea mark + "Shelf No:" block, dropped off the top trim
-  code: { dy: 12 },  // barcode + PR number, dropped a little
+  code: { dy: 12 },  // barcode + item code, dropped a little
 };
 
 // One transform maps the whole 569 x 726 artboard onto the label stock: the
@@ -454,7 +478,11 @@ function drawLabelArt(ctx, { scale, dx, dy }) {
 // the shelf code has to move with the "Shelf No:" label above it.
 const GT_FIELDS = {
   shelf:    { x: 385.6, top: 49.4,  bottom: 73.5,  right: 559, weight: "700", ref: "GT-01-003", group: "head" },
-  pr:       { x: 118,   top: 341.4, bottom: 365.5, right: 521, weight: "700", ref: "PR-1028", center: 189, group: "code" },
+  // ref updated from the old "PR-1028" to a real item code. Both are caps +
+  // digits with no descender, so the ink box — and therefore the type size and
+  // baseline this field derives from it — is unchanged; the string is only kept
+  // honest about what actually prints here.
+  item:     { x: 118,   top: 341.4, bottom: 365.5, right: 521, weight: "700", ref: "GTI-100119", center: 189, group: "code" },
   order:    { x: 37.5,  top: 493.6, bottom: 515.5, right: 521, weight: "700", ref: "ORD-20260730-195740" },
   tracking: { x: 37.4,  top: 594.6, bottom: 616.5, right: 521, weight: "700", ref: "435291915403962" },
   stamp:    { x: 36.7,  top: 710.2, bottom: 725.3, right: 393, weight: "400", ref: "July 30, 2026 05:48 PM" },
@@ -502,24 +530,28 @@ function drawField(ctx, field, text, t) {
 }
 
 // The design's placeholder barcode image is replaced by a real Code-128 of the
-// PR number, generated at printer resolution. It is drawn 1:1 at the widest
-// whole-module scale that fits the design's barcode box, so bars land on dot
-// boundaries and scan; the box in the design is 310 artboard units wide, which
-// is why this steps down through the scales rather than stretching to fill.
+// item code, generated at printer resolution. It is drawn 1:1 at a fixed
+// whole-module scale so bars land on dot boundaries and scan.
+//
+// The scale is pinned for the same reason as BARCODE_SCALE on the cellzen label:
+// this used to try 4, then 3, then 2, taking the first that fit the design's
+// box, which made the barcode's size depend on how long the id happened to be.
+// The design's box is 310 artboard units (~261 dots) wide and only scale 2 fits
+// an id of this length in it — PR-1072 came to 210 dots there and GTI-100119
+// comes to 254 — so 2 is the one scale every id can share.
 const GT_BARCODE_BOX = { x: 34, y: 151, w: 310, h: 181 };
+const GT_BARCODE_SCALE = 2;
 
 function drawLabelBarcode(ctx, code, t) {
   if (!code) return;
   const boxW = GT_BARCODE_BOX.w * t.scale;
   const boxH = GT_BARCODE_BOX.h * t.scale;
   // bwip-js takes bar height in mm at 72dpi, then multiplies by the scale —
-  // solve it back so the bars come out the height of the design's box.
-  let bc = null;
-  for (const s of [4, 3, 2]) {
-    const mm = boxH / (2.8346 * s);
-    const candidate = shipmentBarcodeCanvas(code, s, mm);
-    if (candidate.width <= boxW || s === 2) { bc = candidate; break; }
-  }
+  // solve it back (barMm) so the bars come out the height of the design's box.
+  const bc = shipmentBarcodeCanvas(code, GT_BARCODE_SCALE, barMm(boxH, GT_BARCODE_SCALE));
+  // Clamp only as a backstop for an id longer than the design ever anticipated;
+  // at GT_BARCODE_SCALE a normal item code sits inside the box already, so this
+  // is a no-op and the bars are never squashed out of proportion.
   const w = Math.min(bc.width, boxW);
   const x = t.dx + (GT_BARCODE_BOX.x * t.scale) + (boxW - w) / 2;
   // Carries the same nudge as the PR number below it, so bars and number stay
@@ -550,7 +582,7 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   const mode = normalizeShipmentMode(shipmentMode) || normalizeShipmentMode(item.shipmentFrom) || "air";
 
   drawField(ctx, GT_FIELDS.shelf, item.rackId || "-", t);
-  drawField(ctx, GT_FIELDS.pr, goodsCode(item), t);
+  drawField(ctx, GT_FIELDS.item, goodsCode(item), t);
   drawField(ctx, GT_FIELDS.order, item.orderNumber || "-", t);
   drawField(ctx, GT_FIELDS.tracking, item.trackingNumber || "-", t);
   drawField(ctx, GT_FIELDS.stamp, formatLabelStamp(item.createdAt), t);
@@ -583,22 +615,23 @@ async function renderCellzenLabel(item, shipmentMode = null) {
   // Optional shipment-mode banner under the logo.
   if (mode) drawShipmentModeBar(ctx, mode);
 
-  // Barcode — widest module scale that fits the label width, drawn at natural
-  // width (1:1) so bars land on dot boundaries and scan cleanly. Scale 4 fills
-  // the full 60 mm for a typical code; longer codes step down to keep fitting.
-  // With a shipment-mode banner showing, the bars render shorter and start
-  // lower so the whole band still clears the info lines below it.
+  // Barcode — fixed module scale (see BARCODE_SCALE), drawn at natural width
+  // (1:1) so bars land on dot boundaries and scan cleanly. The scale and the bar
+  // height are both constants now, so every label's barcode is the same size:
+  // only the overall width follows the code's length, which is inherent to
+  // Code-128 and is why the band is centred. With a shipment-mode banner
+  // showing, the bars render shorter and start lower so the whole band still
+  // clears the info lines below it.
   const barcodeTop = mode ? BARCODE_TOP_WITH_MODE : BARCODE_TOP;
-  const barHeight = mode ? BARCODE_HEIGHT_WITH_MODE : BARCODE_HEIGHT;
+  const barDots = mode ? BARCODE_BAR_DOTS_WITH_MODE : BARCODE_BAR_DOTS;
   const codeGap = mode ? CODE_GAP_WITH_MODE : CODE_GAP;
   const codeSize = mode ? CODE_SIZE_WITH_MODE : CODE_SIZE;
-  // What the barcode encodes and the number under it reads: the gtradea PR id
-  // (PR-1029) when the item has one, else the internal CZN goods number. Scanning
-  // this label anywhere in the app resolves back to the item either way.
+  // What the barcode encodes and the number under it reads: the gtradea item
+  // code (GTI-100119) when the item has one, else the PR id it was labelled with
+  // before, else the internal CZN goods number. Scanning this label anywhere in
+  // the app resolves back to the item in all three cases.
   const code = goodsCode(item);
-  let bc = shipmentBarcodeCanvas(code, 4, barHeight);
-  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(code, 3, barHeight);
-  if (bc.width > BARCODE_MAX_W) bc = shipmentBarcodeCanvas(code, 2, barHeight);
+  const bc = shipmentBarcodeCanvas(code, BARCODE_SCALE, barMm(barDots, BARCODE_SCALE));
   let bw = bc.width;
   let bh = bc.height;
   if (bw > BARCODE_MAX_W) { bh = Math.round(bh * (BARCODE_MAX_W / bw)); bw = BARCODE_MAX_W; } // rare clamp

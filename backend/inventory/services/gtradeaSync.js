@@ -309,6 +309,9 @@ function mapDetail(detail, paymentMap) {
         source_item_id: String(it.id),
         job_id: detail.id ? String(detail.id) : null,
         job_code: detail.job_code || null,
+        // gtradea's per-item "Product ID" (GTI-100119). It has always been in the
+        // detail payload we pull — it just used to land only in `raw`.
+        item_code: it.item_code || null,
         order_number: order.order_number || null,
         gtradea_order_id: order.id ? String(order.id) : null,
         china_tracking_no: normTracking(it.china_tracking_no),
