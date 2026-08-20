@@ -1,11 +1,17 @@
-// MANAS chat client — streams a Gemini response from the backend.
+// MANAS chat client — streams the assistant reply from the backend.
 //
 // Usage:
 //   const stop = streamChat({ message, history, sessionId, verify, onToken, onDone, onError });
 //   stop(); // call to abort mid-stream
 
-const API_URL = import.meta.env.VITE_API_URL
+// Every other client in the app sets VITE_API_URL *with* the /api suffix
+// already on it (see api/client.js and the inventory hooks), but this module
+// appends its own /api to each path below. Strip a trailing /api so both
+// spellings collapse to the same base — otherwise a deployment that sets the
+// var the usual way silently requests /api/api/manas/chat and 404s.
+const API_ROOT = import.meta.env.VITE_API_URL
   || (import.meta.env.PROD ? window.location.origin : 'http://localhost:5300');
+const API_URL = String(API_ROOT).replace(/[/]+$/, '').replace(/[/]api$/, '');
 
 const getAuthToken = () => {
   // Match the keys used elsewhere in the app for admin + customer JWTs

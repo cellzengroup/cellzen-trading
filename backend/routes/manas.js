@@ -9,13 +9,87 @@ const { buildContext, findCustomerByContact, findInvoiceByNameAndNumber, findInv
 
 const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'cellzentrading-default-secret';
-// llama-3.3-70b-versatile because the small llama-3.1-8b-instant has a free-tier
-// TPM limit of only 6,000, and our system prompt + HS/invoice context + history
-// frequently exceeds that — Groq returns a 413 "Request too large" and the
-// chat fails. The 70b variant has a 30,000 TPM ceiling on the same free tier
-// and handles the same prompt comfortably. Override with the MANAS_MODEL env
-// var if a faster/cheaper model becomes available.
-const MANAS_MODEL = process.env.MANAS_MODEL || 'llama-3.3-70b-versatile';
+// Groq retires models on a rolling basis, and a retired id fails EVERY request
+// with a 404 "model_not_found". That is exactly how MANAS went dark: the old
+// default, llama-3.3-70b-versatile, is no longer served on our key, so every
+// chat turn surfaced the generic "temporarily unavailable" message.
+//
+// So rather than one hardcoded id we keep an ordered candidate list. The first
+// id Groq still accepts wins and is cached for the process lifetime, which
+// means the next retirement degrades to the runner-up instead of taking the
+// whole chat down. MANAS_MODEL still pins a model when set — it is simply
+// tried first. Ordering is quality-first among what this key can reach today.
+const MODEL_CANDIDATES = [
+  ...(process.env.MANAS_MODEL ? [process.env.MANAS_MODEL] : []),
+  'openai/gpt-oss-120b',  // closest match to the retired 70b; holds the Devanagari reply rule
+  'openai/gpt-oss-20b',   // cheaper same-family fallback, same tuning knobs
+  'groq/compound-mini',   // last resort; routes to whatever Groq has spare
+].filter((m, i, a) => a.indexOf(m) === i);
+const MANAS_MODEL = MODEL_CANDIDATES[0];
+// Whichever candidate Groq last accepted. Null until the first successful call.
+let activeModel = null;
+
+// The gpt-oss family streams its chain-of-thought in a separate field, and left
+// unconstrained some Groq models inline a <think> block straight into the answer
+// — which renders as visible junk in the chat bubble. 'hidden' drops it from the
+// response, and 'low' keeps reasoning tokens (billed against our TPM) down.
+const tuningFor = (model) => (
+  String(model).startsWith('openai/gpt-oss')
+    ? { reasoning_effort: 'low', reasoning_format: 'hidden' }
+    : {}
+);
+
+// Groq refuses a request outright — 413 "Request too large ... Limit 8000,
+// Requested N" — when prompt + max_tokens exceeds the key's per-minute token
+// ceiling. That is a structural rejection, not a burn-down: waiting never helps,
+// the same request fails forever. Our system prompt alone is ~5.4k tokens, so
+// the old flat max_tokens: 4096 put almost every turn over the 8k ceiling and
+// MANAS answered "temporarily unavailable" no matter how idle the account was.
+//
+// So we size each request to fit: clamp the injected context, then hand the
+// model whatever completion budget is actually left. Lowering the cap costs
+// nothing — Groq bills the tokens genuinely generated, not the ceiling — and
+// 2048 tokens is still ~8x the "under 200 words" the system prompt asks for.
+const TPM_CEILING = Number(process.env.MANAS_TPM_LIMIT) || 8000;
+const TPM_MARGIN = 256;          // slack for tokeniser drift vs. our estimate
+const MIN_COMPLETION = 512;      // never leave the model less room than this
+const MAX_COMPLETION = 2048;
+const MAX_CONTEXT_TOKENS = 1200; // buildContext can emit several KB of HS rows
+const MAX_HISTORY_TOKENS = 700;
+
+// Cheap local estimate — no tokeniser dependency. Latin text runs ~3.5-4 chars
+// per token, but Devanagari (which every Nepali reply and some context blocks
+// use) is far denser, near one token per character, so count those separately
+// or a Nepali-heavy prompt is badly under-estimated and slips over the ceiling.
+const estimateTokens = (text) => {
+  const str = String(text || '');
+  // Everything past Latin Extended-B: Devanagari, CJK, emoji.
+  const dense = (str.match(/[\u0250-\uFFFF]/g) || []).length;
+  return Math.ceil((str.length - dense) / 3.5) + dense;
+};
+
+// Trim to a token budget on a line boundary so we never cut a tariff row in half.
+const clampToTokens = (text, maxTokens) => {
+  const str = String(text || '');
+  if (estimateTokens(str) <= maxTokens) return str;
+  const lines = str.split('\n');
+  const kept = [];
+  let used = 0;
+  for (const line of lines) {
+    const cost = estimateTokens(line) + 1;
+    if (used + cost > maxTokens) break;
+    kept.push(line);
+    used += cost;
+  }
+  return kept.join('\n') + '\n…(trimmed to fit the model token budget)';
+};
+
+// Groq answers a retired / unreachable model id with 404 + code model_not_found.
+const isModelUnavailable = (err) => {
+  const msg = String(err?.error?.error?.message || err?.message || '');
+  return /model_not_found|does not exist or you do not have access|decommissioned/i.test(msg)
+    || (err?.status === 404 && /model/i.test(msg));
+};
 const IS_PROD = process.env.NODE_ENV === 'production';
 
 // Logger that respects production silence — info/log only in dev, warn+error always.
@@ -29,7 +103,7 @@ const log = {
 if (!process.env.GROQ_API_KEY) {
   console.warn('[MANAS] ⚠️  GROQ_API_KEY is not set. MANAS will respond with a friendly "not configured" message until the env var is added.');
 } else {
-  log.info('[MANAS] ✅ Configured with model:', MANAS_MODEL);
+  log.info('[MANAS] ✅ Configured. Model candidates:', MODEL_CANDIDATES.join(' → '));
 }
 
 const SYSTEM_INSTRUCTION = `You are MANAS, Cellzen Trading's AI assistant. Be helpful, warm, and answer ANY topic (trade, general knowledge, math, casual chat). Specialty: HS codes, Nepal Customs Tariff 2082/83, customs duties, VAT, sourcing, Incoterms, Cellzen's products, and the user's own invoices when verified.
@@ -290,16 +364,33 @@ const getClient = () => {
 const warmModel = async () => {
   const client = getClient();
   if (!client) return;
-  try {
-    await client.chat.completions.create({
-      model: MANAS_MODEL,
-      messages: [{ role: 'user', content: 'hi' }],
-      max_tokens: 5,
-    });
-    log.info('[MANAS] Groq model pre-warmed');
-  } catch (err) {
-    log.warn('[MANAS] Pre-warm failed (non-fatal):', err.message);
+  // Doubles as model resolution: the first candidate Groq accepts becomes
+  // activeModel, so the first real user message neither pays the cold-start
+  // cost nor spends a turn discovering that the default has been retired.
+  for (const model of MODEL_CANDIDATES) {
+    try {
+      await client.chat.completions.create({
+        model,
+        messages: [{ role: 'user', content: 'hi' }],
+        max_tokens: 5,
+        ...tuningFor(model),
+      });
+      activeModel = model;
+      log.info('[MANAS] Groq model pre-warmed:', model);
+      return;
+    } catch (err) {
+      if (isModelUnavailable(err)) {
+        console.warn(`[MANAS] Model "${model}" is not available on this API key — trying the next candidate.`);
+        continue;
+      }
+      // A rate limit or network blip says nothing about the model, so keep it
+      // as the presumed choice and let the chat route retry for real.
+      activeModel = model;
+      log.warn('[MANAS] Pre-warm failed (non-fatal):', err.message);
+      return;
+    }
   }
+  console.error('[MANAS] ⚠️  None of these Groq models are available on this API key:', MODEL_CANDIDATES.join(', '));
 };
 if (process.env.GROQ_API_KEY) {
   setTimeout(warmModel, 2000);
@@ -487,14 +578,19 @@ const NAV_LIST_RX = {
   '/tracking':  /\b(track (my )?(order|shipment|package)|where is my (order|shipment))\b/i,
 };
 
+// Only consulted after NAV_INTENT_RX has already seen an explicit navigation
+// verb, so these can stay broad without over-triggering.
+// Plurals matter: the trailing \b means a singular-only "product" fails against
+// "products", which is how the system prompt's own worked example — "Take me to
+// the products page" → [NAV:/products] — silently produced no button at all.
 const NAV_KEYWORDS = [
-  { path: '/products',  rx: /\b(product|catalog|catalogue|sourcing)\b/i },
-  { path: '/contact',   rx: /\b(contact|reach (you|cellzen)|get in touch|inquir|quote)\b/i },
+  { path: '/products',  rx: /\b(products?|catalogs?|catalogues?|sourcing)\b/i },
+  { path: '/contact',   rx: /\b(contacts?|reach (you|cellzen)|get in touch|inquir|quotes?)\b/i },
   { path: '/privacy',   rx: /\b(privacy|data collect|personal information)\b/i },
   { path: '/terms',     rx: /\b(terms (and|&) conditions|terms of (use|service)|refund policy|shipping policy)\b/i },
-  { path: '/tracking',  rx: /\b(tracking page|order tracking)\b/i },
-  { path: '/portfolio', rx: /\b(portfolio|past work|case stud)\b/i },
-  { path: '/notices',   rx: /\b(news|notice|announcement)\b/i },
+  { path: '/tracking',  rx: /\b(tracking( page)?|order tracking)\b/i },
+  { path: '/portfolio', rx: /\b(portfolios?|past work|case stud)\b/i },
+  { path: '/notices',   rx: /\b(news|notices?|announcements?)\b/i },
 ];
 
 // Topical knowledge questions that should NEVER get a nav link.
@@ -548,7 +644,9 @@ router.get('/health', (req, res) => {
     success: true,
     configured: Boolean(process.env.GROQ_API_KEY),
     provider: 'groq',
-    model: MANAS_MODEL,
+    model: activeModel || MANAS_MODEL,
+    modelResolved: Boolean(activeModel),
+    modelCandidates: MODEL_CANDIDATES,
   });
 });
 
@@ -633,15 +731,36 @@ router.post('/chat', async (req, res) => {
       }
     }
 
-    const context = await buildContext({ message, user, verifiedCustomer, matchedInvoice, lookupFailure });
+    // Clamp both variable-length inputs. buildContext can emit several KB of
+    // HS-tariff rows for a broad question, and a long chat replays up to six
+    // turns — together they were pushing the assembled prompt past the ceiling,
+    // which fails the turn outright instead of degrading. A shorter context
+    // block is strictly better than a 413.
+    const rawContext = await buildContext({ message, user, verifiedCustomer, matchedInvoice, lookupFailure });
+    const context = clampToTokens(rawContext, MAX_CONTEXT_TOKENS);
+    if (context.length < String(rawContext || '').length) {
+      log.warn('[MANAS] Context trimmed to fit token budget:',
+        estimateTokens(rawContext), '->', estimateTokens(context), 'tokens');
+    }
 
+    let historyBudget = MAX_HISTORY_TOKENS;
     const safeHistory = (Array.isArray(history) ? history : [])
       .slice(-6)
       .filter(m => m && typeof m.content === 'string' && m.content.length > 0)
       .map(m => ({
         role: m.role === 'assistant' ? 'assistant' : 'user',
         content: m.content,
-      }));
+      }))
+      // Walk newest-first so the turns nearest the question survive, then put
+      // them back in order for the model.
+      .reverse()
+      .filter(m => {
+        const cost = estimateTokens(m.content);
+        if (cost > historyBudget) return false;
+        historyBudget -= cost;
+        return true;
+      })
+      .reverse();
 
     // Force the reply language deterministically — small models drift otherwise.
     const replyLang = detectReplyLang(message, safeHistory);
@@ -700,32 +819,72 @@ router.post('/chat', async (req, res) => {
       return TRANSIENT_NET_CODES.has(code);
     };
 
+    // Whatever the ceiling leaves after the prompt is what the model may
+    // generate. Groq rejects the request when prompt + max_tokens breaches the
+    // ceiling, so this is what keeps a turn from failing before it starts.
+    const promptTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content) + 4, 0);
+    const room = TPM_CEILING - promptTokens - TPM_MARGIN;
+    const maxCompletion = Math.max(MIN_COMPLETION, Math.min(MAX_COMPLETION, room));
+    if (room < MIN_COMPLETION) {
+      // We are down to the floor, so the reply may be cut short and a slightly
+      // longer prompt would tip into a hard 413. estimateTokens deliberately
+      // over-counts, so this is a headroom warning, not a failure prediction.
+      log.warn('[MANAS] Low token headroom: prompt ~', promptTokens, 'of a', TPM_CEILING, 'ceiling.',
+        'Replies are capped at', MIN_COMPLETION, 'tokens — trim SYSTEM_INSTRUCTION or raise the Groq tier.');
+    }
+
+    const openStream = async (model) => {
+      let attempts = 0;
+      const maxAttempts = 3;
+      while (true) {
+        try {
+          return await client.chat.completions.create({
+            model,
+            messages,
+            temperature: 0.6,
+            // Sized per-request (see maxCompletion above) rather than a flat
+            // 4096, which breached the per-minute ceiling on nearly every turn.
+            max_tokens: maxCompletion,
+            top_p: 0.9,
+            stream: true,
+            ...tuningFor(model),
+          });
+        } catch (err) {
+          attempts++;
+          if (attempts >= maxAttempts || !isTransientNetErr(err)) throw err;
+          log.warn(`[MANAS] Transient net error (attempt ${attempts}/${maxAttempts}):`, err?.cause?.code || err?.message);
+          await new Promise(r => setTimeout(r, 200 * Math.pow(2, attempts - 1)));
+        }
+      }
+    };
+
+    // Try the resolved model first; if Groq retired it since we last checked,
+    // fall through the remaining candidates instead of failing the turn.
+    // Nothing has been written to the response body yet, so swapping models
+    // here is invisible to the user.
+    const candidates = activeModel
+      ? [activeModel, ...MODEL_CANDIDATES.filter(m => m !== activeModel)]
+      : MODEL_CANDIDATES;
+
     let stream;
-    let attempts = 0;
-    const maxAttempts = 3;
-    while (true) {
+    let lastModelErr;
+    for (const model of candidates) {
       try {
-        stream = await client.chat.completions.create({
-          model: MANAS_MODEL,
-          messages,
-          temperature: 0.6,
-          // Raised from 1500 → 4096 so longer answers (multi-item HS code
-          // breakdowns, full invoice tables, detailed Nepali replies which
-          // run longer than English in tokens) don't get cut off mid-reply.
-          // Groq's llama-3.1-8b-instant supports 8k generation; 4k leaves
-          // plenty of headroom for the system prompt + history.
-          max_tokens: 4096,
-          top_p: 0.9,
-          stream: true,
-        });
+        stream = await openStream(model);
+        if (activeModel !== model) {
+          console.warn('[MANAS] Switched to model:', model);
+          activeModel = model;
+        }
         break;
       } catch (err) {
-        attempts++;
-        if (attempts >= maxAttempts || !isTransientNetErr(err)) throw err;
-        log.warn(`[MANAS] Transient net error (attempt ${attempts}/${maxAttempts}):`, err?.cause?.code || err?.message);
-        await new Promise(r => setTimeout(r, 200 * Math.pow(2, attempts - 1)));
+        // Only a retired/unreachable model is worth retrying elsewhere — a rate
+        // limit or a bad request would fail identically on every candidate.
+        if (!isModelUnavailable(err)) throw err;
+        lastModelErr = err;
+        console.warn(`[MANAS] Model "${model}" unavailable (retired or not on this key) — falling back.`);
       }
     }
+    if (!stream) throw lastModelErr;
 
     let fullResponse = '';
     for await (const chunk of stream) {
@@ -804,9 +963,19 @@ router.post('/chat', async (req, res) => {
         /quota|rate[\s_]limit|too many requests|request too large|tokens per minute/i.test(errMsg + ' ' + errBody);
       const code = error?.cause?.code || error?.code || '';
       const isNetwork = ['ENOBUFS', 'ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH', 'ECONNREFUSED'].includes(code);
+      // Every candidate came back model_not_found — Groq retired them all, or
+      // the key lost access. Nothing the user can do, so make it loud in the
+      // server log with the fix spelled out.
+      const isNoModel = isModelUnavailable(error);
+      if (isNoModel) {
+        console.error('[MANAS] ❌ No usable Groq model. Tried:', MODEL_CANDIDATES.join(', '));
+        console.error('[MANAS]    Check https://console.groq.com/docs/deprecations and set MANAS_MODEL to a current id.');
+      }
 
       let friendly;
-      if (isQuota) {
+      if (isNoModel) {
+        friendly = 'MANAS is temporarily unavailable while its AI model is being updated. Please try again shortly, or contact us via the Contact page for urgent help.';
+      } else if (isQuota) {
         // Try to extract reset time from headers / error body
         const retryAfterHeader = error?.headers?.['retry-after']
           || error?.response?.headers?.get?.('retry-after');
