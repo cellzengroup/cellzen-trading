@@ -17,7 +17,18 @@
 const { EXAMPLES, HOLDOUT } = require('../inventory/services/shipmentModeCorpus');
 const { _internals } = require('../inventory/services/shipmentMode');
 
-const { classifyByRules, modelScore, trainClassifier, MODEL_LAND_MARGIN, LAND, AIR } = _internals;
+const { classifyByRules, classifyAirCategory, modelScore, trainClassifier, MODEL_LAND_MARGIN, LAND, AIR } =
+  _internals;
+
+// The shipped decision, in the shipped order: hazard rules win, then the
+// always-air categories, then whatever the model was going to say. Written once
+// here so this report cannot quietly measure a pipeline that is not the one
+// classifyShipmentMode actually runs.
+const decide = (text, modelSays) => {
+  if (classifyByRules(text)) return LAND;
+  if (classifyAirCategory(text)) return AIR;
+  return modelSays;
+};
 const FOLDS = 5;
 
 // Deterministic shuffle — a fixed seed means two runs of this script on the same
@@ -82,18 +93,20 @@ async function main() {
     `${EXAMPLES.filter((e) => e.label === AIR).length} air)`);
   console.log(`Model land margin: ${MODEL_LAND_MARGIN}\n`);
 
-  // ---- stage 1 alone: the lexicon, scored on everything (it learns nothing,
-  // so there is no train/test split to respect).
+  // ---- the deterministic stages alone: hazard rules plus always-air
+  // categories, scored on everything (they learn nothing, so there is no
+  // train/test split to respect). Anything neither claims counts as air here,
+  // which is where it lands in production when the model has no opinion.
   const rules = blankTally();
   const ruleMisses = [];
   for (const ex of EXAMPLES) {
-    const predicted = classifyByRules(ex.text) ? LAND : AIR;
+    const predicted = decide(ex.text, AIR);
     record(rules, ex.label, predicted);
     if (predicted !== ex.label) ruleMisses.push({ ...ex, predicted });
   }
-  report('rules only', rules);
+  report('rules + categories only', rules);
 
-  // ---- stage 2 alone, and the two combined, both under cross-validation.
+  // ---- the model alone, and the whole pipeline, both under cross-validation.
   const model = blankTally();
   const combined = blankTally();
   const combinedMisses = [];
@@ -109,9 +122,9 @@ async function main() {
       const modelSays = scored && scored.mode === LAND && scored.margin >= MODEL_LAND_MARGIN ? LAND : AIR;
       record(model, ex.label, modelSays);
 
-      // Production order: a rule hit short-circuits, the model only speaks when
-      // no regulated term matched.
-      const predicted = classifyByRules(ex.text) ? LAND : modelSays;
+      // Production order: the deterministic stages short-circuit, the model
+      // only speaks about titles neither of them claimed.
+      const predicted = decide(ex.text, modelSays);
       record(combined, ex.label, predicted);
       if (predicted !== ex.label) combinedMisses.push({ ...ex, predicted });
     }
@@ -129,7 +142,7 @@ async function main() {
   for (const ex of HOLDOUT) {
     const scored = modelScore(shipped, ex.text);
     const modelSays = scored && scored.mode === LAND && scored.margin >= MODEL_LAND_MARGIN ? LAND : AIR;
-    const predicted = classifyByRules(ex.text) ? LAND : modelSays;
+    const predicted = decide(ex.text, modelSays);
     record(holdout, ex.label, predicted);
     if (predicted !== ex.label) holdoutMisses.push({ ...ex, predicted });
   }
@@ -144,7 +157,7 @@ async function main() {
     }
     if (list.length > 12) console.log(`  … and ${list.length - 12} more`);
   };
-  show('Rule-stage errors:', ruleMisses);
+  show('Deterministic-stage errors:', ruleMisses);
   show('Shipped-pipeline errors (cross-validated):', combinedMisses);
   show('Unseen-wording holdout errors:', holdoutMisses);
 }

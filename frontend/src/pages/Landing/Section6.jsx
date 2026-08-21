@@ -64,9 +64,9 @@ export default function Section6() {
           ].map((v, i) => (
             <div
               key={v.title}
-              className="group rounded-xl border border-white/15 bg-white/[0.08] p-5 shadow-[0_18px_45px_rgba(0,0,0,0.18)] backdrop-blur-2xl transition-all duration-300 ease-out motion-reduce:transition-none hover:border-cz-secondary-light/35 hover:bg-white/[0.14] hover:shadow-[0_22px_55px_rgba(0,0,0,0.24)] sm:p-6 sm:hover:scale-[1.03] cursor-default"
+              className="group rounded-xl border border-white/15 bg-white/[0.08] p-5 backdrop-blur-2xl transition-all duration-300 ease-out motion-reduce:transition-none hover:border-cz-secondary-light/35 hover:bg-white/[0.14] sm:p-6 sm:hover:scale-[1.03] cursor-default"
             >
-              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-white/10 text-cz-secondary-light shadow-inner backdrop-blur-xl transition-all duration-300 motion-reduce:transition-none group-hover:bg-cz-secondary-light group-hover:text-white group-hover:shadow-lg">
+              <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full border border-white/15 bg-white/10 text-cz-secondary-light backdrop-blur-xl transition-all duration-300 motion-reduce:transition-none group-hover:bg-cz-secondary-light group-hover:text-white">
                 {v.icon}
               </div>
               <h4 className="font-bold text-white">{v.title}</h4>

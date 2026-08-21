@@ -288,4 +288,40 @@ const SUPPRESSORS = [
   '空瓶', '免酒精',
 ];
 
-module.exports = { HAZARD_CLASSES, SUPPRESSORS };
+// -------------------------------------------------------------- air categories
+// The mirror image of HAZARD_CLASSES: product families the warehouse has
+// decided always DEFAULT to air, whatever the statistical model makes of the
+// wording. Seating furniture is the first of them — chairs and sofas are bulky
+// but perfectly ordinary cargo, and the model kept guessing otherwise from the
+// company they keep in a 1688 title ("ergonomic", "reclining", "lifting",
+// "swivel"), so 办公椅 and a gaming chair were arriving pre-set to By Land and
+// staff were correcting the same rows after every sync.
+//
+// This list CANNOT put dangerous goods on an aircraft. It is consulted only
+// after the hazard rules above have found nothing (see classifyShipmentMode),
+// so an electric massage chair or a sofa with a built-in battery still matches
+// 'electric' / 'battery' first and still ships by land. That ordering is what
+// makes over-inclusion here cheap: the worst a wrong entry can do is ignore the
+// model's guess on a title that was already going to fly.
+//
+// NOT a bare 'seat': car seat, toilet seat and seat cover are all something
+// else. The words below name the article itself.
+const AIR_CATEGORIES = [
+  {
+    key: 'seating',
+    label: 'Seating furniture',
+    terms: [
+      'chair', 'chairs', 'armchair', 'armchairs', 'arm chair', 'highchair',
+      'recliner', 'recliners', 'rocking chair', 'deck chair', 'folding chair',
+      'sofa', 'sofas', 'sofa bed', 'couch', 'couches', 'settee', 'loveseat',
+      'love seat', 'futon', 'ottoman', 'bean bag', 'beanbag',
+      'stool', 'stools', 'bar stool', 'barstool', 'footstool',
+      // 椅 and 凳 carry the meaning in every compound gtradea sends — 办公椅,
+      // 电脑椅, 餐椅, 转椅, 躺椅, 摇椅, 板凳, 圆凳 — so the single characters
+      // cover the family without listing it out. Han terms need no word boundary.
+      '椅', '凳', '沙发',
+    ],
+  },
+];
+
+module.exports = { HAZARD_CLASSES, SUPPRESSORS, AIR_CATEGORIES };

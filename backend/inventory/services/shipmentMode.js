@@ -3,22 +3,30 @@
 // title alone. Drives the Mode column in the warehouse 1688 panel, where staff
 // can override any answer from a dropdown.
 //
-// TWO STAGES, in this order, and the order is the whole design:
+// THREE STAGES, in this order, and the order is the whole design:
 //
-//   1. RULES — dangerousGoodsLexicon.js, matched with Aho-Corasick (one pass
-//      over the title for all ~350 terms, and it matches Chinese as happily as
-//      English because it works on characters, not whitespace tokens). If a
-//      regulated term is present, the answer is LAND and stage 2 is not even
-//      consulted. A statistical model must never be able to talk the system out
-//      of "lithium battery": mis-declared dangerous goods on an aircraft is a
-//      safety and customs problem, not a ranking error.
+//   1. HAZARD RULES — dangerousGoodsLexicon.js, matched with Aho-Corasick (one
+//      pass over the title for all ~350 terms, and it matches Chinese as
+//      happily as English because it works on characters, not whitespace
+//      tokens). If a regulated term is present, the answer is LAND and no later
+//      stage is consulted. A statistical model must never be able to talk the
+//      system out of "lithium battery": mis-declared dangerous goods on an
+//      aircraft is a safety and customs problem, not a ranking error.
 //
-//   2. MODEL — a naive-Bayes classifier (npm `bayes`) trained at startup on
+//   2. AIR CATEGORIES — AIR_CATEGORIES in the same lexicon: product families
+//      the warehouse always flies by default, seating furniture (chairs, sofas)
+//      being the first. These are things the model kept mis-reading from the
+//      marketing words around them, where the right answer is not in doubt and
+//      a fixed list is more honest than nudging the corpus until the guess
+//      lands. It sits BELOW the hazard rules on purpose, so an electric massage
+//      chair still matches 'electric' at stage 1 and still goes by land.
+//
+//   3. MODEL — a naive-Bayes classifier (npm `bayes`) trained at startup on
 //      shipmentModeCorpus.js. This is what generalises past the word list:
 //      1688 titles are machine-translated marketing text, so a power bank
 //      arrives as "charge treasure", "portable power supply" or "mobile energy
 //      source", and no lexicon ever finishes. The model only gets a vote on
-//      titles where NO regulated term matched, and only when it is confident —
+//      titles no earlier stage claimed, and only when it is confident —
 //      below the margin the answer falls back to AIR, which is what the
 //      overwhelming majority of a clothing/accessories catalogue actually is.
 //
@@ -28,7 +36,7 @@
 // model inside a request.
 const AhoCorasick = require('ahocorasick');
 const bayes = require('bayes');
-const { HAZARD_CLASSES, SUPPRESSORS } = require('./dangerousGoodsLexicon');
+const { HAZARD_CLASSES, SUPPRESSORS, AIR_CATEGORIES } = require('./dangerousGoodsLexicon');
 const { EXAMPLES } = require('./shipmentModeCorpus');
 
 const LAND = 'land';
@@ -209,6 +217,46 @@ function classifyByRules(title) {
   };
 }
 
+// ------------------------------------------------------- always-air categories
+// Stage 1.5. Same machinery as the hazard rules — one automaton, whole-word
+// checked on the Latin side — but it answers AIR, and it runs only once the
+// hazard rules have declined to speak. See AIR_CATEGORIES in the lexicon for
+// why that ordering is the whole safety argument.
+const AIR_TERM_CLASS = new Map(); // term -> air category entry
+for (const cls of AIR_CATEGORIES) {
+  for (const term of cls.terms) {
+    const t = term.toLowerCase();
+    if (!AIR_TERM_CLASS.has(t)) AIR_TERM_CLASS.set(t, cls);
+  }
+}
+const airCategoryAc = new AhoCorasick([...AIR_TERM_CLASS.keys()]);
+
+function classifyAirCategory(title) {
+  const hay = stripVariantTags(title).toLowerCase();
+  if (!hay) return null;
+
+  const hits = findSpans(airCategoryAc, hay).filter((h) => isWholeWord(hay, h.start, h.end, h.term));
+  if (!hits.length) return null;
+
+  const byClass = new Map();
+  for (const hit of hits) {
+    const cls = AIR_TERM_CLASS.get(hit.term);
+    if (!byClass.has(cls.key)) byClass.set(cls.key, { cls, terms: new Set() });
+    byClass.get(cls.key).terms.add(hit.term);
+  }
+  // Lexicon order, so the same title always reports the same category.
+  const ordered = AIR_CATEGORIES.filter((c) => byClass.has(c.key)).map((c) => byClass.get(c.key));
+
+  return {
+    categoryKey: ordered[0].cls.key,
+    label: ordered[0].cls.label,
+    matched: ordered.flatMap((o) => [...o.terms]),
+    reason: ordered
+      .map((o) => `${o.cls.label} (${[...o.terms].map((t) => `"${t}"`).join(', ')})`)
+      .join('; '),
+  };
+}
+
 // ------------------------------------------------------------------- the model
 // Trained lazily and exactly once. `bayes`'s learn() is async (it awaits the
 // tokenizer even when the tokenizer is synchronous), so training can't happen at
@@ -265,7 +313,7 @@ function modelScore(classifier, text) {
 // ------------------------------------------------------------------ public API
 // Returns, for one title:
 //   mode        'land' | 'air'   — the recommendation
-//   source      'rule' | 'model' | 'default'
+//   source      'rule' | 'category' | 'model' | 'default'
 //   reason      short human sentence for the tooltip in the 1688 panel
 //   hazardClass the lexicon class that fired, when source === 'rule'
 //   confidence  0..1
@@ -278,6 +326,21 @@ async function classifyShipmentMode(title) {
       hazardClass: rule.hazardClass,
       matched: rule.matched,
       reason: `Restricted for air freight — ${rule.reason}`,
+      confidence: 1,
+    };
+  }
+
+  // Product families the warehouse always flies unless a human says otherwise —
+  // seating furniture today. Deliberately AFTER the hazard rules and BEFORE the
+  // model: it can overrule a statistical guess, never a regulated term.
+  const category = classifyAirCategory(title);
+  if (category) {
+    return {
+      mode: AIR,
+      source: 'category',
+      hazardClass: null,
+      matched: category.matched,
+      reason: `${category.label} — ships by air by default.`,
       confidence: 1,
     };
   }
@@ -346,5 +409,8 @@ module.exports = {
   effectiveOrderMode,
   toShipmentFrom,
   // exported for backend/scripts/eval-shipment-mode.js
-  _internals: { tokenize, classifyByRules, modelScore, trainClassifier, MODEL_LAND_MARGIN, LAND, AIR },
+  _internals: {
+    tokenize, classifyByRules, classifyAirCategory, modelScore, trainClassifier,
+    MODEL_LAND_MARGIN, LAND, AIR,
+  },
 };

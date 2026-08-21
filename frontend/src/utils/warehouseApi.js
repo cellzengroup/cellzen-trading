@@ -245,7 +245,7 @@ export function unwrapSupplierOrder(row) {
     shipMode: row.ship_mode === "land" ? "land" : "air",
     shipModeAuto: row.ship_mode_auto === "land" ? "land" : "air",
     shipModeOverride: row.ship_mode_override || "",
-    shipModeSource: row.ship_mode_source || "", // rule | model | default | staff
+    shipModeSource: row.ship_mode_source || "", // rule | category | model | default | staff
     shipModeReason: row.ship_mode_reason || "",
     orderStatus: row.order_status || "",
     orderedAt: row.ordered_at || null, // when the order was placed on gtradea

@@ -218,13 +218,11 @@ function MarketStackCard({ m, index, progress, pos, layout, reducedMotion }) {
         backdropFilter: "blur(16px) saturate(120%)",
         WebkitBackdropFilter: "blur(16px) saturate(120%)",
         border: "1px solid rgba(255,255,255,0.7)",
-        boxShadow: "0 20px 56px rgba(65,36,96,0.22), 0 4px 12px rgba(0,0,0,0.08)",
         isolation: "isolate",
       }
     : {
         y, x, rotate, zIndex: index + 1,
         backgroundColor: "#412460",
-        boxShadow: "0 24px 64px rgba(65,36,96,0.35), 0 8px 24px rgba(0,0,0,0.2)",
         isolation: "isolate",
       };
 

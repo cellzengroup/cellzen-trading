@@ -73,7 +73,7 @@ export default function Section5() {
   key={sm.mode}
   type="button"
   onClick={() => setSelectedMode(i)}
-  className={`group relative min-h-[44px] overflow-hidden border p-5 text-left transition-all duration-500 ease-out touch-manipulation motion-reduce:transition-none sm:p-6 ${selectedMode === i ? "border-cz-main/35 bg-white shadow-[0_16px_40px_rgba(65,36,96,0.12)] sm:-translate-y-1" : "border-cz-ink/10 bg-white/90 hover:border-cz-ink/20 hover:shadow-[0_10px_28px_rgba(45,45,45,0.10)] sm:hover:-translate-y-0.5"} ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10"}`}
+  className={`group relative min-h-[44px] overflow-hidden border p-5 text-left transition-all duration-500 ease-out touch-manipulation motion-reduce:transition-none sm:p-6 ${selectedMode === i ? "border-cz-main/35 bg-white sm:-translate-y-1" : "border-cz-ink/10 bg-white/90 hover:border-cz-ink/20 sm:hover:-translate-y-0.5"} ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10"}`}
   style={{ transitionDelay: visible ? `${220 + i * 90}ms` : "0ms" }}
   >
   {/* Selected indicator */}
@@ -81,7 +81,7 @@ export default function Section5() {
   <div className="absolute -top-px left-0 right-0 h-1 bg-cz-secondary-light" />
   )}
 
-  <div className={`inline-flex p-3 transition-all duration-300 motion-reduce:transition-none ${selectedMode === i ? "bg-cz-secondary-light text-white shadow-lg" : "bg-cz-main text-white/85"}`}>
+  <div className={`inline-flex p-3 transition-all duration-300 motion-reduce:transition-none ${selectedMode === i ? "bg-cz-secondary-light text-white" : "bg-cz-main text-white/85"}`}>
   {sm.icon}
   </div>
 
@@ -113,13 +113,13 @@ export default function Section5() {
   </div>
 
   {/* Logistics pipeline */}
-  <div className={`mt-8 sm:mt-14 border border-cz-ink/10 bg-white/95 p-4 sm:p-8 shadow-[0_12px_32px_rgba(45,45,45,0.06)] transition-all duration-700 delay-300 motion-reduce:transition-none ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
+  <div className={`mt-8 sm:mt-14 border border-cz-ink/10 bg-white/95 p-4 sm:p-8 transition-all duration-700 delay-300 motion-reduce:transition-none ${visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"}`}>
   <h3 className="mb-4 sm:mb-6 text-base sm:text-lg font-bold tracking-tight text-cz-ink">How Your Shipment Moves</h3>
 
   <div className="flex flex-wrap items-center gap-2 sm:gap-3">
   {LOGISTICS_STEPS.map((step, i) => (
   <React.Fragment key={step}>
-  <div className="group flex min-h-11 cursor-default items-center gap-2 border border-cz-main/12 bg-cz-main/5 px-3 py-2.5 transition-all duration-300 motion-reduce:transition-none hover:border-cz-main/25 hover:bg-cz-main hover:text-white hover:shadow-md sm:px-4">
+  <div className="group flex min-h-11 cursor-default items-center gap-2 border border-cz-main/12 bg-cz-main/5 px-3 py-2.5 transition-all duration-300 motion-reduce:transition-none hover:border-cz-main/25 hover:bg-cz-main hover:text-white sm:px-4">
   <span className="flex h-5 w-5 shrink-0 items-center justify-center bg-cz-main/10 text-[10px] font-bold text-cz-main transition-colors duration-300 motion-reduce:transition-none group-hover:bg-white/20 group-hover:text-white">
   {i + 1}
   </span>
