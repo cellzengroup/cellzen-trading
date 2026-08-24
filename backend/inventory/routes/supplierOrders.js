@@ -428,7 +428,6 @@ const PACKING_COLUMNS = [
   { key: 'name', header: 'Product Name', width: 24 },
   { key: 'brand', header: 'Brand name', width: 18 },
   { key: 'model', header: 'Model Number', width: 24 },
-  { key: 'description', header: 'Product Description', width: 58 },
   { key: 'quantity', header: 'Quantity', width: 14 },
   { key: 'unit', header: 'Unit', width: 14 },
   { key: 'kg', header: 'KG', width: 14 },
@@ -443,7 +442,7 @@ const packingColumns = (withImages) => {
 const PACKING_ROW_HEIGHT = 126; // pt (~168px) — data rows, sized up from the template's 45pt
 // Without photos there's nothing needing a 126pt row, so the sheet tightens up
 // to something you can actually scroll and print. Still tall enough for the
-// wrapped product description, which is the only multi-line cell left.
+// wrapped product name, which is the only multi-line cell left.
 const PACKING_ROW_HEIGHT_NO_IMG = 42; // pt
 const PACKING_THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
 // Chinese Yuan accounting format, copied verbatim from the billing template's
@@ -803,10 +802,15 @@ function packingLogoAnchor(columns, logo) {
   };
 }
 
-// One row's cell values, keyed by column. Brand/model/description are gtradea
-// data gaps backfilled with sane placeholders rather than left blank, since the
-// list is used as a physical packing reference. Values are returned raw — the
-// sheet writes them as numbers, the PDF formats them as text.
+// One row's cell values, keyed by column. Brand and model are gtradea data gaps
+// backfilled with sane placeholders rather than left blank, since the list is
+// used as a physical packing reference. Values are returned raw — the sheet
+// writes them as numbers, the PDF formats them as text.
+//
+// There is deliberately no Product Description column: it held the raw 1688
+// listing title, which is machine-translated marketing text that restated the
+// Product Name at ~58 characters wide and forced every row to wrap. The short
+// name is what a packer actually reads off the line.
 function packingRowValues(o, name) {
   return {
     marka: 'CZN-GT',   // fixed shipping mark for every carton in this batch
@@ -827,7 +831,6 @@ function packingRowValues(o, name) {
     name,
     brand: 'GT',       // gtradea doesn't track a real brand — generic house brand
     model: deriveModelNumber(o),
-    description: o.product_name || '-', // full 1688 listing title — no qty/unit mixed in
     quantity: Number(o.quantity) || null,
     unit: 'pcs',
     kg: null,          // filled in by hand at packing time
@@ -1009,9 +1012,10 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       cell.alignment = { horizontal: 'center', vertical: 'middle' };
     }
     // ONE "Total" label, in the column immediately left of the figures it
-    // introduces — the second one under Model Number read like a column heading
-    // for a total that wasn't there.
-    totalRow.getCell(col.description).value = 'Total';
+    // introduces — a second one further left read like a column heading for a
+    // total that wasn't there. That column is Model Number now that Product
+    // Description is gone, which is why this reads `col.model` and not a number.
+    totalRow.getCell(col.model).value = 'Total';
     totalRow.getCell(col.quantity).value = totalQty;
     totalRow.getCell(col.unit).value = 'pcs';
     const totalPaidCell = totalRow.getCell(col.paid);
@@ -1259,7 +1263,7 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
     // trusting either.
     // The total goes through pdfText like every other cell, so the figure under
     // the Amount column and the figures above it are written the same way.
-    const totals = { description: 'Total', quantity: String(totalQty), unit: 'pcs', paid: pdfText('paid', totalPaid) };
+    const totals = { model: 'Total', quantity: String(totalQty), unit: 'pcs', paid: pdfText('paid', totalPaid) };
     columns.forEach((c, ci) => {
       line(colX[ci], y, colX[ci + 1], y);
       line(colX[ci], y, colX[ci], y + totalH);
