@@ -446,6 +446,12 @@ const PACKING_ROW_HEIGHT = 126; // pt (~168px) — data rows, sized up from the 
 // wrapped product description, which is the only multi-line cell left.
 const PACKING_ROW_HEIGHT_NO_IMG = 42; // pt
 const PACKING_THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } };
+// Chinese Yuan accounting format, copied verbatim from the billing template's
+// price column and shared by BOTH exports: the Amount on the packing list and
+// the Total Price on the billing report are the SAME gtradea figure, so a reader
+// checking one against the other has to see it written the same way. Cells still
+// hold plain numbers — only the display is formatted, so Excel can total them.
+const CNY_FMT = '_ [$¥-804]* #,##0.00_ ;_ [$¥-804]* -#,##0.00_ ;_ [$¥-804]* "-"??_ ;_ @_ ';
 
 // ---- Product photo geometry. The photo is drawn at EXACTLY the width of the
 // Product Image column and the ROW is then made as tall as that width implies
@@ -922,14 +928,23 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       const values = packingRowValues(o, nerNames[i] || deriveShortProductName(o.product_name));
       totalQty += values.quantity || 0;
 
-      const setCell = (c, value, extraFont) => {
+      const setCell = (c, value, extraFont, numFmt) => {
         const cell = row.getCell(c);
         cell.value = value === '' || value == null ? null : value;
         cell.font = { size: 11, name: 'Arial', ...extraFont };
         cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
         cell.border = PACKING_THIN_BORDER;
+        if (numFmt) cell.numFmt = numFmt;
       };
-      columns.forEach((c, idx) => setCell(idx + 1, values[c.key], c.key === 'name' ? { bold: true } : undefined));
+      // Amount is money and is formatted as such — a bare 1234.5 in a column of
+      // prices reads as a quantity, and staff were left working out for
+      // themselves which currency it was in.
+      columns.forEach((c, idx) => setCell(
+        idx + 1,
+        values[c.key],
+        c.key === 'name' ? { bold: true } : undefined,
+        c.key === 'paid' ? CNY_FMT : undefined,
+      ));
 
       // The photo decides how tall this row is. It's drawn at the exact width of
       // the Product Image column, so its height is whatever that width implies
@@ -999,7 +1014,9 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     totalRow.getCell(col.description).value = 'Total';
     totalRow.getCell(col.quantity).value = totalQty;
     totalRow.getCell(col.unit).value = 'pcs';
-    totalRow.getCell(col.paid).value = totalPaid;
+    const totalPaidCell = totalRow.getCell(col.paid);
+    totalPaidCell.value = totalPaid;
+    totalPaidCell.numFmt = CNY_FMT;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${packingFilename(opts, 'xlsx')}"`);
@@ -1055,7 +1072,9 @@ const pdfText = (key, value) => {
   if (key === 'paid' || key === 'quantity') {
     const n = Number(value);
     if (!Number.isFinite(n)) return String(value);
-    return key === 'paid' ? String(Math.round(n * 100) / 100) : String(n);
+    // Money keeps both decimals and its currency mark, matching how the sheet
+    // formats the same column (CNY_FMT) — "¥1,234.50", never "1234.5".
+    return key === 'paid' ? `¥${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : String(n);
   }
   return String(value);
 };
@@ -1238,7 +1257,9 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
     // One 'Total' label, same column as the sheet's — the page and the sheet
     // have to read identically or a reader checking one against the other stops
     // trusting either.
-    const totals = { description: 'Total', quantity: String(totalQty), unit: 'pcs', paid: totalPaid == null ? '' : String(totalPaid) };
+    // The total goes through pdfText like every other cell, so the figure under
+    // the Amount column and the figures above it are written the same way.
+    const totals = { description: 'Total', quantity: String(totalQty), unit: 'pcs', paid: pdfText('paid', totalPaid) };
     columns.forEach((c, ci) => {
       line(colX[ci], y, colX[ci + 1], y);
       line(colX[ci], y, colX[ci], y + totalH);
@@ -1278,8 +1299,9 @@ const BILLING_TITLE_SIZE = 10;
 // the product name, so the eye lands on what each line is actually for.
 const BILLING_FONT = 'BR Firma Regular';
 const BILLING_EMPHASIS_FONT = 'BR Firma Medium';
-// Chinese Yuan accounting format, copied verbatim from the template's price column.
-const BILLING_CNY_FMT = '_ [$¥-804]* #,##0.00_ ;_ [$¥-804]* -#,##0.00_ ;_ [$¥-804]* "-"??_ ;_ @_ ';
+// Chinese Yuan accounting format — see CNY_FMT with the packing constants; the
+// two sheets must render the same figure identically.
+const BILLING_CNY_FMT = CNY_FMT;
 const BILLING_DATE_FMT = 'd-mmm';
 const BILLING_TITLE_HEIGHT = 35.6;
 const BILLING_LOGO_HEIGHT = 101.15;
@@ -1665,7 +1687,15 @@ const authenticateBridge = (req, res, next) => {
 // POST /ingest — the on-site bridge relays raw gtradea job-detail payloads from
 // a network Cloudflare doesn't challenge. We map + upsert them exactly as a
 // direct pull would, so the 1688 tab behaves identically either way.
-// Body: { details: [ <job detail payload>, … ] }
+//
+// Body: { details: [ <job detail payload>, … ],
+//         supplierOrders?: <gtradea supplier-orders payload> }
+//
+// `supplierOrders` is OPTIONAL so an on-site machine still running the older
+// bridge keeps working — but without it no paid amount can be stored, because
+// the amounts live on their own gtradea endpoint rather than on the job details.
+// That's what left the packing list's Amount column and the billing report's
+// Total Price blank in production while both filled in on a direct pull.
 router.post('/ingest', authenticateBridge, async (req, res) => {
   try {
     if (dbGuard(res)) return;
@@ -1673,7 +1703,18 @@ router.post('/ingest', authenticateBridge, async (req, res) => {
     if (!Array.isArray(details)) {
       return res.status(400).json({ success: false, message: 'Body must be { details: [...] }' });
     }
-    const result = await gtradeaSync.ingestDetails(details);
+    // Relayed verbatim, so it arrives either as gtradea's `{ supplierOrders: [] }`
+    // envelope or as the bare array — the sync service accepts both. Anything
+    // else is rejected rather than quietly ignored: silently dropping a malformed
+    // payment payload is precisely the failure that hid this bug.
+    const supplierOrders = req.body && req.body.supplierOrders;
+    if (supplierOrders != null && !Array.isArray(supplierOrders) && !Array.isArray(supplierOrders.supplierOrders)) {
+      return res.status(400).json({
+        success: false,
+        message: 'supplierOrders must be an array (or the gtradea { supplierOrders: [...] } payload)',
+      });
+    }
+    const result = await gtradeaSync.ingestDetails(details, supplierOrders);
     res.json({ success: true, data: result });
   } catch (error) {
     console.error('gtradea bridge ingest error:', error);

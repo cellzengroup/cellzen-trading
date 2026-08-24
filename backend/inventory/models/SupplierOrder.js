@@ -59,9 +59,17 @@ const SupplierOrder = sequelize
       ship_mode_override: { type: DataTypes.STRING, allowNull: true },
       order_status: { type: DataTypes.STRING, allowNull: true },
       order_total: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
-      // How much of order_total has actually been paid to the supplier so far
-      // (gtradea's order.advance_amount) — NOT the same as order_total, which is
-      // the full order value regardless of payment progress.
+      // How much was actually PAID for this item's own 1688 order — gtradea's
+      // "Pay 1688 Supplier Orders" total (sumPaymentCents / 100), keyed by the
+      // item's supplier_order_id. NOT order.advance_amount, which is a job-level
+      // figure covering every 1688 order the job bundles, and not order_total,
+      // which is the full value regardless of payment progress.
+      //
+      // This is the figure the downloaded reports bill from (the packing list's
+      // Amount column, the billing report's Total Price), and it comes from a
+      // DIFFERENT gtradea endpoint than the rest of this row — so it can be NULL
+      // on an otherwise complete row when only the job details were available.
+      // See services/gtradeaSync.js (PAYMENTS_PATH, ingestDetails).
       paid_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
       // When the order was placed on gtradea (the procurement job's created_at,
       // which lines up with the date encoded in order_number, e.g.

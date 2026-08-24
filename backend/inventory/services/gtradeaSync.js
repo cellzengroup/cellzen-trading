@@ -231,19 +231,36 @@ async function apiGet(path, retry = true) {
 // that keys into this map. Returns null (not an empty Map) on failure, so
 // callers can tell "nothing paid" apart from "couldn't ask" and skip filling
 // in a misleading number.
+// The amounts endpoint. Named because it appears twice in this file's story: the
+// direct pull calls it, and the on-site bridge calls the same path from an
+// unblocked network and relays the response to /ingest (see ingestDetails).
+const PAYMENTS_PATH = '/api/v1/admin/procurement/supplier-orders';
+
 async function fetchSupplierOrderPayments() {
   try {
-    const resp = await apiGet('/api/v1/admin/procurement/supplier-orders');
-    const list = Array.isArray(resp?.supplierOrders) ? resp.supplierOrders : [];
-    const map = new Map();
-    for (const so of list) {
-      if (so && so.id) map.set(so.id, Number(so.sumPaymentCents || 0) / 100);
-    }
-    return map;
+    const resp = await apiGet(PAYMENTS_PATH);
+    return paymentMapFrom(resp);
   } catch (e) {
     console.error('[gtradeaSync] failed to fetch 1688 supplier-order payments:', e.message);
     return null;
   }
+}
+
+// gtradea's supplier-orders response -> the `id -> amount paid` map mapDetail
+// wants. Accepts either the whole `{ supplierOrders: [...] }` envelope or the
+// bare array, because the bridge relays whichever shape gtradea handed it.
+//
+// Split out of the fetch above so the DIRECT pull and the BRIDGE relay build the
+// map through the same code: the cents -> yuan divide has to happen exactly once
+// on both paths, or the same order would be billed 100x apart depending on which
+// path happened to sync it.
+function paymentMapFrom(resp) {
+  const list = Array.isArray(resp) ? resp : (Array.isArray(resp?.supplierOrders) ? resp.supplierOrders : []);
+  const map = new Map();
+  for (const so of list) {
+    if (so && so.id) map.set(so.id, Number(so.sumPaymentCents || 0) / 100);
+  }
+  return map;
 }
 
 // Run async fn over items with at most `limit` in flight; preserves order.
@@ -338,7 +355,7 @@ function mapDetail(detail, paymentMap) {
 // Upsert already-mapped rows and record the outcome. Shared by the direct
 // poller and by the on-site bridge relay (see ingestDetails), so both report
 // status identically and the 1688 tab can't tell which one fed it.
-async function persistRows(rows, { jobs, started, via }) {
+async function persistRows(rows, { jobs, started, via, payments = null }) {
   let upserted = 0;
   let failed = 0;
   let firstErr = null;
@@ -373,10 +390,25 @@ async function persistRows(rows, { jobs, started, via }) {
     upserted,
     failed,
     via,
+    // How many 1688 orders this pass knew a paid amount for, or null when the
+    // pass carried no amounts at all (already-stored ones were left alone). This
+    // is the field to look at when a downloaded report's Amount/Price column is
+    // empty — it says whether the money side of the sync is arriving.
+    payments,
     error: writeOutage ? `all ${rows.length} upsert(s) failed — DB write outage (first: ${firstErr})` : null,
     ms: Date.now() - started,
   };
   console.log(`[gtradeaSync] synced ${upserted}/${rows.length} item(s) from ${jobs} job(s) via ${via} in ${lastSync.ms}ms${failed ? ` — ${failed} failed` : ''}`);
+  // Said out loud, once per pass: a silent "synced 21/21" while every amount is
+  // missing is what let blank Amount columns go unnoticed in production.
+  if (payments == null && rows.length) {
+    console.warn(
+      `[gtradeaSync] no 1688 paid amounts in this ${via} pass — stored amounts left as they were. ` +
+        (via === 'bridge'
+          ? 'Update the on-site bridge (gtradea-bridge/bridge.js) so it relays supplierOrders too.'
+          : `Check the ${PAYMENTS_PATH} call above for the reason.`)
+    );
+  }
   return lastSync;
 }
 
@@ -384,19 +416,37 @@ async function persistRows(rows, { jobs, started, via }) {
 // server's own IP is blocked by the Cloudflare in front of gtradea: the bridge
 // runs on a network that isn't challenged, fetches the same payloads, and posts
 // them here. Mapping + upsert are identical to a direct pull.
-async function ingestDetails(details) {
+//
+// `supplierOrders` is gtradea's supplier-orders payload (PAYMENTS_PATH), relayed
+// in the same POST. It is what carries the AMOUNT PAID per 1688 order, and it has
+// to travel with the details: paid amounts live on a different endpoint from the
+// job details, so a relay that forwards only the details can never populate
+// paid_amount — which is exactly why the packing list's Amount column and the
+// billing report's Total Price came out blank in production (bridge mode) while
+// they filled in correctly on a directly-pulling machine.
+//
+// Omit it (an older bridge that doesn't send one) and paid_amount is left
+// UNTOUCHED rather than overwritten with null — see mapDetail on why undefined
+// and null mean different things to Sequelize here.
+async function ingestDetails(details, supplierOrders) {
   if (!SupplierOrder) throw new Error('supplier_orders table unavailable');
   const started = Date.now();
   const list = Array.isArray(details) ? details.filter(Boolean) : [];
+  const paymentMap = supplierOrders == null ? undefined : paymentMapFrom(supplierOrders);
   const rows = list.flatMap((d) => {
     try {
-      return mapDetail(d);
+      return mapDetail(d, paymentMap);
     } catch (e) {
       console.error('[gtradeaSync] bridge payload could not be mapped:', e.message);
       return [];
     }
   });
-  return persistRows(rows, { jobs: list.length, started, via: 'bridge' });
+  return persistRows(rows, {
+    jobs: list.length,
+    started,
+    via: 'bridge',
+    payments: paymentMap ? paymentMap.size : null,
+  });
 }
 
 // Full sync pass: list jobs → fetch each job's detail → upsert every item.
@@ -447,7 +497,12 @@ async function runSync({ force = false } = {}) {
     });
     const rows = detailRows.flat();
 
-    const result = await persistRows(rows, { jobs: jobs.length, started, via: 'direct' });
+    const result = await persistRows(rows, {
+      jobs: jobs.length,
+      started,
+      via: 'direct',
+      payments: paymentMap ? paymentMap.size : null,
+    });
     consecutiveFailures = 0;
     backoffUntil = 0;
     return result;

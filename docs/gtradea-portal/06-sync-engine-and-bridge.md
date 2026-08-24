@@ -48,20 +48,57 @@ anon key as `apikey`) using credentials from `GTRADEA_EMAIL` /
 ## The pull itself (`runSync`)
 
 1. `GET /api/v1/admin/procurement/jobs` — list of procurement jobs.
-2. For each job (bounded to **5 concurrent** requests via `mapLimit` —
+2. `GET /api/v1/admin/procurement/supplier-orders` — **the money**. One call
+   per pass, turned into an `id -> amount paid` map by `paymentMapFrom()`
+   (`sumPaymentCents / 100`). This is a *separate endpoint from the job
+   details*: nothing in a job detail says what was paid. It is keyed by each
+   procurement item's own `supplier_order_id`, because one gtradea job can
+   bundle several 1688 orders that were each paid for separately — the
+   job-level `advance_amount` is their combined total and would be the wrong
+   figure for any single line.
+3. For each job (bounded to **5 concurrent** requests via `mapLimit` —
    gtradea is slow, and unbounded parallelism risks outrunning a proxy
    timeout), `GET /api/v1/admin/procurement/jobs/:id/detail`.
-3. `mapDetail(detail)` flattens each job's `procurement_items` into one row
+4. `mapDetail(detail, paymentMap)` flattens each job's `procurement_items` into one row
    per item: order number, CN/Nepal tracking (normalized via `normTracking`
    — trim + uppercase, matching how the warehouse stores tracking numbers),
    product name/image, quantity, shipping mode, and the job's `created_at`
    as the order date (gtradea puts no date on the order object itself, but
    the job's creation date lines up with the date encoded in the order
-   number, e.g. `ORD-20260717-908966` → 2026-07-17).
-4. `persistRows(rows, …)` upserts each row into `supplier_orders`, keyed on
+   number, e.g. `ORD-20260717-908966` → 2026-07-17), and `paid_amount` from
+   the map built in step 2.
+5. `persistRows(rows, …)` upserts each row into `supplier_orders`, keyed on
    `source_item_id` (gtradea's own procurement-item id) via
    `findOrCreate` + `update` — so re-running the sync never creates
    duplicates, it just refreshes existing rows.
+
+### Where `paid_amount` comes from, and how it goes missing
+
+`paid_amount` is what the downloaded reports show as money — the packing
+list's **Amount** column and the billing report's **Total Price (¥)** — so a
+pass that carries no amounts produces reports with an empty price column
+while looking perfectly healthy otherwise.
+
+Two things make it fragile, and both are deliberate:
+
+- It arrives on **its own endpoint** (step 2 above), not with the job
+  details. Any path that forwards only the details can never fill it in.
+  This is exactly what happened in production: the on-site bridge relayed
+  `{ details }` and nothing else, so every Amount/Price cell in a
+  downloaded report came out blank even though the orders themselves synced
+  fine. The bridge now relays the supplier-orders payload alongside the
+  details (see below).
+- When the amounts are unavailable, `mapDetail` sets `paid_amount` to
+  **`undefined`, not `null`** — Sequelize reads `undefined` as "leave this
+  column alone", so a failed payments call keeps whatever was last stored
+  instead of blanking every amount in the table. `null` is reserved for
+  "this pass *did* know the amounts, and this order genuinely has none".
+
+Every pass reports what it managed: `lastSync.payments` is the number of
+1688 orders it knew an amount for, or `null` for a pass that carried none —
+and a `null` pass logs a warning naming the likely cause. That field (via
+`GET /status`) is the first thing to check when a report's price column is
+empty.
 
 ## Reliability engineering in this file (why it looks the way it does)
 
@@ -136,12 +173,23 @@ backend's own logic (kept simple and dependency-free on purpose, since it
 runs unattended on a machine nobody actively administers).
 
 Loop (`tick`, guarded against overlap with a `running` flag): list jobs →
-fetch each job's detail (5 concurrent by default) → POST the **raw**
-detail payloads as `{ details: [...] }` to `/ingest`, authenticated with a
+fetch each job's detail (5 concurrent by default) → fetch the
+supplier-orders list (the paid amounts) → POST the **raw** payloads as
+`{ details: [...], supplierOrders: … }` to `/ingest`, authenticated with a
 `Bearer <bridgeToken>` that must match the backend's `GTRADEA_BRIDGE_TOKEN`
 env var (compared with `crypto.timingSafeEqual` server-side, same pattern as
 the print-agent token). Runs every `pollMs` (default 90s), configured via a
 local `config.json` (gitignored — it holds the real gtradea password).
+
+`supplierOrders` is relayed verbatim (envelope and all) and is **optional**
+in the request body, so an on-site machine still running an older
+`bridge.js` keeps relaying orders — it just can't fill in any amount, which
+is the bug described above. If the amounts fetch fails on a given pass the
+bridge **omits the key entirely** rather than sending an empty list: a
+missing key means "no amounts this pass, keep what you have", while an empty
+list would say "every 1688 order cost nothing". **Updating `bridge.js` on
+the PC is part of deploying this fix** — the server alone cannot reach
+gtradea in bridge mode, so nothing on Render can backfill the amounts.
 
 Deployment on the PC: `start-bridge.bat` to test interactively,
 `install-autostart.bat` to register it as a background task that starts at

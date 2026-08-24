@@ -103,6 +103,11 @@ relayed 9 job(s) -> 21/21 item(s) stored in 13210ms
 - **On the PC**: the console prints one `relayed …` line per cycle.
 - **Render logs**: `[gtradeaSync] synced 21/21 item(s) from 9 job(s) via bridge`
   — note `via bridge`, which tells you the data path in use.
+- **Amounts**: the PC's line reads `relayed 9 job(s) + 14 paid amount(s)`. That
+  second figure is what fills the **Amount** column of the downloaded packing
+  list and the **Total Price** column of the billing report. If it says
+  `+ 0 paid amount(s)` — or Render warns `no 1688 paid amounts in this bridge
+  pass` — those columns will download empty.
 
 ## Troubleshooting
 
@@ -112,7 +117,25 @@ relayed 9 job(s) -> 21/21 item(s) stored in 13210ms
 | `ingest rejected (HTTP 401): Invalid bridge token` | `bridgeToken` ≠ `GTRADEA_BRIDGE_TOKEN`. |
 | `ingest rejected (HTTP 503): gtradea bridge is not configured` | `GTRADEA_BRIDGE_TOKEN` isn't set on Render (or the service hasn't redeployed). |
 | `gtradea login failed (HTTP 400)` | Wrong gtradea email/password in `config.json`. |
+| `supplier-order payments fetch failed …` | gtradea wouldn't hand over the paid amounts this pass. The orders still relay; the website keeps the amounts it already had, so nothing is lost — but new orders download with an empty Amount/Price column until a pass succeeds. |
+| Reports download with a blank **Amount** / **Price** column | This PC is running an old `bridge.js` that relays only the job details. The paid amounts come from a *second* gtradea endpoint, so they have to be relayed too — copy the current `bridge.js` over and restart the bridge (below). |
 | `Missing config: …` | Fill in those keys in `config.json`. |
+
+## Updating the bridge on the PC
+
+The bridge is a single file with no dependencies, so an update is a copy:
+
+1. Copy the new **`bridge.js`** over the one on the PC (leave `config.json`
+   alone — it holds this machine's credentials).
+2. Restart it: close the bridge window and run `start-bridge.bat`, or just
+   reboot if it's installed via `install-autostart.bat`.
+3. Watch one cycle. The line should now read
+   `relayed N job(s) + M paid amount(s)`; the next report you download from
+   the site will have its Amount/Price column filled in.
+
+This matters because the website **cannot** do it for you: in bridge mode
+Render's own requests to gtradea are blocked, so the amounts can only reach
+the site through this machine.
 
 ## Turning it off (once gtradea allowlists Render)
 

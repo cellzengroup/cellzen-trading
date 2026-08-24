@@ -19,6 +19,11 @@
  *   gtradea.com  --(login + fetch, from an allowed IP)-->  this bridge
  *   this bridge  --(POST /api/inventory/supplier-orders/ingest)-->  website
  *
+ * Two payloads travel in that POST: the procurement job details, and gtradea's
+ * supplier-orders list, which is what carries the AMOUNT PAID per 1688 order.
+ * Both are needed — without the second one the website's downloaded reports
+ * (packing list "Amount", billing report "Total Price") come out blank.
+ *
  * This becomes unnecessary the moment gtradea allowlists Render's outbound IPs;
  * then just set GTRADEA_SYNC_ENABLED=true on Render and stop this service.
  *
@@ -115,14 +120,19 @@ async function req(url, init) {
 // bodyless GET — so an apex -> www redirect would "succeed" while silently
 // discarding every order. Treating a redirect as a hard failure means we move
 // on to the next origin (or log loudly) instead of quietly ingesting nothing.
-async function postIngest(details) {
+async function postIngest(details, supplierOrders) {
   let lastErr = null;
+  // `supplierOrders` is omitted from the body entirely when the fetch for it
+  // failed. The website reads a missing key as "this pass carries no amounts"
+  // and leaves the amounts it already stored alone; sending an empty list
+  // instead would tell it every 1688 order costs nothing.
+  const body = supplierOrders == null ? { details } : { details, supplierOrders };
   for (const base of API_BASES) {
     try {
       const res = await fetch(`${base}/api/inventory/supplier-orders/ingest`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.bridgeToken}` },
-        body: JSON.stringify({ details }),
+        body: JSON.stringify(body),
         redirect: "error",
         signal: AbortSignal.timeout(cfg.requestTimeoutMs),
       });
@@ -198,6 +208,27 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
+// How much was actually PAID for each 1688 order. This lives on its own gtradea
+// endpoint — nothing about it is in the job details — so relaying only the
+// details left every Amount/Price cell in the website's downloaded reports empty.
+// Fetched once per pass and relayed raw; the website does the mapping, same as
+// with the details.
+//
+// A failure here must not sink the pass: the orders themselves are still worth
+// relaying, so this returns null and the website keeps the amounts it already has.
+async function fetchSupplierOrders() {
+  try {
+    return await apiGet("/api/v1/admin/procurement/supplier-orders");
+  } catch (e) {
+    err(`  supplier-order payments fetch failed: ${e.message} — relaying orders without amounts`);
+    return null;
+  }
+}
+
+// gtradea answers with `{ supplierOrders: [...] }`; count for the log line only.
+const countSupplierOrders = (resp) =>
+  Array.isArray(resp) ? resp.length : Array.isArray(resp && resp.supplierOrders) ? resp.supplierOrders.length : 0;
+
 async function pullAndRelay() {
   const started = Date.now();
   const jobsResp = await apiGet("/api/v1/admin/procurement/jobs");
@@ -225,13 +256,19 @@ async function pullAndRelay() {
     return;
   }
 
-  const { res, out, base } = await postIngest(details);
+  // After the details, not before: if gtradea is going to refuse us this pass it
+  // does so on the very first call, and there's no point asking for amounts we
+  // have nothing to attach them to.
+  const supplierOrders = await fetchSupplierOrders();
+
+  const { res, out, base } = await postIngest(details, supplierOrders);
   if (!res.ok || !out.success) {
     throw new Error(`ingest rejected by ${base} (HTTP ${res.status}): ${out.message || "unknown error"}`);
   }
   const d = out.data || {};
   log(
-    `relayed ${details.length} job(s) -> ${d.upserted}/${d.items} item(s) stored` +
+    `relayed ${details.length} job(s) + ${countSupplierOrders(supplierOrders)} paid amount(s)` +
+      ` -> ${d.upserted}/${d.items} item(s) stored` +
       `${d.failed ? ` (${d.failed} failed)` : ""} in ${Date.now() - started}ms`
   );
 }
