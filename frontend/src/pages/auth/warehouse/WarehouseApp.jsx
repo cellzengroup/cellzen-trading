@@ -3485,31 +3485,44 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
 // tracking, product, status + Print/Download/Ship. Mirrors ItemsTable with the
 // 1688 columns.
 function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
-  // Boxes that share one goods number (all boxes of the same 1688 order — see
-  // generateItemCode() in backend/inventory/routes/warehouse.js) are grouped
-  // under a single summary row with a "packages" count + expand toggle, rather
-  // than repeating the same goods number on every row. Grouping still keys off
-  // the internal `code`, not the displayed item code: it's on every row (a box
-  // stored before gtradea published an item code for its order has none yet), so
-  // it keeps the boxes of one order together regardless.
+  // Boxes that share one goods number AND name the same product are grouped under
+  // a single summary row with a "packages" count + expand toggle, rather than
+  // repeating the same id on every row.
+  //
+  // The internal `code` alone is NOT enough to group on. It is minted per 1688
+  // ORDER (see generateItemCode() in backend/inventory/routes/warehouse.js), and
+  // an order routinely carries several DIFFERENT products — each its own parcel,
+  // with its own CN tracking and its own Product ID. Keying on `code` alone
+  // collapsed all of them into one row that named none of them ("8 products"),
+  // so those boxes were invisible until you expanded a group nothing pointed you
+  // at. Pairing it with the DISPLAYED goods id keeps the merge for the case it
+  // was built for — several packages of the SAME product — and gives every
+  // distinct product a row of its own. goodsCode() falls back to `code`, so a box
+  // whose item code gtradea hasn't published yet still groups the way it did
+  // rather than splitting off on its own.
   const [expanded, setExpanded] = useState(() => new Set());
-  const toggleExpand = (code) =>
+  const toggleExpand = (key) =>
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(code)) next.delete(code);
-      else next.add(code);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
 
   // Order preserved: rows arrive pre-sorted newest first, and Map keeps
   // first-seen key order, so each group surfaces at its most recent member's
   // position.
+  //
+  // Each group carries its own `key` instead of deriving one from its head box:
+  // two products of one order share a `code`, so that is no longer unique across
+  // groups — as a React key it would collide, and as an expand key one toggle
+  // would open every group of the order at once.
   const groups = useMemo(() => {
     const map = new Map();
     for (const it of rows || []) {
-      const key = it.code || it.id;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(it);
+      const key = `${it.code || it.id}::${goodsCode(it) || it.id}`;
+      if (!map.has(key)) map.set(key, { key, items: [] });
+      map.get(key).items.push(it);
     }
     return [...map.values()];
   }, [rows]);
@@ -3548,19 +3561,19 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
     <>
       {/* Mobile: cards */}
       <ul className="space-y-2.5 md:hidden">
-        {groups.map((group) => {
+        {groups.map(({ key, items: group }) => {
           const head = group[0];
           const count = group.length;
           const isGroup = count > 1;
-          const isOpen = isGroup && expanded.has(head.code);
+          const isOpen = isGroup && expanded.has(key);
           const modes = new Set(group.map((g) => g.shipmentFrom || "By Air"));
           // Same rule as the desktop table — see the comment there.
           const codes = new Set(group.map(goodsCode).filter(Boolean));
           const codeLabel = codes.size === 1 ? [...codes][0] : codes.size ? `${codes.size} products` : "";
           return (
-            <li key={head.code || head.id} className="overflow-hidden rounded-2xl bg-white shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3]">
+            <li key={key} className="overflow-hidden rounded-2xl bg-white shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3]">
               <div
-                onClick={() => (isGroup ? toggleExpand(head.code) : onView(head))}
+                onClick={() => (isGroup ? toggleExpand(key) : onView(head))}
                 className="cursor-pointer p-4 transition active:scale-[.99]"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -3718,11 +3731,11 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
             </tr>
           </thead>
           <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
-            {groups.map((group) => {
+            {groups.map(({ key, items: group }) => {
               const head = group[0];
               const count = group.length;
               const isGroup = count > 1;
-              const isOpen = isGroup && expanded.has(head.code);
+              const isOpen = isGroup && expanded.has(key);
               const shelves = new Set(group.map((g) => g.rackId || "—"));
               const shelfLabel = shelves.size === 1 ? [...shelves][0] : `${shelves.size} shelves`;
               const modes = new Set(group.map((g) => g.shipmentFrom || "By Air"));
@@ -3737,9 +3750,9 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
               const codeLabel = codes.size === 1 ? [...codes][0] : codes.size ? `${codes.size} products` : "";
 
               return (
-                <Fragment key={head.code || head.id}>
+                <Fragment key={key}>
                   <tr
-                    onClick={() => (isGroup ? toggleExpand(head.code) : onView(head))}
+                    onClick={() => (isGroup ? toggleExpand(key) : onView(head))}
                     className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3"
                   >
                     {selectable && (
@@ -3758,7 +3771,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                       {isGroup ? (
                         <button
                           type="button"
-                          onClick={(e) => { e.stopPropagation(); toggleExpand(head.code); }}
+                          onClick={(e) => { e.stopPropagation(); toggleExpand(key); }}
                           className="inline-flex items-center gap-1 rounded-full bg-[#412460]/10 px-2.5 py-1 text-xs font-bold text-[#412460] transition hover:bg-[#412460]/15"
                         >
                           {count} packages
