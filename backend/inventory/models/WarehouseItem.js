@@ -90,7 +90,7 @@ const WarehouseItem = sequelize
       },
       // The gtradea PER-ITEM id (supplier_orders.item_code, e.g. GTI-100119) —
       // gtradea's own "Product ID". This is what the printed label, its barcode
-      // and every panel now show, so a box on the shelf carries the same id as
+      // and every panel show, so a box on the shelf carries the same id as
       // the China Operations row on gtradea. Denormalized at put-away (and
       // resolved on read for pre-existing rows) so printing never waits on a
       // second lookup. Null for cellzen items and for a 1688 order gtradea
@@ -108,15 +108,19 @@ const WarehouseItem = sequelize
         allowNull: true,
       },
       // The id of the BOX itself — GTP-000123, minted here and nowhere else.
-      // This, not a product id, is what the label's barcode carries.
+      // INTERNAL ONLY: it briefly went on the label's barcode, and that is exactly
+      // why it came back off. Staff read the sticker and look the box up on
+      // gtradea, where no such id exists, so the label prints item_code above and
+      // this stays a database id.
       //
-      // Why a box needs its own id: a parcel can hold several products, so no
-      // product id can honestly name the box. item_code below names ONE of them;
-      // this names the thing the sticker is stuck to. Deliberately the same
-      // shape as a product id — three letters, a dash, six digits — so the
-      // barcode is exactly as wide as it has always been, whatever the box holds.
+      // Still minted and still worth keeping: it is the only id that names ONE
+      // parcel (item_code names a product, and the order-level fallback can hand
+      // the same one to two boxes of an order), it identifies a box holding
+      // several products without picking a favourite among them, and the labels
+      // printed while it WAS on the barcode are still on the shelves — the
+      // scan resolver matches it so they keep working.
       //
-      // Unique: two boxes sharing a barcode would be unresolvable at the scanner.
+      // Unique: two boxes sharing an id would be unresolvable at the scanner.
       box_code: {
         type: DataTypes.STRING,
         allowNull: true,

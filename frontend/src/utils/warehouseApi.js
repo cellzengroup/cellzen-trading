@@ -28,7 +28,10 @@ export function unwrapItem(row) {
     source: row.source || "cellzen",
     orderNumber: row.order_number || "",
     productName: row.product_name || "",
-    boxCode: row.box_code || "",   // the id of the BOX (GTP-000123) — see boxCode()
+    boxCode: row.box_code || "",   // the id of the BOX (GTP-000123) — internal only,
+    // it exists in this database and not on gtradea, so it is NOT what the label
+    // prints; the detail card shows it, and the resolver still matches it so the
+    // boxes labelled with it before this change keep scanning.
     // Every product in this parcel, lowest id first. One entry for an ordinary
     // box; several when a supplier put more than one product in the same bag.
     itemCodes: Array.isArray(row.item_codes) ? row.item_codes.filter(Boolean) : (row.item_code ? [row.item_code] : []),
@@ -51,22 +54,62 @@ export function unwrapItem(row) {
 // itemCode at all — falling back through prCode/code here keeps those rendering.
 export const goodsCode = (item) => item?.itemCode || item?.prCode || item?.code || "";
 
-// What the label's BARCODE carries, and the big line printed under it: the id of
-// the box itself. A box can hold several products, so no product id can honestly
-// name it — see box_code in models/WarehouseItem.js.
-//
-// Falls back to the product id for boxes stored before box ids existed, and for
-// the localStorage instant-paint cache, which a older build wrote without one.
-// Those older labels stay scannable because the resolver still matches every id
-// a box has ever been printed with.
-export const boxCode = (item) => item?.boxCode || goodsCode(item);
-
-// The products inside, for the list printed under the box id. Falls back to the
-// single denormalized code so a cached or pre-list row still prints something.
+// The products inside, for the list printed under the goods id. Falls back to
+// the single denormalized code so a cached or pre-list row still prints
+// something. The caller drops the one the id line already names.
 export const productCodes = (item) => {
   const list = Array.isArray(item?.itemCodes) ? item.itemCodes.filter(Boolean) : [];
   if (list.length) return list;
   return item?.itemCode ? [item.itemCode] : [];
+};
+
+// EVERY id this box answers to, lowercased — the one list a scan or a search is
+// matched against, so no two screens can disagree about what finds a box.
+//
+// The label prints the goods id and lists the parcel's other products beneath
+// it, and the China Operations table lists the parcel under any of them, so all
+// of them have to bring the box up: staff scan the bars, but they also read a
+// product id off the portal and type that. The box id and the PR id are the ids
+// two earlier generations of label printed — those stickers are still on the
+// shelves, and a scanner can't tell you which era one came from. `code` is the
+// internal CZN number.
+//
+// NOT the tracking number: that names the courier's parcel rather than the box,
+// and the call sites that want it match it separately.
+export const itemIds = (item) => [
+  ...new Set(
+    [
+      ...(Array.isArray(item?.itemCodes) ? item.itemCodes : []),
+      item?.itemCode,
+      item?.boxCode,
+      item?.prCode,
+      item?.code,
+    ]
+      .filter(Boolean)
+      .map((c) => String(c).trim().toLowerCase())
+  ),
+];
+
+// Resolve a scanned or typed code to ONE box out of `items` — an exact match on
+// any id the box answers to (itemIds), or on its tracking number.
+//
+// A code can hit several rows: the CZN code and the PR id are shared by every box
+// of an order, and the order-level item-code fallback can hand the same product id
+// to two boxes of one order. Resolved in two steps so the answer is never
+// arbitrary — an IN-STOCK box wins (scanning one still on the shelf must not
+// surface a sibling that already shipped and answer "already shipped"), and among
+// those, the box whose own PRINTED id is this code beats one that merely lists it
+// as a sibling product.
+export const resolveItem = (items, codeOrTracking) => {
+  const c = String(codeOrTracking || "").trim().toLowerCase();
+  if (!c || !Array.isArray(items)) return null;
+  const matches = items.filter(
+    (i) => itemIds(i).includes(c) || (i?.trackingNumber || "").toLowerCase() === c
+  );
+  if (matches.length < 2) return matches[0] || null;
+  const inStock = matches.filter((i) => i.status === "in_stock");
+  const pool = inStock.length ? inStock : matches;
+  return pool.find((i) => goodsCode(i).toLowerCase() === c) || pool[0];
 };
 
 export function unwrapRack(row) {

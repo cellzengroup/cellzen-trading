@@ -74,6 +74,34 @@ const escapeLike = (v) => String(v).replace(/[\\%_]/g, (c) => `\\${c}`);
 // Postgres "invalid input syntax for type uuid" 500 on a malformed id.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// The CN tracking numbers of every 1688 order line whose GOODS id (item_code),
+// job id or order # matches `term` — i.e. the parcels a search term names.
+//
+// Why the warehouse row's own columns aren't enough: a parcel can hold several
+// products and the box stores only ONE of their ids in item_code (the lowest,
+// picked for stability), while the rest are resolved from supplier_orders on
+// read. A search for any of the others — and there is no way for staff to know
+// which of the ids on a portal row is the one the box happens to hold — would
+// otherwise find nothing. It also covers a box whose item_code column is still
+// null and only filled in on read.
+async function trackingsForSearch(term) {
+  if (!SupplierOrder || !term) return [];
+  const s = `%${escapeLike(term)}%`;
+  const orders = await SupplierOrder.findAll({
+    where: {
+      china_tracking_no: { [Op.ne]: null },
+      [Op.or]: [
+        { item_code: { [Op.iLike]: s } },
+        { job_code: { [Op.iLike]: s } },
+        { order_number: { [Op.iLike]: s } },
+      ],
+    },
+    attributes: ['china_tracking_no'],
+    limit: 2000, // a bounded widening: an empty-ish term must not drag the table in
+  });
+  return [...new Set(orders.map((o) => o.china_tracking_no).filter(Boolean))];
+}
+
 // Generate the INTERNAL goods number for a newly put-away item: CZN-00001,
 // CZN-00002, … Every box that belongs to the same 1688 order (order_number)
 // shares ONE goods number — if another box from this order is already on file,
@@ -227,22 +255,41 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     if (status) where.status = status;
     if (rack_id) where.rack_id = normRack(rack_id);
     if (source) where.source = String(source).trim().toLowerCase();
-    if (search) {
-      const s = `%${escapeLike(String(search).trim())}%`;
-      where[Op.or] = [
-        { box_code: { [Op.iLike]: s } },  // the id the barcode carries
-        { item_code: { [Op.iLike]: s } }, // a product inside the box
-        // Boxes stored before this change were labelled with the PR id, and
-        // those labels are still on shelves — keep matching them so an old
-        // sticker doesn't become unsearchable.
-        { pr_code: { [Op.iLike]: s } },
-        { code: { [Op.iLike]: s } },
-        { order_number: { [Op.iLike]: s } },
-        { tracking_number: { [Op.iLike]: s } },
-        { rack_id: { [Op.iLike]: s } },
-      ];
-    }
+    const searchTerm = search ? String(search).trim() : '';
+    // The clauses that can be answered by the warehouse row alone. Kept in a
+    // variable because the sibling-product widening below rebuilds `where[Op.or]`
+    // from it on every connection retry — appending in place would stack a
+    // duplicate clause onto each attempt.
+    const searchOr = searchTerm
+      ? (() => {
+          const s = `%${escapeLike(searchTerm)}%`;
+          return [
+            { item_code: { [Op.iLike]: s } }, // the id the label's barcode carries
+            { box_code: { [Op.iLike]: s } },  // internal box id — on one older generation of label
+            // Boxes stored before this change were labelled with the PR id, and
+            // those labels are still on shelves — keep matching them so an old
+            // sticker doesn't become unsearchable.
+            { pr_code: { [Op.iLike]: s } },
+            { code: { [Op.iLike]: s } },
+            { order_number: { [Op.iLike]: s } },
+            { tracking_number: { [Op.iLike]: s } },
+            { rack_id: { [Op.iLike]: s } },
+          ];
+        })()
+      : null;
+    if (searchOr) where[Op.or] = searchOr;
     const rows = await withConnectionRetry(async () => {
+      // Widen the search to every product in the parcel: a box holds one product
+      // id of possibly several, so searching its columns alone finds it by that
+      // one id only. trackingsForSearch turns the term back into the parcels it
+      // names, and those parcels' boxes join the result.
+      if (searchOr) {
+        const trackings = await trackingsForSearch(searchTerm);
+        where[Op.or] = trackings.length
+          ? [...searchOr, { tracking_number: { [Op.in]: trackings } }]
+          : searchOr;
+      }
+
       // id as a tiebreaker: two items put away in the same millisecond tie on
       // createdAt alone, and without a unique tiebreak Postgres doesn't promise
       // the same tie order across polls — rows could visibly swap places on
@@ -350,13 +397,45 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
 router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const trackingNumber = String(req.body?.trackingNumber ?? req.body?.tracking_number ?? '').trim().toUpperCase();
+    // `let`, not `const`: a scanned GOODS id is resolved to the tracking number of
+    // the parcel it belongs to below, and everything after that stores the parcel.
+    let trackingNumber = String(req.body?.trackingNumber ?? req.body?.tracking_number ?? '').trim().toUpperCase();
     const rackId = normRack(req.body?.rackId ?? req.body?.rack_id);
     if (!rackId) return res.status(400).json({ success: false, message: 'Scan or choose a shelf first' });
     if (!isShelfCode(rackId)) {
       return res.status(400).json({ success: false, message: 'Shelf code must look like GT-01-0001 (letters-digits-digits).' });
     }
     if (!trackingNumber) return res.status(400).json({ success: false, message: 'Tracking number is required' });
+
+    // What gets held under the scanner at put-away is usually the courier's
+    // tracking barcode — but the label this app prints carries the GOODS id, and
+    // staff scan that here too: at a box coming back to another shelf, or simply
+    // to check one they just stored. So before anything else, answer the case
+    // where the code names a box that is already on a shelf, and answer it with
+    // WHERE it is: 'this tracking number doesn't exist in the orders' tells
+    // someone holding a labelled box nothing at all.
+    //
+    // Only the ids that name ONE box are matched here. pr_code and code are
+    // shared by every box of an order, so an old sticker carrying one of those
+    // would otherwise block a SIBLING box from being stored.
+    const scanned = escapeLike(trackingNumber);
+    const already = await WarehouseItem.findOne({
+      where: {
+        status: 'in_stock',
+        [Op.or]: [
+          { tracking_number: { [Op.iLike]: scanned } },
+          { item_code: { [Op.iLike]: scanned } },
+          { box_code: { [Op.iLike]: scanned } },
+        ],
+      },
+    });
+    if (already) {
+      return res.status(409).json({
+        success: false,
+        message: `Already in stock — ${already.item_code || already.code} is stored on ${already.rack_id}`,
+        data: already,
+      });
+    }
 
     // GtradeA section: the tracking number MUST correspond to a known 1688
     // supplier order. Free-form trackings are rejected; the matched order # +
@@ -380,12 +459,55 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       // shows the same id at put-away as it does on every later read — with
       // synced_at the two could disagree, and the printed label would stop
       // matching the panel the next time gtradea re-synced.
-      const match = await SupplierOrder.findOne({
+      let match = await SupplierOrder.findOne({
         where: { china_tracking_no: trackingNumber },
         order: [['item_code', 'ASC NULLS LAST']],
       });
+      // Not a tracking number — try it as a GOODS id. A box that has shipped and
+      // come back is scanned by the label on it, and that label reads GTI-100119;
+      // so does the China Operations row someone may be typing from. Resolving it
+      // to the parcel it belongs to means the id staff can actually see is enough
+      // to store the box, instead of being rejected as an unknown tracking.
       if (!match) {
-        return res.status(422).json({ success: false, message: "This tracking number doesn't exist in the orders" });
+        const byGoods = await SupplierOrder.findOne({
+          where: { item_code: { [Op.iLike]: escapeLike(trackingNumber) } },
+          attributes: ['china_tracking_no'],
+          // A goods id appears once per parcel, but pick deterministically anyway
+          // so two scans of the same id can never store two different parcels.
+          order: [['china_tracking_no', 'ASC NULLS LAST']],
+        });
+        if (byGoods?.china_tracking_no) {
+          trackingNumber = byGoods.china_tracking_no;
+          // Re-read by tracking so the item_code / shipment mode picked below are
+          // the same ones every other path picks for this parcel (lowest item_code
+          // of the tracking), rather than whichever line was scanned.
+          match = await SupplierOrder.findOne({
+            where: { china_tracking_no: trackingNumber },
+            order: [['item_code', 'ASC NULLS LAST']],
+          });
+          // The parcel may already be on a shelf under its tracking number, which
+          // the id check above couldn't see because it was scanned by goods id.
+          const stored = await WarehouseItem.findOne({
+            where: { tracking_number: { [Op.iLike]: escapeLike(trackingNumber) }, status: 'in_stock' },
+          });
+          if (stored) {
+            return res.status(409).json({
+              success: false,
+              message: `Already in stock — ${stored.item_code || stored.code} is stored on ${stored.rack_id}`,
+              data: stored,
+            });
+          }
+        } else if (byGoods) {
+          // Known product, but the supplier hasn't dispatched it: there is no
+          // parcel to put on a shelf yet, and saying so beats "doesn't exist".
+          return res.status(422).json({
+            success: false,
+            message: 'That goods ID has no tracking number yet — it has not been dispatched',
+          });
+        }
+      }
+      if (!match) {
+        return res.status(422).json({ success: false, message: "This tracking number or goods ID doesn't exist in the orders" });
       }
       orderNumber = match.order_number || null;
       productName = match.product_name || null;
@@ -419,20 +541,10 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     // Auto-create the shelf on first sight (spec: a new shelf code is created).
     await Rack.findOrCreate({ where: { id: rackId }, defaults: { id: rackId } });
 
-    // Dedupe: a tracking number may only be in-stock once at a time. This
-    // app-level check is the friendly path; the partial unique index on
-    // warehouse_items (tracking_number WHERE status='in_stock') is the atomic
-    // backstop for concurrent double-scans (handled in the catch below).
-    const dupe = await WarehouseItem.findOne({
-      where: { tracking_number: { [Op.iLike]: escapeLike(trackingNumber) }, status: 'in_stock' },
-    });
-    if (dupe) {
-      return res.status(409).json({
-        success: false,
-        message: 'Already in stock — this tracking number is already stored',
-        data: dupe,
-      });
-    }
+    // Dedupe is handled by the id-aware in-stock check at the top (and repeated
+    // for a goods id once it resolves to a tracking number). The partial unique
+    // index on warehouse_items (tracking_number WHERE status='in_stock') remains
+    // the atomic backstop for concurrent double-scans, handled in the catch below.
 
     // Mint (or reuse) the goods number and insert. The tracking_number partial
     // unique index is the atomic backstop for a concurrent double-scan of the

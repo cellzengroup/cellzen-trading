@@ -14,7 +14,7 @@
 // Rack/shelf labels are unchanged: a simple native barcode (no logo/icons).
 
 import { toCanvas } from "bwip-js";
-import { enqueuePrintJob, goodsCode, boxCode, productCodes } from "./warehouseApi";
+import { enqueuePrintJob, goodsCode, productCodes } from "./warehouseApi";
 import { CELLZEN_LOGO_SVG, LABEL_ICONS_SVG } from "./labelAssets";
 import { GTRADEA_LABEL_ART, ART_W, ART_H } from "./gtradeaLabelArt";
 
@@ -478,14 +478,13 @@ function drawLabelArt(ctx, { scale, dx, dy }) {
 // the shelf code has to move with the "Shelf No:" label above it.
 const GT_FIELDS = {
   shelf:    { x: 385.6, top: 49.4,  bottom: 73.5,  right: 559, weight: "700", ref: "GT-01-003", group: "head" },
-  // ref is a real box id. It and the old product id are both caps + digits of
-  // the same length, so the type size and baseline derived from it are unchanged.
-  // (Previously "PR-1028", then "GTI-100119".) Kept honest about what prints here.
-  // Historical note: both are caps +
-  // digits with no descender, so the ink box — and therefore the type size and
-  // baseline this field derives from it — is unchanged; the string is only kept
-  // honest about what actually prints here.
-  item:     { x: 118,   top: 341.4, bottom: 365.5, right: 521, weight: "700", ref: "GTP-000123", center: 189, group: "code" },
+  // ref is a real gtradea product id — the id this field actually prints, and
+  // the one the China Operations table lists the parcel under. (Previously
+  // "PR-1028", then the box id "GTP-000123".) All three are caps + digits of the
+  // same length with no descender, so the ink box — and therefore the type size
+  // and baseline this field derives from it — is unchanged across them; the
+  // string is only kept honest about what actually prints here.
+  item:     { x: 118,   top: 341.4, bottom: 365.5, right: 521, weight: "700", ref: "GTI-100119", center: 189, group: "code" },
   order:    { x: 37.5,  top: 493.6, bottom: 515.5, right: 521, weight: "700", ref: "ORD-20260730-195740" },
   tracking: { x: 37.4,  top: 594.6, bottom: 616.5, right: 521, weight: "700", ref: "435291915403962" },
   stamp:    { x: 36.7,  top: 710.2, bottom: 725.3, right: 393, weight: "400", ref: "July 30, 2026 05:48 PM" },
@@ -568,10 +567,13 @@ function drawLabelBarcode(ctx, code, t) {
   return { x: Math.round(x), w };
 }
 
-// The other products in the same parcel, listed under the box id.
+// The other products in the same parcel, listed under the goods id.
 //
 // Only drawn when there IS another one — a box holding a single product says
-// everything it needs to in the id line above, so its label is unchanged.
+// everything it needs to in the id line above, so its label is unchanged. The
+// id line now names one of the products itself (the lowest — see goodsCode), so
+// the caller drops that one from this list: printing it twice would spend the
+// band on a number already set in 24pt directly above it.
 //
 // The band is the clear stock between that id line and the first rule, measured
 // off the rendered artwork rather than derived from it (y 332..378 in printer
@@ -585,7 +587,7 @@ const GT_LIST_PX_MAX = 20;
 const GT_LIST_PX_MIN = 13;
 
 function drawProductList(ctx, codes, bar) {
-  if (!bar || !Array.isArray(codes) || codes.length < 2) return;
+  if (!bar || !Array.isArray(codes) || codes.length < 1) return;
 
   const rowsFor = (n) => {
     const per = Math.ceil(codes.length / n);
@@ -642,9 +644,19 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
 
   const t = artTransform();
   drawLabelArt(ctx, t);
-  // The BOX id, not a product id: a parcel can hold several products, so no
-  // product id can honestly name the thing this sticker is stuck to.
-  const bar = drawLabelBarcode(ctx, boxCode(item), t);
+  // The GOODS id — gtradea's own "Product ID" (GTI-100119), the id the China
+  // Operations table lists this parcel under. It has to be the id on the
+  // sticker: staff read the label and then look the box up in the portal, and
+  // the box id minted here (box_code, GTP-000123) exists in this database only —
+  // typing it into gtradea finds nothing.
+  //
+  // A parcel can hold several products, so this names ONE of them — the lowest,
+  // picked stably (see goodsCode / item_code) — and the rest are listed under
+  // the bars. Scanning is unaffected either way: the resolver matches every id a
+  // box has ever been printed with, box ids included, so the GTP labels already
+  // on the shelves keep resolving.
+  const code = goodsCode(item);
+  const bar = drawLabelBarcode(ctx, code, t);
 
   // The shipment panel always reads one way or the other — it's part of the
   // fixed artwork, so it can never be left blank. Fall back to the mode already
@@ -652,8 +664,8 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   const mode = normalizeShipmentMode(shipmentMode) || normalizeShipmentMode(item.shipmentFrom) || "air";
 
   drawField(ctx, GT_FIELDS.shelf, item.rackId || "-", t);
-  drawField(ctx, GT_FIELDS.item, boxCode(item), t);
-  drawProductList(ctx, productCodes(item), bar);
+  drawField(ctx, GT_FIELDS.item, code, t);
+  drawProductList(ctx, productCodes(item).filter((c) => c !== code), bar);
   drawField(ctx, GT_FIELDS.order, item.orderNumber || "-", t);
   drawField(ctx, GT_FIELDS.tracking, item.trackingNumber || "-", t);
   drawField(ctx, GT_FIELDS.stamp, formatLabelStamp(item.createdAt), t);

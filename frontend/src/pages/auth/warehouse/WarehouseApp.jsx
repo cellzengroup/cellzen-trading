@@ -20,6 +20,8 @@ import {
   exportSupplierOrdersPdf,
   exportBillingReportXlsx,
   goodsCode,
+  itemIds,
+  resolveItem,
 } from "../../../utils/warehouseApi";
 import { downloadItemLabel, downloadRackLabel, printItemLabel } from "../../../utils/warehouseLabels";
 
@@ -34,15 +36,13 @@ const isShelf = (text) => RACK_CODE_PATTERN.test(String(text || "").trim());
 
 // Does an item match the free-text search `f` (already lowercased)? One predicate
 // for the Dashboard / Ship / Dispatched lists so they can never disagree on what
-// a search matches. The gtradea item code and 1688 order # are in here alongside
-// the internal CZN code — those are what the GtradeA panel shows and what's
-// printed on the box, so they're what staff type. The PR id stays searchable
-// because boxes labelled before the switch still carry it.
+// a search matches. Every id the box answers to (itemIds — the goods id printed
+// on it, the other products in the same parcel, the box id, the PR id and the
+// internal CZN code), plus the 1688 order #, the tracking number and the shelf.
+// A product id read off the China Operations table has to land here whether or
+// not it is the one the label happens to print.
 const itemMatches = (i, f) =>
-  (i.boxCode || "").toLowerCase().includes(f) ||
-  (i.itemCode || "").toLowerCase().includes(f) ||
-  (i.prCode || "").toLowerCase().includes(f) ||
-  (i.code || "").toLowerCase().includes(f) ||
+  itemIds(i).some((id) => id.includes(f)) ||
   (i.orderNumber || "").toLowerCase().includes(f) ||
   (i.trackingNumber || "").toLowerCase().includes(f) ||
   (i.rackId || "").toLowerCase().includes(f);
@@ -644,34 +644,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     return m;
   }, [items]);
 
-  // Resolve a scanned/typed code to an item. The BOX id is what the printed
-  // label's barcode now encodes, so it has to match first. The product code
-  // still counts too — scanning a box
-  // has to find it. The PR id and the internal CZN code still match too, so the
-  // two earlier generations of label keep working: there are boxes on the
-  // shelves carrying each of them, and a scanner can't tell you which era a
-  // sticker came from.
-  //
-  // A code can still hit several rows (the CZN code and the PR id are both
-  // shared across the boxes of one order). An IN-STOCK one wins: otherwise
-  // scanning a box that's still on the shelf could surface a sibling that already
-  // shipped and answer "already shipped".
-  const findItem = useCallback(
-    (codeOrTracking) => {
-      const c = String(codeOrTracking || "").trim().toLowerCase();
-      if (!c) return null;
-      const matches = items.filter(
-        (i) =>
-          (i.boxCode || "").toLowerCase() === c ||
-          (i.itemCode || "").toLowerCase() === c ||
-          (i.prCode || "").toLowerCase() === c ||
-          (i.code || "").toLowerCase() === c ||
-          (i.trackingNumber || "").toLowerCase() === c
-      );
-      return matches.find((i) => i.status === "in_stock") || matches[0] || null;
-    },
-    [items]
-  );
+  // Resolve a scanned/typed code to an item. The label's barcode carries the
+  // gtradea product id, so that is what a fresh scan brings in; the OTHER products
+  // of a multi-product parcel resolve to the same box, which is what lets a
+  // product id read off the China Operations table find the thing it is packed in.
+  // Older stickers keep working too — the box id and the PR id are matched as
+  // well. The rule itself lives in warehouseApi (resolveItem) so the scanner, the
+  // search box and anything else asking "which box is this?" can't drift apart.
+  const findItem = useCallback((codeOrTracking) => resolveItem(items, codeOrTracking), [items]);
 
   const upsertRack = useCallback((rack) => {
     setRacks((prev) => (prev.some((r) => r.id === rack.id) ? prev : [rack, ...prev]));
@@ -688,8 +668,27 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [manualRackText, setManualRackText] = useState("");
   const [manualTracking, setManualTracking] = useState("");
 
+  // Put a box away on `rackId`. `scanned` is whatever came off the scanner or the
+  // manual form: normally the courier's TRACKING number, which is what the server
+  // keys put-away on — but a printed label carries the GOODS id, and those get
+  // held under the scanner too (a box coming back to another shelf, a second scan
+  // of one just stored). So resolve the code against the boxes already known
+  // before sending it: otherwise a goods id reaches the server as if it were a
+  // tracking number and comes back "this tracking number doesn't exist in the
+  // orders", which says nothing about what actually happened.
   const storeTracking = useCallback(
-    async (rackId, tracking) => {
+    async (rackId, scanned) => {
+      const known = findItem(scanned);
+      if (known && known.status === "in_stock") {
+        // Says WHERE it is rather than just refusing — that is the whole question
+        // a second scan is asking.
+        showToast(`${goodsCode(known)} is already stored on ${known.rackId}`, "warn");
+        return;
+      }
+      // A shipped box being put away again (a return, a mis-dispatch) is a real
+      // put-away: send the TRACKING number it is stored under, not the goods id
+      // that was scanned.
+      const tracking = known?.trackingNumber || scanned;
       try {
         const item = await putAwayItem(rackId, String(tracking).trim().toUpperCase(), mode);
         setItems((prev) => [item, ...prev]);
@@ -700,7 +699,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         showToast(e.message || "Failed to store item", e.status === 409 ? "warn" : "error");
       }
     },
-    [mode, showToast, upsertRack, showSaved]
+    [mode, showToast, upsertRack, showSaved, findItem]
   );
 
   const handleStoreDecode = useCallback(
@@ -734,7 +733,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     const tracking = manualTracking.trim();
     if (!rackId) return showToast("Enter or choose a shelf first.", "error");
     if (!isShelf(rackId)) return showToast(`Shelf must look like ${shelfExample} (letters-digits-digits).`, "error");
-    if (!tracking) return showToast("Enter a tracking number.", "error");
+    if (!tracking) return showToast("Enter a tracking number or a goods ID.", "error");
     await storeTracking(rackId, tracking);
     setManualTracking("");
   };
@@ -1021,11 +1020,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             </div>
             <div className="mt-0.5 break-all text-2xl font-black tracking-tight">{goodsCode(item)}</div>
             <dl className="mt-3 space-y-1.5 text-xs">
-              {/* What the printed barcode actually carries. Shown so a staff
-                  member holding a scanned box can reconcile it against this
-                  card — the barcode names the BOX, this panel leads with the
-                  product, and without this row nothing on screen matches the
-                  number they just scanned. */}
+              {/* This box's own id. Not printed on the label and not known to
+                  gtradea — kept on screen because it is the one id that names
+                  exactly one parcel (a product id can repeat across the boxes of
+                  an order), and because the labels printed while it WAS on the
+                  barcode are still on the shelves and still scan to here. */}
               {item.boxCode ? (
                 <div className="flex gap-2">
                   <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Box ID</dt>
@@ -2849,9 +2848,46 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       {shipConfirmItems && shipConfirmItems.length > 0 && (
         <div className="fixed inset-0 z-[125] flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm">
           <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl">
-            <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
-              <IconCheck className="h-5 w-5" />
-            </span>
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
+                <IconCheck className="h-5 w-5" />
+              </span>
+              {/* Print WITHOUT shipping, from the corner the eye lands on before
+                  it reaches the confirm buttons. Scanning a box on the Ship tab
+                  lands here, and the box is often under the scanner for a
+                  replacement label — a sticker torn, smudged or never printed —
+                  rather than because it is going out. Before this the only way to
+                  the printer was to cancel and hunt the box down in the list.
+
+                  Prints on the spot: one copy, the shipment mode already recorded
+                  on the box, and the dialog closes immediately so the scanner is
+                  free for the next box. No copies prompt — put-away prints the
+                  same way (printSavedItemNow), and a prompt in the middle of a
+                  scan-after-scan run is a keystroke nobody has a hand free for.
+                  The row's own print button still opens the full prompt when a
+                  different count or mode is actually wanted.
+
+                  Not awaited on purpose: the print goes to the bridge or the
+                  queue and reports itself by toast, and the popup must not sit
+                  open waiting for a printer.
+
+                  One box only — a batch confirm has no single label to print,
+                  and the row actions already print a group. */}
+              {shipConfirmItems.length === 1 && (
+                <button
+                  type="button"
+                  title="Print this box's label — nothing is shipped"
+                  onClick={() => {
+                    const it = shipConfirmItems[0];
+                    setShipConfirmItems(null);
+                    doPrintLabel(it, 1, it.shipmentFrom === "By Land" ? "By Land" : "By Air");
+                  }}
+                  className={BTN_GHOST}
+                >
+                  <IconPrinter className="h-3.5 w-3.5" /> Print Label
+                </button>
+              )}
+            </div>
             <h3 className="text-base font-bold">
               {shipConfirmItems.length > 1
                 ? `Mark ${shipConfirmItems.length} items as shipped?`
