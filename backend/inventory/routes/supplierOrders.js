@@ -478,13 +478,17 @@ const PACKING_IMG_RENDER_PX = PACKING_IMG_COL_PX * 2;
 // placements can't drift apart on the conversion.
 const EMU_PER_PX = 9525;
 
-// ---- Row 2, the logo band. Its height, and how tall the Cellzen mark is drawn
-// inside it. The height is the one the hand-styled template used, so the mark
-// keeps the size staff are used to; only its WIDTH is derived (from the mark's
-// own aspect ratio) rather than fixed, because a fixed width squashes whatever
-// image the template happens to hold.
+// ---- Row 2, the logo band. Its height, and the size the Cellzen mark is drawn
+// at inside it. The band height is the one the hand-styled template used, so the
+// row keeps the depth staff are used to. The mark itself is drawn at a FIXED
+// 2.16in x 0.58in — the size signed off for these exports — rather than derived
+// from whatever artwork the template currently holds, so every export carries an
+// identically sized mark. Excel reports picture size in inches, which is why the
+// two are kept in inches here and converted once.
 const PACKING_LOGO_BAND_PT = 105;
-const PACKING_LOGO_HEIGHT_PX = 94.5;
+const PX_PER_IN = 96; // Excel draws at 96dpi
+const PACKING_LOGO_WIDTH_PX = 2.16 * PX_PER_IN;
+const PACKING_LOGO_HEIGHT_PX = 0.58 * PX_PER_IN;
 
 // Size one downloaded photo to `targetWidth`, preserving its aspect ratio, in
 // whatever unit the caller works in (px for the sheet, pt for the PDF).
@@ -745,59 +749,57 @@ async function packingLogo() {
 }
 
 // Where the Cellzen mark sits inside the row-2 band: dead centre, horizontally
-// and vertically.
+// and vertically, at the fixed 2.16in x 0.58in above.
 //
 // COMPUTED, not copied out of the template. The band is a merge across every
 // column and which columns those are changes — ?images=0 drops one, moving the
 // band's centre by a whole column — so the template's fixed offsets only ever
 // looked right for one of the two exports. They were also measured against a
-// different row height, which left the mark sitting high in the band, and they
-// pinned a width, which squashed a mark whose real aspect ratio didn't match.
+// different row height, which left the mark sitting high in the band.
 //
-// Returns an ExcelJS anchor built the way the product photos' is — an integer
-// column plus an EMU offset into it — so it lands on an exact pixel instead of
-// relying on fractional-column rounding.
-function packingLogoAnchor(columns, logo) {
+// Anchored by TOP-LEFT + an explicit `ext`, NOT top-left + bottom-right. A br
+// anchor makes Excel stretch the image to whatever gap the two corners land in,
+// and that gap moves with Excel's own column-width-to-pixel rounding, so the
+// requested 2.16 x 0.58 would come out a little different in every file. `ext`
+// sets the drawn size outright. Same rule the billing report is anchored by.
+//
+// The offset into the band is given as nativeCol + nativeColOff (raw EMU) rather
+// than a fractional `col`, because ExcelJS's fractional setter multiplies the
+// fraction by `column.width * 10000` — neither pixels nor EMU — and lands the
+// mark well left of centre.
+function packingLogoAnchor(columns) {
   const colPx = columns.map((c) => excelColWidthPx(c.width));
   const bandW = colPx.reduce((s, w) => s + w, 0);
   const bandH = PACKING_LOGO_BAND_PT / 0.75; // pt -> px at Excel's 96dpi
 
-  // Same rule the PDF draws it by: fixed height, width from the mark's own
-  // proportions. A mark whose dimensions can't be read is drawn square rather
-  // than not at all — a stretched logo still beats a missing one.
+  // Nothing wider than the band can be centred in it — scale to the width
+  // instead, keeping the 2.16:0.58 proportion rather than squashing the mark.
+  let w = PACKING_LOGO_WIDTH_PX;
   let h = PACKING_LOGO_HEIGHT_PX;
-  let w = h;
-  try {
-    const dim = imageSize(logo.buffer);
-    if (dim && dim.width && dim.height) w = (dim.width / dim.height) * h;
-  } catch (e) {
-    console.error('[1688 export] could not read logo dimensions:', e?.message || e);
-  }
-  // Nothing wider than the band can be centred in it — fit to the width instead.
   if (w > bandW) {
     h = (h / w) * bandW;
     w = bandW;
   }
 
   // An absolute x across the band -> the column it falls in, plus the offset
-  // into that column. Clamped to the last column so a right edge landing exactly
-  // on the band's end doesn't run off it.
-  const at = (x) => {
-    let col = 0;
-    let rem = x;
-    while (col < colPx.length - 1 && rem >= colPx[col]) {
-      rem -= colPx[col];
-      col += 1;
-    }
-    return { col, off: Math.round(rem * EMU_PER_PX) };
-  };
-  const left = at((bandW - w) / 2);
-  const right = at((bandW - w) / 2 + w);
+  // into that column. Clamped to the last column so an x landing exactly on the
+  // band's end doesn't run off it.
+  let col = 0;
+  let rem = (bandW - w) / 2;
+  while (col < colPx.length - 1 && rem >= colPx[col]) {
+    rem -= colPx[col];
+    col += 1;
+  }
   const top = (bandH - h) / 2;
 
   return {
-    tl: { col: left.col, row: 1, nativeCol: left.col, nativeRow: 1, nativeColOff: left.off, nativeRowOff: Math.round(top * EMU_PER_PX) },
-    br: { col: right.col, row: 1, nativeCol: right.col, nativeRow: 1, nativeColOff: right.off, nativeRowOff: Math.round((top + h) * EMU_PER_PX) },
+    tl: {
+      nativeCol: col,
+      nativeColOff: Math.round(rem * EMU_PER_PX),
+      nativeRow: 1, // 0-based — row 2, the logo band
+      nativeRowOff: Math.round(top * EMU_PER_PX),
+    },
+    ext: { width: w, height: h },
     editAs: 'oneCell',
   };
 }
@@ -905,7 +907,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     if (logo) {
       try {
         const logoId = workbook.addImage({ buffer: logo.buffer, extension: logo.extension });
-        sheet.addImage(logoId, packingLogoAnchor(columns, logo));
+        sheet.addImage(logoId, packingLogoAnchor(columns));
       } catch (e) {
         console.error('[1688 export] could not place logo:', e?.message || e);
       }
