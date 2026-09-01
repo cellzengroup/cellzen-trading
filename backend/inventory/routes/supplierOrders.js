@@ -432,7 +432,15 @@ const PACKING_COLUMNS = [
   { key: 'unit', header: 'Unit', width: 14 },
   { key: 'kg', header: 'KG', width: 14 },
   { key: 'cbm', header: 'CBM', width: 14 },
-  { key: 'paid', header: 'Amount', width: 16 },
+  // Both amounts name their currency with its SYMBOL, not its code: the header
+  // is set in 13pt Arial, and "Amount in RMB" wrapped onto a second line inside
+  // a 16-wide column. The widths carry the shorter label on one line with room
+  // to spare, and the symbol matches the one the cells below are formatted with.
+  { key: 'paid', header: 'Amount in ¥', width: 20 },
+  // The same figure in dollars, as a live formula over the ¥ cell (see the row
+  // loop) rather than a baked-in number — a reader clicking the cell sees the
+  // conversion, and correcting a rate is one find-and-replace in Excel.
+  { key: 'paidUsd', header: 'Amount in $', width: 20 },
 ];
 // -> { columns: [...], col: { marka: 1, ctn: 2, ... } }, 1-indexed for ExcelJS.
 const packingColumns = (withImages) => {
@@ -451,6 +459,25 @@ const PACKING_THIN_BORDER = { top: { style: 'thin' }, left: { style: 'thin' }, b
 // checking one against the other has to see it written the same way. Cells still
 // hold plain numbers — only the display is formatted, so Excel can total them.
 const CNY_FMT = '_ [$¥-804]* #,##0.00_ ;_ [$¥-804]* -#,##0.00_ ;_ [$¥-804]* "-"??_ ;_ @_ ';
+// Same accounting shape in dollars, so the two Amount columns line up decimal
+// for decimal instead of one reading as money and the other as a bare number.
+const USD_FMT = '_ [$$-409]* #,##0.00_ ;_ [$$-409]* -#,##0.00_ ;_ [$$-409]* "-"??_ ;_ @_ ';
+// The house conversion rate, fixed rather than fetched: a packing list is a
+// document of record and has to say the same thing every time it's re-exported,
+// which a live rate can't promise. gtradea stores the amount in RMB only.
+//
+// 6.7 RMB to the dollar, so dollars are RMB DIVIDED by the rate. Written as one
+// constant and one helper on purpose — if the rate moves, or the direction is
+// ever meant to be the other way round, this is the only place to change.
+const RMB_PER_USD = 6.7;
+// Rounded to the cent here rather than left to the number format, so what the
+// cell HOLDS is what it shows and a reader adding the column by hand gets the
+// figure the sheet prints.
+const rmbToUsd = (rmb) => {
+  const n = Number(rmb);
+  if (!Number.isFinite(n)) return null;
+  return Math.round((n / RMB_PER_USD) * 100) / 100;
+};
 
 // ---- Product photo geometry. The photo is drawn at EXACTLY the width of the
 // Product Image column and the ROW is then made as tall as that width implies
@@ -493,10 +520,11 @@ const PACKING_LOGO_HEIGHT_PX = 0.58 * PX_PER_IN;
 // the numbers; it READ as sitting low, because the band's neighbours aren't
 // symmetrical — the title above is a filled band that ends hard, while the white
 // below runs straight into the header fill, so the eye puts the band's middle
-// higher than the arithmetic does. A third of the free space above, two thirds
-// below, lifts it to where it looks centred. This is the one number to nudge if
-// it wants to go higher (smaller) or lower (up to 0.5).
-const PACKING_LOGO_TOP_BIAS = 1 / 3;
+// well above the arithmetic one. 0.17 leaves ~14px of clear space under the
+// title band and rests the mark just below it, which is where it was asked to
+// sit. This is the one number to nudge: 0 puts it flush against the title band,
+// 0.5 back at dead centre.
+const PACKING_LOGO_TOP_BIAS = 0.17;
 
 // Size one downloaded photo to `targetWidth`, preserving its aspect ratio, in
 // whatever unit the caller works in (px for the sheet, pt for the PDF).
@@ -850,6 +878,8 @@ function packingRowValues(o, name) {
     // Amount — the paid figure from gtradea's procurement/China-ops view, packing list
     // only (not shown on the 1688 tab).
     paid: o.paid_amount != null ? Number(o.paid_amount) : null,
+    // The Amount again, in dollars. Derived, never stored — see RMB_PER_USD.
+    paidUsd: o.paid_amount != null ? rmbToUsd(o.paid_amount) : null,
   };
 }
 
@@ -936,6 +966,9 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
 
     // Data rows
     let totalQty = 0;
+    // Column letter of the ¥ amount, for the dollar column's formulas. Read off
+    // the sheet rather than hard-coded: ?images=0 drops a column and shifts it.
+    const rmbLetter = sheet.getColumn(col.paid).letter;
     let r = 4;
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i];
@@ -954,11 +987,18 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       // Amount is money and is formatted as such — a bare 1234.5 in a column of
       // prices reads as a quantity, and staff were left working out for
       // themselves which currency it was in.
+      //
+      // The dollar figure goes in as =<¥ cell>/6.7, with the computed number
+      // carried alongside as the cached result so the sheet reads correctly the
+      // moment it opens, before Excel has recalculated anything. A row with no
+      // ¥ amount gets an empty cell, not a formula that would show $0.00.
       columns.forEach((c, idx) => setCell(
         idx + 1,
-        values[c.key],
+        c.key === 'paidUsd'
+          ? (values.paidUsd == null ? null : { formula: `${rmbLetter}${r}/${RMB_PER_USD}`, result: values.paidUsd })
+          : values[c.key],
         c.key === 'name' ? { bold: true } : undefined,
-        c.key === 'paid' ? CNY_FMT : undefined,
+        c.key === 'paid' ? CNY_FMT : (c.key === 'paidUsd' ? USD_FMT : undefined),
       ));
 
       // The photo decides how tall this row is. It's drawn at the exact width of
@@ -1006,7 +1046,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       let end = i;
       while (end + 1 < orders.length && groupOf[end + 1] === i) end += 1;
       if (end === i) continue;
-      [col.order, col.paid].forEach((c) => {
+      [col.order, col.paid, col.paidUsd].forEach((c) => {
         sheet.mergeCells(4 + i, c, 4 + end, c);
         sheet.getCell(4 + i, c).alignment = { horizontal: 'center', vertical: 'middle' };
       });
@@ -1033,6 +1073,14 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     const totalPaidCell = totalRow.getCell(col.paid);
     totalPaidCell.value = totalPaid;
     totalPaidCell.numFmt = CNY_FMT;
+    // Converted from the RMB total, NOT summed from the USD column: the amount
+    // is order-level and reads once per shipment, so adding the cells up would
+    // count a multi-item order once per line.
+    const totalUsdCell = totalRow.getCell(col.paidUsd);
+    totalUsdCell.value = totalPaid == null
+      ? null
+      : { formula: `${rmbLetter}${r}/${RMB_PER_USD}`, result: rmbToUsd(totalPaid) };
+    totalUsdCell.numFmt = USD_FMT;
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${packingFilename(opts, 'xlsx')}"`);
@@ -1085,12 +1133,14 @@ function registerPdfFonts(doc) {
 // them; the page has to show them, so they're formatted here instead.
 const pdfText = (key, value) => {
   if (value == null || value === '') return '';
-  if (key === 'paid' || key === 'quantity') {
+  if (key === 'paid' || key === 'paidUsd' || key === 'quantity') {
     const n = Number(value);
     if (!Number.isFinite(n)) return String(value);
     // Money keeps both decimals and its currency mark, matching how the sheet
     // formats the same column (CNY_FMT) — "¥1,234.50", never "1234.5".
-    return key === 'paid' ? `¥${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : String(n);
+    if (key === 'quantity') return String(n);
+    const money = n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return key === 'paid' ? `¥${money}` : `$${money}`;
   }
   return String(value);
 };
@@ -1209,7 +1259,7 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
     let firstRowOnPage = true;
     let totalQty = 0;
     // The two order-level columns that read once per shipment (0-indexed).
-    const mergedCols = new Set([col.order - 1, col.paid - 1]);
+    const mergedCols = new Set([col.order - 1, col.paid - 1, col.paidUsd - 1]);
 
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i];
@@ -1275,7 +1325,13 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
     // trusting either.
     // The total goes through pdfText like every other cell, so the figure under
     // the Amount column and the figures above it are written the same way.
-    const totals = { model: 'Total', quantity: String(totalQty), unit: 'pcs', paid: pdfText('paid', totalPaid) };
+    const totals = {
+      model: 'Total',
+      quantity: String(totalQty),
+      unit: 'pcs',
+      paid: pdfText('paid', totalPaid),
+      paidUsd: pdfText('paidUsd', totalPaid == null ? null : rmbToUsd(totalPaid)),
+    };
     columns.forEach((c, ci) => {
       line(colX[ci], y, colX[ci + 1], y);
       line(colX[ci], y, colX[ci], y + totalH);
