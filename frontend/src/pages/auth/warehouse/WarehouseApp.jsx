@@ -20,6 +20,8 @@ import {
   exportSupplierOrdersPdf,
   exportBillingReportXlsx,
   goodsCode,
+  productCodes,
+  parcelLineIds,
   itemIds,
   resolveItem,
 } from "../../../utils/warehouseApi";
@@ -3485,21 +3487,23 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
 // tracking, product, status + Print/Download/Ship. Mirrors ItemsTable with the
 // 1688 columns.
 function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
-  // Boxes that share one goods number AND name the same product are grouped under
-  // a single summary row with a "packages" count + expand toggle, rather than
-  // repeating the same id on every row.
+  // One row per 1688 ORDER NUMBER, expanding to one row per PRODUCT in it.
   //
-  // The internal `code` alone is NOT enough to group on. It is minted per 1688
-  // ORDER (see generateItemCode() in backend/inventory/routes/warehouse.js), and
-  // an order routinely carries several DIFFERENT products — each its own parcel,
-  // with its own CN tracking and its own Product ID. Keying on `code` alone
-  // collapsed all of them into one row that named none of them ("8 products"),
-  // so those boxes were invisible until you expanded a group nothing pointed you
-  // at. Pairing it with the DISPLAYED goods id keeps the merge for the case it
-  // was built for — several packages of the SAME product — and gives every
-  // distinct product a row of its own. goodsCode() falls back to `code`, so a box
-  // whose item code gtradea hasn't published yet still groups the way it did
-  // rather than splitting off on its own.
+  // An order is what staff work from — gtradea publishes it, the supplier ships
+  // against it, and it is what the ship confirm and the paperwork are keyed to.
+  // Its products are what they have to check off: an order carrying 15 of them
+  // needs ONE row that says so and opens to the 15, not 15 top-level rows (or,
+  // worse, one row naming a single product as if it were the whole order).
+  //
+  // Grouping used to key on the internal `code` + the box's displayed goods id,
+  // which is a finer cut than an order — `code` is minted per order, so pairing
+  // it with the id split one order into a row per product. Ordering by
+  // order_number merges those back under the order they belong to, and the
+  // expansion below is what keeps every product individually visible.
+  //
+  // Boxes with no order number (a cellzen box, or a gtradea one gtradea hasn't
+  // published an order for) keep the old key, so they still group the way they
+  // did instead of all collapsing under one blank heading.
   const [expanded, setExpanded] = useState(() => new Set());
   const toggleExpand = (key) =>
     setExpanded((prev) => {
@@ -3513,16 +3517,41 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
   // first-seen key order, so each group surfaces at its most recent member's
   // position.
   //
-  // Each group carries its own `key` instead of deriving one from its head box:
-  // two products of one order share a `code`, so that is no longer unique across
-  // groups — as a React key it would collide, and as an expand key one toggle
-  // would open every group of the order at once.
+  // Two lists per group, and they are NOT the same length:
+  //   boxes — the physical packages. What ship/print/select act on.
+  //   units — one per PRODUCT. A parcel can hold several (a supplier bagging two
+  //           products under one CN tracking), which is exactly the case that
+  //           showed a single product id for a box holding two.
+  // A unit is `lead` when it is the first of its box: the actions and the
+  // checkbox are drawn on that one only, because shipping "a product" that
+  // shares a package with another would ship both — the box is the unit that
+  // moves, so it must not be offered twice.
   const groups = useMemo(() => {
     const map = new Map();
     for (const it of rows || []) {
-      const key = `${it.code || it.id}::${goodsCode(it) || it.id}`;
-      if (!map.has(key)) map.set(key, { key, items: [] });
-      map.get(key).items.push(it);
+      const key = it.orderNumber || `${it.code || it.id}::${goodsCode(it) || it.id}`;
+      if (!map.has(key)) map.set(key, { key, boxes: [], units: [] });
+      const g = map.get(key);
+      g.boxes.push(it);
+      // One unit per product in this parcel, DUPLICATES INCLUDED — two lines
+      // booked against the same product id are two things in the bag, and each
+      // gets its own row reading that id.
+      const list = parcelLineIds(it);
+      list.forEach((productId, i) => {
+        g.units.push({
+          id: `${it.id}::${i}`,
+          item: it,
+          productId,
+          lead: i === 0,
+          // Marked on EVERY row of a shared package, not just the followers:
+          // the mark names the package's MAIN code — the id its barcode carries
+          // and the one it is filed under — so a product with its own id
+          // (GTI-100250) still reads "GTI-100247 (Same)" and staff know which
+          // box on the shelf to go to. A mark on the second row alone would read
+          // as a footnote to the first instead of a property of the parcel.
+          shared: list.length > 1,
+        });
+      });
     }
     return [...map.values()];
   }, [rows]);
@@ -3561,15 +3590,20 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
     <>
       {/* Mobile: cards */}
       <ul className="space-y-2.5 md:hidden">
-        {groups.map(({ key, items: group }) => {
-          const head = group[0];
-          const count = group.length;
+        {groups.map(({ key, boxes, units }) => {
+          const head = boxes[0];
+          // Products, not packages — same rule as the desktop table.
+          const count = units.length;
           const isGroup = count > 1;
           const isOpen = isGroup && expanded.has(key);
-          const modes = new Set(group.map((g) => g.shipmentFrom || "By Air"));
-          // Same rule as the desktop table — see the comment there.
-          const codes = new Set(group.map(goodsCode).filter(Boolean));
-          const codeLabel = codes.size === 1 ? [...codes][0] : codes.size ? `${codes.size} products` : "";
+          const modes = new Set(boxes.map((g) => g.shipmentFrom || "By Air"));
+          // The count lives in its own column now, so this names the products
+          // instead of repeating it: the first id, and how many more are behind
+          // the dropdown.
+          const codes = [...new Set(units.map((u) => u.productId).filter(Boolean))];
+          const codeLabel = codes.length ? (codes.length === 1 ? codes[0] : `${codes[0]} +${codes.length - 1}`) : "";
+          const trackings = new Set(boxes.map((b) => b.trackingNumber).filter(Boolean));
+          const trackingLabel = trackings.size === 1 ? [...trackings][0] : (trackings.size ? `${trackings.size} trackings` : "");
           return (
             <li key={key} className="overflow-hidden rounded-2xl bg-white shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3]">
               <div
@@ -3580,7 +3614,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                   {selectable && (
                     <span className="pt-0.5" onClick={(e) => e.stopPropagation()}>
                       {isGroup ? (
-                        <SelectAllCheck rows={group} selected={selected} onToggleAll={(checked) => onToggleRows(group, checked)} />
+                        <SelectAllCheck rows={boxes} selected={selected} onToggleAll={(checked) => onToggleRows(boxes, checked)} />
                       ) : (
                         <RowCheck checked={!!selected?.has(head.id)} onChange={() => onToggleSelect(head.id)} label={`Select ${goodsCode(head)}`} />
                       )}
@@ -3597,16 +3631,22 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                 <dl className="mt-3 space-y-1.5 text-xs">
                   <div className="flex justify-between gap-3">
                     <dt className="text-[#2D2D2D]/45">Product ID</dt>
-                    <dd className={`font-semibold ${codes.size > 1 ? "text-[#2D2D2D]/45" : "text-[#412460]"}`}>{codeLabel || "—"}</dd>
+                    <dd className={`font-semibold ${codes.length > 1 ? "text-[#2D2D2D]/45" : "text-[#412460]"}`}>{codeLabel || "—"}</dd>
                   </div>
                   {isGroup ? (
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-[#2D2D2D]/45">Packages</dt>
-                      <dd className="flex items-center gap-1 font-semibold text-[#412460]">
-                        {count} packages
-                        <IconChevron className={`h-3 w-3 transition-transform ${isOpen ? "rotate-90" : ""}`} />
-                      </dd>
-                    </div>
+                    <>
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-[#2D2D2D]/45">Products</dt>
+                        <dd className="flex items-center gap-1 font-semibold text-[#412460]">
+                          {count} products
+                          <IconChevron className={`h-3 w-3 transition-transform ${isOpen ? "rotate-90" : ""}`} />
+                        </dd>
+                      </div>
+                      <div className="flex justify-between gap-3">
+                        <dt className="text-[#2D2D2D]/45">CN Tracking</dt>
+                        <dd className="min-w-0 break-all text-right font-medium">{trackingLabel || "—"}</dd>
+                      </div>
+                    </>
                   ) : (
                     <>
                       <div className="flex justify-between gap-3">
@@ -3647,13 +3687,13 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                 {isGroup && (onPrintGroup || onShip) && (
                   <div className="mt-3 flex items-center gap-2 border-t border-[#F1EFEA] pt-3">
                     {onPrintGroup && (
-                      <button type="button" onClick={(e) => { e.stopPropagation(); onPrintGroup(group); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
-                        <IconPrinter className="h-3.5 w-3.5" /> Print {count}
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onPrintGroup(boxes); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                        <IconPrinter className="h-3.5 w-3.5" /> Print {boxes.length}
                       </button>
                     )}
                     {onShip && (
-                      <button type="button" onClick={(e) => { e.stopPropagation(); onShip(group); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95">
-                        <IconCheck className="h-3.5 w-3.5" /> Ship all {count}
+                      <button type="button" onClick={(e) => { e.stopPropagation(); onShip(boxes); }} className="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-[#412460] px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95">
+                        <IconCheck className="h-3.5 w-3.5" /> Ship all {boxes.length}
                       </button>
                     )}
                   </div>
@@ -3661,24 +3701,27 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
               </div>
               {isGroup && isOpen && (
                 <div className="divide-y divide-[#F1EFEA] border-t border-[#F1EFEA] bg-[#FAFAF8]">
-                  {group.map((it) => (
-                    <div key={it.id} onClick={() => onView(it)} className="cursor-pointer p-3 pl-6">
+                  {units.map(({ id, item: it, productId, lead, shared }) => (
+                    <div key={id} onClick={() => onView(it)} className="cursor-pointer p-3 pl-6">
                       <div className="flex items-start justify-between gap-3">
                         {selectable && (
                           <span className="pt-0.5" onClick={(e) => e.stopPropagation()}>
-                            <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${goodsCode(it)} ${it.trackingNumber}`} />
+                            {lead && <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${productId} ${it.trackingNumber}`} />}
                           </span>
                         )}
                         <div className="min-w-0 flex-1 text-xs">
-                          {/* This package's own Product ID, leading the card for
-                              the same reason the desktop child row carries it. */}
-                          <div className="break-all font-bold text-[#412460]">{goodsCode(it) || "—"}</div>
+                          {/* This PRODUCT's own id, leading the card — a parcel
+                              holding two of them gets a card each. */}
+                          <div className="break-all font-bold text-[#412460]">{productId || "—"}</div>
                           <div className="mt-1 break-all font-medium text-[#2D2D2D]/80">{it.trackingNumber || "—"}</div>
-                          <div className="mt-1 text-[#2D2D2D]/45">Shelf <span className="font-semibold text-[#412460]">{it.rackId || "—"}</span></div>
+                          <div className="mt-1 text-[#2D2D2D]/45">
+                            Shelf <span className="font-semibold text-[#412460]">{it.rackId || "—"}</span>
+                            {shared && <span className="ml-2 text-[#B99353]">{goodsCode(it) || "—"} (Same)</span>}
+                          </div>
                         </div>
                         <ShipmentBadge mode={it.shipmentFrom} />
                       </div>
-                      {(onShip || onPrint || onDownload || onDelete) && (
+                      {lead && (onShip || onPrint || onDownload || onDelete) && (
                         <div className="mt-2.5 flex items-center gap-2 border-t border-[#F1EFEA] pt-2.5">
                           {onPrint && (
                             <button type="button" onClick={(e) => { e.stopPropagation(); onPrint(it); }} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
@@ -3724,21 +3767,29 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
               <th>Order #</th>
               <th>Shelf</th>
               <th>Product ID</th>
-              <th>Packages</th>
+              <th>Products</th>
               <th>Tracking</th>
               <th>Shipment</th>
               <th className="text-center">Actions</th>
             </tr>
           </thead>
           <tbody className="[&>tr]:border-t [&>tr]:border-[#F1EFEA]">
-            {groups.map(({ key, items: group }) => {
-              const head = group[0];
-              const count = group.length;
+            {groups.map(({ key, boxes, units }) => {
+              const head = boxes[0];
+              // The dropdown counts PRODUCTS, not packages: an order's 15 lines
+              // are what staff tick off, and two of them can share one package.
+              const count = units.length;
               const isGroup = count > 1;
               const isOpen = isGroup && expanded.has(key);
-              const shelves = new Set(group.map((g) => g.rackId || "—"));
+              const shelves = new Set(boxes.map((g) => g.rackId || "—"));
               const shelfLabel = shelves.size === 1 ? [...shelves][0] : `${shelves.size} shelves`;
-              const modes = new Set(group.map((g) => g.shipmentFrom || "By Air"));
+              const modes = new Set(boxes.map((g) => g.shipmentFrom || "By Air"));
+              // One order usually travels under ONE tracking number, and that is
+              // the number staff read off the parcel — so it stays on the summary
+              // row instead of collapsing to a dash the moment the order carries
+              // more than one product.
+              const trackings = new Set(boxes.map((b) => b.trackingNumber).filter(Boolean));
+              const trackingLabel = trackings.size === 1 ? [...trackings][0] : (trackings.size ? `${trackings.size} trackings` : "");
               // A group is one 1688 ORDER, and its packages can be different
               // PRODUCTS — each box resolves its own Product ID from its own CN
               // tracking. So the summary row must not print one box's id as if it
@@ -3746,8 +3797,11 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
               // its own, the same way Shelf collapses to "n shelves" and Shipment
               // to "Mixed". (The old PR id could safely be shown here because one
               // procurement request covered every package.)
-              const codes = new Set(group.map(goodsCode).filter(Boolean));
-              const codeLabel = codes.size === 1 ? [...codes][0] : codes.size ? `${codes.size} products` : "";
+              // Named, not counted — the Products column beside it carries the
+              // count, so repeating it here said the same thing twice and named
+              // nothing.
+              const codes = [...new Set(units.map((u) => u.productId).filter(Boolean))];
+              const codeLabel = codes.length ? (codes.length === 1 ? codes[0] : `${codes[0]} +${codes.length - 1}`) : "";
 
               return (
                 <Fragment key={key}>
@@ -3758,7 +3812,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                     {selectable && (
                       <td className="w-8" onClick={(e) => e.stopPropagation()}>
                         {isGroup ? (
-                          <SelectAllCheck rows={group} selected={selected} onToggleAll={(checked) => onToggleRows(group, checked)} />
+                          <SelectAllCheck rows={boxes} selected={selected} onToggleAll={(checked) => onToggleRows(boxes, checked)} />
                         ) : (
                           <RowCheck checked={!!selected?.has(head.id)} onChange={() => onToggleSelect(head.id)} label={`Select ${goodsCode(head)}`} />
                         )}
@@ -3766,7 +3820,7 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                     )}
                     <td className="whitespace-nowrap font-semibold text-[#2D2D2D]/80">{head.orderNumber || "—"}</td>
                     <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{shelfLabel}</span></td>
-                    <td className={`whitespace-nowrap font-bold ${codes.size > 1 ? "text-[#2D2D2D]/45" : "text-[#412460]"}`}>{codeLabel || "—"}</td>
+                    <td className={`whitespace-nowrap font-bold ${codes.length > 1 ? "text-[#2D2D2D]/45" : "text-[#412460]"}`}>{codeLabel || "—"}</td>
                     <td>
                       {isGroup ? (
                         <button
@@ -3774,15 +3828,15 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                           onClick={(e) => { e.stopPropagation(); toggleExpand(key); }}
                           className="inline-flex items-center gap-1 rounded-full bg-[#412460]/10 px-2.5 py-1 text-xs font-bold text-[#412460] transition hover:bg-[#412460]/15"
                         >
-                          {count} packages
+                          {count} products
                           <IconChevron className={`h-3 w-3 transition-transform ${isOpen ? "rotate-90" : ""}`} />
                         </button>
                       ) : (
                         <span className="text-xs text-[#2D2D2D]/35">1</span>
                       )}
                     </td>
-                    <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={isGroup ? undefined : head.trackingNumber}>
-                      {isGroup ? "—" : (head.trackingNumber || "—")}
+                    <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={trackingLabel || undefined}>
+                      {trackingLabel || "—"}
                     </td>
                     <td>
                       {isGroup
@@ -3790,26 +3844,32 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                         : <ShipmentBadge mode={head.shipmentFrom} />}
                     </td>
                     <td className="text-center">
-                      {isGroup ? groupActionButtons(group) : actionButtons(head)}
+                      {isGroup ? groupActionButtons(boxes) : actionButtons(head)}
                     </td>
                   </tr>
-                  {isGroup && isOpen && group.map((it) => (
-                    <tr key={it.id} onClick={() => onView(it)} className="cursor-pointer bg-[#FAFAF8] transition-colors hover:bg-[#F4F2EE] [&>td]:px-3 [&>td]:py-2.5">
+                  {isGroup && isOpen && units.map(({ id, item: it, productId, lead, shared }) => (
+                    <tr key={id} onClick={() => onView(it)} className="cursor-pointer bg-[#FAFAF8] transition-colors hover:bg-[#F4F2EE] [&>td]:px-3 [&>td]:py-2.5">
+                      {/* Only the LEAD product of a package carries the checkbox
+                          and the actions. The others sit in the same box, and a
+                          second Ship button would offer to ship it twice. */}
                       {selectable && (
                         <td className="w-8" onClick={(e) => e.stopPropagation()}>
-                          <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${goodsCode(it)} ${it.trackingNumber}`} />
+                          {lead && <RowCheck checked={!!selected?.has(it.id)} onChange={() => onToggleSelect(it.id)} label={`Select ${productId} ${it.trackingNumber}`} />}
                         </td>
                       )}
                       <td className="pl-6 text-xs text-[#2D2D2D]/30">↳</td>
-                      <td><span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{it.rackId || "—"}</span></td>
-                      {/* This package's OWN Product ID — the whole reason the
-                          group expands. It used to be a dash on the assumption
-                          that every package shared the summary row's id. */}
-                      <td className="whitespace-nowrap font-bold text-[#412460]">{goodsCode(it) || "—"}</td>
-                      <td className="text-xs text-[#2D2D2D]/30">—</td>
+                      <td>{lead
+                        ? <span className="rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-medium text-[#2D2D2D]/70">{it.rackId || "—"}</span>
+                        : <span className="text-xs text-[#2D2D2D]/30">—</span>}</td>
+                      {/* This PRODUCT's own id — the whole reason the group
+                          expands. A parcel holding two products now shows both,
+                          one line each, instead of only the id the box was filed
+                          under. */}
+                      <td className="whitespace-nowrap font-bold text-[#412460]">{productId || "—"}</td>
+                      <td className="whitespace-nowrap text-xs text-[#2D2D2D]/45">{shared ? `${goodsCode(it) || "—"} (Same)` : "—"}</td>
                       <td className="max-w-[170px] truncate text-[#2D2D2D]/80" title={it.trackingNumber}>{it.trackingNumber || "—"}</td>
                       <td><ShipmentBadge mode={it.shipmentFrom} /></td>
-                      <td className="text-center">{actionButtons(it)}</td>
+                      <td className="text-center">{lead ? actionButtons(it) : <span className="text-xs text-[#2D2D2D]/25">↑</span>}</td>
                     </tr>
                   ))}
                 </Fragment>

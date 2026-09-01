@@ -35,6 +35,22 @@ export function unwrapItem(row) {
     // Every product in this parcel, lowest id first. One entry for an ordinary
     // box; several when a supplier put more than one product in the same bag.
     itemCodes: Array.isArray(row.item_codes) ? row.item_codes.filter(Boolean) : (row.item_code ? [row.item_code] : []),
+    // ONE ENTRY PER 1688 LINE in this parcel, duplicates kept: two lines booked
+    // against the same product id are still two things in the bag, and itemCodes
+    // (which is distinct) collapses them into one.
+    productIds: Array.isArray(row.product_ids)
+      ? row.product_ids.map((c) => c || "")
+      : (row.item_code ? [row.item_code] : []),
+    // The 1688 ORDERS in this parcel, same order as itemCodes. Usually one; more
+    // when a supplier bagged several orders under one tracking number.
+    orderNumbers: Array.isArray(row.order_numbers)
+      ? row.order_numbers.filter(Boolean)
+      : (row.order_number ? [row.order_number] : []),
+    // How many 1688 lines the parcel holds — counted on the server, NOT derived
+    // from the two lists above: two lines of one order can carry the same product
+    // id, and a line whose id gtradea hasn't published carries none, so both
+    // lists can be shorter than the number of things in the bag.
+    productCount: Number(row.product_count) || 0,
     itemCode: row.item_code || "", // gtradea item code (GTI-100119) — see goodsCode()
     prCode: row.pr_code || "",     // gtradea PR / job id (PR-1029) — no longer displayed
   };
@@ -61,6 +77,49 @@ export const productCodes = (item) => {
   const list = Array.isArray(item?.itemCodes) ? item.itemCodes.filter(Boolean) : [];
   if (list.length) return list;
   return item?.itemCode ? [item.itemCode] : [];
+};
+
+// How many products are physically in this parcel. The server's count wins; the
+// two id lists are the floor for a row that predates it (a cached one, or one
+// from an endpoint that doesn't enrich), and one is the floor below that — a box
+// always holds at least the product it names.
+export const parcelSize = (item) =>
+  Math.max(
+    Number(item?.productCount) || 0,
+    productCodes(item).length,
+    Array.isArray(item?.orderNumbers) ? item.orderNumbers.length : 0,
+    1
+  );
+
+// The ids the label lists under the bars, one per product in the parcel.
+//
+// Product ids first — they name the goods, which is what staff match against the
+// portal. But a parcel's lines can share one product id, or carry none at all,
+// and a list that names three of five things is worse than no list: it reads as
+// the whole contents. So when the product ids don't name every line, the ORDER
+// numbers are tried instead (a supplier bagging two orders together is the
+// common shape of this), and whatever is left short is reported as a count by
+// the caller rather than silently dropped.
+export const parcelProductIds = (item) => {
+  const size = parcelSize(item);
+  const codes = productCodes(item);
+  if (codes.length >= size) return codes;
+  const orders = Array.isArray(item?.orderNumbers) ? item.orderNumbers.filter(Boolean) : [];
+  if (orders.length >= size) return orders;
+  return codes.length ? codes : orders;
+};
+
+// One entry per product physically in this parcel — the list the Ship panel
+// expands a parcel into. Unlike productCodes this keeps DUPLICATES: a parcel
+// whose two lines carry the same product id has two things in it, and showing
+// one row would hide the second exactly as the collapsed list used to.
+// Falls back through the distinct ids and then the box's own id, so a cached row
+// (or one from a build that didn't send the lines) still lists something.
+export const parcelLineIds = (item) => {
+  const lines = Array.isArray(item?.productIds) ? item.productIds : [];
+  if (lines.length) return lines.map((c) => c || "");
+  const codes = productCodes(item);
+  return codes.length ? codes : [goodsCode(item) || ""];
 };
 
 // EVERY id this box answers to, lowercased — the one list a scan or a search is

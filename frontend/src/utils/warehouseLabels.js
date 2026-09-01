@@ -14,7 +14,7 @@
 // Rack/shelf labels are unchanged: a simple native barcode (no logo/icons).
 
 import { toCanvas } from "bwip-js";
-import { enqueuePrintJob, goodsCode, productCodes } from "./warehouseApi";
+import { enqueuePrintJob, goodsCode, parcelProductIds, parcelSize } from "./warehouseApi";
 import { CELLZEN_LOGO_SVG, LABEL_ICONS_SVG } from "./labelAssets";
 import { GTRADEA_LABEL_ART, ART_W, ART_H } from "./gtradeaLabelArt";
 
@@ -567,13 +567,18 @@ function drawLabelBarcode(ctx, code, t) {
   return { x: Math.round(x), w };
 }
 
-// The other products in the same parcel, listed under the goods id.
+// What is in the parcel, listed under the goods id.
 //
-// Only drawn when there IS another one — a box holding a single product says
-// everything it needs to in the id line above, so its label is unchanged. The
-// id line now names one of the products itself (the lowest — see goodsCode), so
-// the caller drops that one from this list: printing it twice would spend the
-// band on a number already set in 24pt directly above it.
+// Only drawn when the bag holds MORE THAN ONE product — a box with a single
+// product says everything it needs to in the id line above, so its label is
+// unchanged. When it holds several, EVERY one of them is listed, the id line's
+// own included: a picker holding the box has to be able to count the things it
+// should contain off the label, and a list that quietly omits one (because it is
+// printed larger above) reads as "two products" on a bag of three.
+//
+// A parcel whose lines can't all be named — two lines sharing one product id,
+// or one gtradea hasn't published an id for — lists what it can and closes with
+// "+2", so the count is still right even when the ids can't carry it.
 //
 // The band is the clear stock between that id line and the first rule, measured
 // off the rendered artwork rather than derived from it (y 332..378 in printer
@@ -586,8 +591,16 @@ const GT_LIST_BAND = { top: 332, bottom: 375 };
 const GT_LIST_PX_MAX = 20;
 const GT_LIST_PX_MIN = 13;
 
-function drawProductList(ctx, codes, bar) {
-  if (!bar || !Array.isArray(codes) || codes.length < 1) return;
+function drawProductList(ctx, item, bar) {
+  if (!bar) return;
+  const size = parcelSize(item);
+  if (size < 2) return; // one product — the id line above already says it all
+  const ids = parcelProductIds(item).filter(Boolean);
+  // Never a bare "+3" with nothing in front of it: with no ids at all to print,
+  // the count is spelled out instead.
+  const codes = ids.length
+    ? (ids.length < size ? [...ids, `+${size - ids.length}`] : ids)
+    : [`${size} PRODUCTS`];
 
   const rowsFor = (n) => {
     const per = Math.ceil(codes.length / n);
@@ -665,7 +678,7 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
 
   drawField(ctx, GT_FIELDS.shelf, item.rackId || "-", t);
   drawField(ctx, GT_FIELDS.item, code, t);
-  drawProductList(ctx, productCodes(item).filter((c) => c !== code), bar);
+  drawProductList(ctx, item, bar);
   drawField(ctx, GT_FIELDS.order, item.orderNumber || "-", t);
   drawField(ctx, GT_FIELDS.tracking, item.trackingNumber || "-", t);
   drawField(ctx, GT_FIELDS.stamp, formatLabelStamp(item.createdAt), t);

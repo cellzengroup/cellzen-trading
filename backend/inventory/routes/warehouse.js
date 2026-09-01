@@ -246,6 +246,123 @@ router.get('/items/export.csv', authenticate, requireStaffOrAdmin, async (req, r
   }
 });
 
+// Every 1688 product that travels under one CN tracking number, attached to the
+// boxes that carry it. A parcel routinely holds MORE THAN ONE: a supplier
+// consolidating several lines — or several orders — into one bag ships them
+// under a single tracking, and the warehouse stores that bag as ONE box with one
+// goods id. The box is right; the label is what has to say the bag holds five
+// things and not one, so it prints this list under the bars.
+//
+// Sets three fields on each gtradea row, none of them model columns:
+//   item_codes    — the parcel's product ids (GTI-100119), distinct, stable order
+//   product_ids   — ONE PER LINE, duplicates kept, in the same order. Two lines
+//                   of an order can be booked against the same product id, and
+//                   they are still two things in the bag; item_codes collapses
+//                   them and product_ids is what keeps both visible.
+//   order_numbers — the parcel's 1688 order numbers, distinct, same order
+//   product_count — how many 1688 LINES the parcel actually holds
+// The count is separate on purpose. Two lines of one order can carry the SAME
+// product id (and a line gtradea hasn't published an id for carries none), so
+// neither list can be counted to learn how many products are in the bag — which
+// is exactly the case where a label built from the ids alone said "one".
+//
+// Also backfills the row's own item/PR/order/product fields from the parcel when
+// they weren't captured at put-away: rows stored before those columns existed,
+// and any the migration couldn't match because gtradea published the job code
+// only after the box was scanned in.
+//
+// Runs against a LIST so it costs one query for a whole page — pass [item] for a
+// single row. Rows that aren't gtradea, or have no tracking, are left untouched.
+async function attachParcelProducts(rows) {
+  if (!SupplierOrder) return rows;
+  const need = rows.filter((r) => r && r.source === 'gtradea' && r.tracking_number);
+  if (!need.length) return rows;
+
+  const trackings = [...new Set(need.map((r) => r.tracking_number))];
+  const orders = await SupplierOrder.findAll({
+    where: { china_tracking_no: { [Op.in]: trackings } },
+    attributes: ['china_tracking_no', 'job_code', 'item_code', 'order_number', 'product_name'],
+    // One tracking can carry several items (two variants in one parcel), and
+    // unlike job_code their item_codes DIFFER — so the row that wins decides
+    // which id gets printed. Order by item_code so the winner is always the same
+    // one, instead of whatever the planner happened to return first. NULLS LAST
+    // keeps a row that has an item_code ahead of one that doesn't, so a missing
+    // code never shadows a real one. order_number then id break the ties the
+    // item_code leaves, so the LIST comes back in the same order every read —
+    // a label must not reorder itself between two prints of the same box.
+    order: [['item_code', 'ASC NULLS LAST'], ['order_number', 'ASC'], ['id', 'ASC']],
+  });
+
+  const first = {};
+  const codesByTracking = {};
+  const lineIdsByTracking = {};
+  const ordersByTracking = {};
+  const linesByTracking = {};
+  for (const o of orders) {
+    const t = o.china_tracking_no;
+    if (!first[t]) first[t] = o;
+    linesByTracking[t] = (linesByTracking[t] || 0) + 1;
+    // Every line, duplicates and all — see product_ids above. A line gtradea
+    // hasn't published an id for goes in as null so the position is kept and the
+    // list still lines up with product_count.
+    (lineIdsByTracking[t] ||= []).push(o.item_code || null);
+    // Pushed in query order, so each parcel's lists stay stable between reads.
+    if (o.item_code && !(codesByTracking[t] || []).includes(o.item_code)) {
+      (codesByTracking[t] ||= []).push(o.item_code);
+    }
+    if (o.order_number && !(ordersByTracking[t] || []).includes(o.order_number)) {
+      (ordersByTracking[t] ||= []).push(o.order_number);
+    }
+  }
+
+  for (const r of need) {
+    const m = first[r.tracking_number];
+    if (m) {
+      if (!r.item_code) r.item_code = m.item_code;
+      if (!r.pr_code) r.pr_code = m.job_code;
+      if (!r.order_number) r.order_number = m.order_number;
+      if (!r.product_name) r.product_name = m.product_name;
+    }
+    // Not model columns — setDataValue is what carries them through toJSON to
+    // the client. Guarded rather than called outright: this is the warehouse's
+    // busiest endpoint, and a row that is a plain object rather than a model
+    // instance would otherwise take the whole list down with a 500 instead of
+    // just missing one field.
+    const codes = codesByTracking[r.tracking_number] || (r.item_code ? [r.item_code] : []);
+    const lineIds = lineIdsByTracking[r.tracking_number] || (r.item_code ? [r.item_code] : []);
+    const orderNos = ordersByTracking[r.tracking_number] || (r.order_number ? [r.order_number] : []);
+    // Falls back to what the lists themselves prove: a parcel with no matching
+    // 1688 rows at all still holds the one product this box names.
+    const count = linesByTracking[r.tracking_number] || Math.max(codes.length, orderNos.length, 1);
+    const set = (k, v) => { if (typeof r.setDataValue === 'function') r.setDataValue(k, v); else r[k] = v; };
+    set('item_codes', codes);
+    set('product_ids', lineIds);
+    set('order_numbers', orderNos);
+    set('product_count', count);
+  }
+  return rows;
+}
+
+// The same, for ONE row that is about to be returned on its own — and never at
+// the cost of the response. Every caller has already written to the database by
+// the time it runs, so a failed lookup here must not turn a put-away or a ship
+// that DID happen into a 500: staff would repeat it and hit the duplicate guard.
+// A label listing one product is a far smaller problem than that.
+//
+// Every endpoint that returns a whole item goes through this, not just the list:
+// the client swaps the row it holds for whatever a write hands back, so a lean
+// row from one of them would drop the parcel's product list out of a box that
+// was showing it — and the next label printed for that box would name one
+// product again, until a page refresh went through GET /items.
+async function attachParcelSafely(item) {
+  try {
+    await attachParcelProducts([item]);
+  } catch (e) {
+    console.error('Parcel product lookup failed (the write itself succeeded):', e?.message || e);
+  }
+  return item;
+}
+
 // GET /items?search=&status=&rack_id= — every item (shared), searchable
 router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
@@ -296,61 +413,10 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       // refresh. id is unique and never changes, so it pins down one order.
       const found = await WarehouseItem.findAll({ where, order: [['createdAt', 'DESC'], ['id', 'ASC']], limit: 5000 });
 
-      // For GtradeA items, resolve the linked 1688 item code + PR id + order # +
-      // product from the live supplier_orders (matched by CN tracking) whenever
-      // it wasn't captured at put-away time — so the ids always show once the
-      // item's tracking is a known 1688 order. Covers rows stored before those
-      // columns existed as well as any that the migration backfill couldn't match
-      // (e.g. gtradea only published the job code after the box was scanned in).
+      // Every product in each parcel + the ids and counts the label prints from,
+      // and the 1688 fields for rows that were stored without them.
       if (SupplierOrder) {
-        // Every gtradea row, not only the ones missing a field: the label now
-        // lists EVERY product in the parcel, and that list has to be built for
-        // rows whose own columns are already complete.
-        const need = found.filter((r) => r.source === 'gtradea' && r.tracking_number);
-        if (need.length) {
-          const trackings = [...new Set(need.map((r) => r.tracking_number))];
-          const orders = await SupplierOrder.findAll({
-            where: { china_tracking_no: { [Op.in]: trackings } },
-            attributes: ['china_tracking_no', 'job_code', 'item_code', 'order_number', 'product_name'],
-            // One tracking can carry several items (two variants in one parcel),
-            // and unlike job_code their item_codes DIFFER — so the row that wins
-            // decides which id gets printed. Order by item_code so the winner is
-            // always the same one, instead of whatever the planner happened to
-            // return first. NULLS LAST keeps a row that has an item_code ahead of
-            // one that doesn't, so a missing code never shadows a real one.
-            order: [['item_code', 'ASC NULLS LAST']],
-          });
-          const map = {};
-          const codesByTracking = {};
-          for (const o of orders) {
-            if (!map[o.china_tracking_no]) map[o.china_tracking_no] = o;
-            // The query is already ordered by item_code, so pushing in order
-            // keeps each parcel's product list stable between reads — the label
-            // must not reorder itself every time it is printed.
-            if (o.item_code && !(codesByTracking[o.china_tracking_no] || []).includes(o.item_code)) {
-              (codesByTracking[o.china_tracking_no] ||= []).push(o.item_code);
-            }
-          }
-          for (const r of found) {
-            const m = r.source === 'gtradea' ? map[r.tracking_number] : null;
-            if (m) {
-              if (!r.item_code) r.item_code = m.item_code;
-              if (!r.pr_code) r.pr_code = m.job_code;
-              if (!r.order_number) r.order_number = m.order_number;
-              if (!r.product_name) r.product_name = m.product_name;
-            }
-            // Not a model column — setDataValue is what carries it through
-            // toJSON to the client. Guarded rather than called outright: this is
-            // the warehouse's busiest endpoint, and a row that is a plain object
-            // rather than a model instance would otherwise take the whole list
-            // down with a 500 instead of just missing one field.
-            if (r.source === 'gtradea') {
-              const codes = codesByTracking[r.tracking_number] || (r.item_code ? [r.item_code] : []);
-              if (typeof r.setDataValue === 'function') r.setDataValue('item_codes', codes);
-              else r.item_codes = codes;
-            }
-          }
-        }
+        await attachParcelProducts(found);
 
         // Fallback by ORDER NUMBER for boxes the tracking join couldn't reach:
         // gtradea sometimes stops publishing a tracking it once had, and the box
@@ -597,6 +663,11 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
         throw error;
       }
     }
+    // The put-away sheet prints the label straight off this response, so the
+    // parcel's product list has to ride along — without it a bag holding five
+    // products printed a label naming one, and only a later page refresh (which
+    // goes through GET /items) ever showed the rest.
+    await attachParcelSafely(item);
     res.status(201).json({ success: true, data: item });
   } catch (error) {
     console.error('Put-away item error:', error);
@@ -621,6 +692,7 @@ router.post('/items/:id/shipment-mode', authenticate, requireStaffOrAdmin, async
       return res.status(400).json({ success: false, message: 'Shipment mode must be "By Air" or "By Land"' });
     }
     await item.update({ shipment_from: mode });
+    await attachParcelSafely(item);
     res.json({ success: true, data: item });
   } catch (error) {
     console.error('Update shipment mode error:', error);
@@ -655,6 +727,7 @@ router.post('/items/:id/ship', authenticate, requireStaffOrAdmin, async (req, re
       logistics_name: logisticsName.slice(0, 120),
       shipment_from: shipmentMode,
     });
+    await attachParcelSafely(item);
     res.json({ success: true, data: item });
   } catch (error) {
     console.error('Ship item error:', error);
