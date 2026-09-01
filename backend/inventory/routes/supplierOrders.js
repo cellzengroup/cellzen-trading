@@ -489,6 +489,14 @@ const PACKING_LOGO_BAND_PT = 105;
 const PX_PER_IN = 96; // Excel draws at 96dpi
 const PACKING_LOGO_WIDTH_PX = 2.16 * PX_PER_IN;
 const PACKING_LOGO_HEIGHT_PX = 0.58 * PX_PER_IN;
+// Where the mark sits in the leftover height of the band. 0.5 is dead centre by
+// the numbers; it READ as sitting low, because the band's neighbours aren't
+// symmetrical — the title above is a filled band that ends hard, while the white
+// below runs straight into the header fill, so the eye puts the band's middle
+// higher than the arithmetic does. A third of the free space above, two thirds
+// below, lifts it to where it looks centred. This is the one number to nudge if
+// it wants to go higher (smaller) or lower (up to 0.5).
+const PACKING_LOGO_TOP_BIAS = 1 / 3;
 
 // Size one downloaded photo to `targetWidth`, preserving its aspect ratio, in
 // whatever unit the caller works in (px for the sheet, pt for the PDF).
@@ -748,8 +756,9 @@ async function packingLogo() {
   }
 }
 
-// Where the Cellzen mark sits inside the row-2 band: dead centre, horizontally
-// and vertically, at the fixed 2.16in x 0.58in above.
+// Where the Cellzen mark sits inside the row-2 band: centred horizontally, and
+// vertically at PACKING_LOGO_TOP_BIAS of the free height, at the fixed
+// 2.16in x 0.58in above.
 //
 // COMPUTED, not copied out of the template. The band is a merge across every
 // column and which columns those are changes — ?images=0 drops one, moving the
@@ -790,7 +799,8 @@ function packingLogoAnchor(columns) {
     rem -= colPx[col];
     col += 1;
   }
-  const top = (bandH - h) / 2;
+  // Clamped so a band ever shorter than the mark can't push it above row 2.
+  const top = Math.max(0, (bandH - h) * PACKING_LOGO_TOP_BIAS);
 
   return {
     tl: {
