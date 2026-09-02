@@ -428,6 +428,13 @@ const PACKING_COLUMNS = [
   { key: 'name', header: 'Product Name', width: 24 },
   { key: 'brand', header: 'Brand name', width: 18 },
   { key: 'model', header: 'Model Number', width: 24 },
+  // The full 1688 listing title. It restates the Product Name beside it and is
+  // machine-translated marketing text, which is why it was dropped once — but
+  // it is what a forwarder and a customs broker read to see what the goods
+  // actually ARE, so it stays. 58 wide is the width it was set at originally:
+  // enough for a long title to wrap in two or three lines rather than pushing
+  // every other column off the page.
+  { key: 'description', header: 'Product Description', width: 58 },
   { key: 'quantity', header: 'Quantity', width: 14 },
   { key: 'unit', header: 'Unit', width: 14 },
   { key: 'kg', header: 'KG', width: 14 },
@@ -847,10 +854,10 @@ function packingLogoAnchor(columns) {
 // used as a physical packing reference. Values are returned raw — the sheet
 // writes them as numbers, the PDF formats them as text.
 //
-// There is deliberately no Product Description column: it held the raw 1688
-// listing title, which is machine-translated marketing text that restated the
-// Product Name at ~58 characters wide and forced every row to wrap. The short
-// name is what a packer actually reads off the line.
+// `name` is the SHORTENED product name (see productNames.js / the NER pass) and
+// `description` is the raw 1688 listing title it was cut down from — the two
+// columns are deliberately different renderings of the same field: a packer reads
+// the short name off the line, and a broker reads the full title.
 function packingRowValues(o, name) {
   return {
     marka: 'CZN-GT',   // fixed shipping mark for every carton in this batch
@@ -871,6 +878,10 @@ function packingRowValues(o, name) {
     name,
     brand: 'GT',       // gtradea doesn't track a real brand — generic house brand
     model: deriveModelNumber(o),
+    // Raw, uncut: whatever gtradea published as the listing title. Blank rather
+    // than a dash when there is none — an empty cell in a wrapped text column
+    // reads as "not supplied", where a dash reads as a value.
+    description: o.product_name || '',
     quantity: Number(o.quantity) || null,
     unit: 'pcs',
     kg: null,          // filled in by hand at packing time
