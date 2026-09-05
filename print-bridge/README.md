@@ -1,7 +1,7 @@
 # Cellzen Print Bridge (Deli DL-720C)
 
 A tiny local service that lets the website print labels **directly** to the
-Deli 720C thermal printer on **60 × 80 mm** stock, no browser print dialog.
+Deli 720C thermal printer on **80 × 120 mm** stock, no browser print dialog.
 
 - **Shipment labels** print the full approved design (CELLZEN logo, Code-128
   barcode of the goods code — the gtradea item code like `GTI-100119` where the item has
@@ -27,7 +27,7 @@ browser print — nothing breaks.
 1. **Install Node.js** (LTS) from <https://nodejs.org> — next-next-finish.
 2. Copy this whole `print-bridge` folder onto the warehouse PC (e.g. the Desktop).
 3. Make sure the Deli 720C is installed in Windows and prints a Windows test page.
-4. **Calibrate the labels once**: with 60 × 80 mm labels loaded, run the gap
+4. **Calibrate the labels once**: with 80 × 120 mm labels loaded, run the gap
    calibration (Deli utility, or hold the FEED button per the manual) so the
    printer learns where each label starts.
 5. Double-click **`start-bridge.bat`**. A window opens and lists your printers and
@@ -60,7 +60,7 @@ To undo it later, double-click `uninstall-autostart.bat`.
 | `printerName` | Exact Windows printer name. Leave `""` to auto-pick the Deli/720. | `""` |
 | `requirePrinterOnline` | Only print / take queued jobs while Windows can actually reach the printer. This is what makes printing follow the USB cable — leave it on. | `true` |
 | `dpi` | Printer resolution (203 dpi = 8 dots/mm) | `203` |
-| `widthMm` / `heightMm` | Label (media) size in mm | `60` × `80` |
+| `widthMm` / `heightMm` | Label (media) size in mm | `80` × `120` |
 | `gapMm` | Gap between die-cut labels (use `0` for continuous roll) | `3` |
 | `direction` | Flip to `0` if labels come out upside down | `1` |
 | `density` | Darkness 0–15 (raise if bars look faint) | `10` |
@@ -73,7 +73,7 @@ To undo it later, double-click `uninstall-autostart.bat`.
 | `yOffset` / `xOffset` | Rack barcode: nudge down/right (+), in dots | `0` |
 
 The shipment label is rendered by the website at exact printer resolution
-(480 × 640 dots) and printed 1:1, so it always fills the 60 × 80 mm label and the
+(640 × 960 dots) and printed 1:1, so it always fills the 80 × 120 mm label and the
 barcode stays scannable. The rack barcode is **auto-centered** for the label
 size, so codes of different lengths sit in the middle.
 
@@ -189,7 +189,7 @@ printer", so a label can't come out of an office laser or Print-to-PDF.
 
 Local (this PC):
 - `POST /print` — rack: `{ "code": "CZ-000123", "copies": 1 }`; shipment:
-  `{ "code": "...", "kind": "item", "bitmap": { "data": "<base64>", "widthBytes": 60, "height": 640 } }`
+  `{ "code": "...", "kind": "item", "bitmap": { "data": "<base64>", "widthBytes": 80, "height": 960 } }`
 - `GET /health` — `{ ok, printer }`
 - `GET /printers` — list installed printers + which is selected
 - `GET /selftest` — print a sample label

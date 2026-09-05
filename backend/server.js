@@ -201,7 +201,8 @@ const startServer = async () => {
   }
 
   // Start the daily retention sweep for the 1688 / Dispatched panels (see
-  // ./inventory/services/retention.js). Never blocks server startup.
+  // ./inventory/services/retention.js — DISPATCHED goods only; nothing still in
+  // stock is ever deleted). Never blocks server startup.
   try {
     require('./inventory/services/retention').startScheduler();
   } catch (e) {

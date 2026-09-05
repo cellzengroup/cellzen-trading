@@ -26,6 +26,7 @@ import {
   resolveItem,
 } from "../../../utils/warehouseApi";
 import { downloadItemLabel, downloadRackLabel, printItemLabel } from "../../../utils/warehouseLabels";
+import { readPackingListIds } from "../../../utils/packingListImport";
 
 // A scanned code is a SHELF label when it matches a location-code shape:
 // letters - digits - digits, where the letters may carry a leading number of
@@ -210,6 +211,21 @@ const supplierState = (o) => {
 const supplierShippable = (o) =>
   !!o.warehouseItemId && o.inWarehouse && o.warehouseStatus === "in_stock";
 
+// Every id a packing list can name this 1688 row by, uppercased for matching.
+//
+// The order matters as documentation, not as precedence — it is the SAME
+// fallback chain the export's "Goods No." column walks (see packingRowValues in
+// backend/inventory/routes/supplierOrders.js): the line's own gtradea item code
+// first, then the codes the matched box carries. All of them are accepted rather
+// than just the current one, so a sheet exported months ago — before item codes
+// existed, when the column still held a PR id or the internal CZN number — still
+// ticks its rows today.
+const supplierRowIds = (o) =>
+  [o.itemCode, o.jobCode, o.warehouseItemCode, o.warehousePrCode, o.warehouseCode]
+    .filter(Boolean)
+    .map((c) => String(c).trim().toUpperCase());
+const supplierOrderId = (o) => String(o.orderNumber || "").trim().toUpperCase();
+
 // A 1688 row rendered as the warehouse item it matched, for the ship confirm.
 // Used only as a FALLBACK when the box isn't in the loaded `items` list (a
 // background refresh hasn't landed yet) — the row already carries every field
@@ -367,6 +383,11 @@ const IconKeyboard = (p) => (<svg {...svgBase} {...p}><rect x="2" y="6" width="2
 const IconClose = (p) => (<svg {...svgBase} strokeWidth="2.2" {...p}><path d="M18 6 6 18M6 6l12 12" /></svg>);
 const IconReport = (p) => (<svg {...svgBase} {...p}><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6" /><path d="M9 17v-4" /><path d="M12 17v-6" /><path d="M15 17v-2" /></svg>);
 const IconTruck = (p) => (<svg {...svgBase} {...p}><path d="M14 17V6a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h1" /><path d="M9 17h5" /><path d="M18 17h2a1 1 0 0 0 1-1v-3.3a1 1 0 0 0-.2-.6l-2.9-3.7A1 1 0 0 0 17 8h-3" /><circle cx="7" cy="17.5" r="2" /><circle cx="16" cy="17.5" r="2" /></svg>);
+// The mirror of IconDownload — an arrow going INTO the tray. The Excel import
+// and the packing-list export sit next to each other, so the two have to read as
+// opposite directions of one thing rather than two unrelated glyphs.
+const IconUpload = (p) => (<svg {...svgBase} {...p}><path d="M12 15V3" /><path d="M7 8l5-5 5 5" /><path d="M5 21h14" /></svg>);
+const IconSheet = (p) => (<svg {...svgBase} {...p}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M3 15h18" /><path d="M9 3v18" /></svg>);
 
 /* ------------------------------ small pieces ------------------------------ */
 // Replaces the old in-stock/shipped Status pill — shipped vs. in-stock is
@@ -794,6 +815,13 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const [shipConfirmItems, setShipConfirmItems] = useState(null); // items awaiting ship confirm (1 or many)
   const [shipConfirmIsBatch, setShipConfirmIsBatch] = useState(false); // was the confirm opened by the batch button?
   const [shipConfirmFromSupplier, setShipConfirmFromSupplier] = useState(false); // opened from the 1688 panel's "Proceed to Shipment"?
+  // How many GOODS the 1688 panel had selected, which is NOT the number of
+  // things being shipped: several 1688 lines routinely share one CN tracking and
+  // therefore one physical parcel, and requestSupplierShip collapses those to a
+  // single /ship (a second call on the same box comes back 409). Kept so the
+  // confirm can reconcile the two numbers — without it the dialog followed
+  // "25 goods selected" with "Mark 23 items as shipped?" and read like a bug.
+  const [shipConfirmGoods, setShipConfirmGoods] = useState(0);
   const [batchBusy, setBatchBusy] = useState(false); // a batch ship/delete is in flight
   const [shipLogistics, setShipLogistics] = useState(""); // required at ship time
   // No separate "shipment mode" input at ship time anymore — each item already
@@ -880,6 +908,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     setShipLogistics("");
     setShipConfirmIsBatch(false);
     setShipConfirmFromSupplier(false);
+    setShipConfirmGoods(0);
     setShipConfirmItems(list);
   }, []);
   const requestBatchShip = () => {
@@ -890,6 +919,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     setShipLogistics("");
     setShipConfirmIsBatch(true);
     setShipConfirmFromSupplier(false);
+    setShipConfirmGoods(0);
     setShipConfirmItems(list);
   };
   const confirmShip = async () => {
@@ -941,6 +971,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       setShipSelectedId(item.id);
       setShipConfirmIsBatch(false);
       setShipConfirmFromSupplier(false);
+      setShipConfirmGoods(0);
       setShipConfirmItems([item]);
     },
     [findItem, showToast]
@@ -1387,13 +1418,114 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // "Proceed to Shipment" — batch dispatch straight from this panel, so goods
   // can be shipped against the 1688 order they belong to without first hunting
   // the matching CZN box down in the Ship tab. Same two-step shape as Ship's
-  // "Batch Ship": the button reveals a checkbox on each row, then "Ship
-  // selected" opens the SAME logistics confirm and the rows land in Dispatched.
+  // "Batch Ship": the rows get a checkbox, then "Ship selected" opens the SAME
+  // logistics confirm and the rows land in Dispatched.
+  //
+  // The button itself opens a chooser first, because there are two genuinely
+  // different ways a shipment gets picked here:
+  //   Manual         tick the rows — what this always did.
+  //   Excel import    hand back the packing list that was exported for this
+  //                   shipment and let its Goods No. / Order ID columns do the
+  //                   ticking. A pallet is routinely 80+ lines, and ticking
+  //                   those off a printed sheet by eye is where the mis-ships
+  //                   came from.
+  // Both land in the same place: `supplierShipMode` on, rows in `supplierSel`.
   const [supplierShipMode, setSupplierShipMode] = useState(false);
   const [supplierSel, setSupplierSel] = useState(() => new Set());
-  const exitSupplierShip = () => { setSupplierShipMode(false); setSupplierSel(new Set()); };
+  const [shipStartOpen, setShipStartOpen] = useState(false); // the how-do-you-want-to-pick chooser
+  const [importBusy, setImportBusy] = useState(false);       // a sheet is being parsed
+  const [importSummary, setImportSummary] = useState(null);  // what the last sheet matched
+  const importFileRef = useRef(null);
+  const exitSupplierShip = () => { setSupplierShipMode(false); setSupplierSel(new Set()); setImportSummary(null); };
+  const clearSupplierSel = () => setSupplierSel(new Set());
   const toggleSupplierSel = useCallback((id) => setSupplierSel((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }), []);
   const toggleAllSupplier = useCallback((rows, checked) => setSupplierSel((prev) => { const n = new Set(prev); rows.forEach((r) => (checked ? n.add(r.id) : n.delete(r.id))); return n; }), []);
+
+  // Manual pick — what "Proceed to Shipment" always did, now behind the chooser.
+  const startManualShip = () => {
+    setImportSummary(null);
+    setSupplierSel(new Set());
+    setSupplierShipMode(true);
+    setShipStartOpen(false);
+  };
+
+  // Excel pick — read the packing list's ids and tick the rows they name.
+  //
+  // Matched against the FULL order list rather than the visible one: a sheet
+  // names the goods it was packed from, and whether the panel happens to be
+  // filtered to "Received / By Air" at the time has nothing to do with it. The
+  // ship itself can only act on rows that are both selected AND visible (see
+  // requestSupplierShip), so any filter still standing would quietly drop part
+  // of the batch — the import clears them instead, and says so in the summary.
+  //
+  // Nothing here refuses: ids that name a row already dispatched, a row still in
+  // transit, or nothing at all are counted and reported. Staff need to know an
+  // 80-line sheet ticked 78 rows and WHICH two it couldn't, which a thrown error
+  // would tell them nothing about.
+  const handleImportFile = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // so re-picking the SAME file fires change again
+    if (!file) return;
+    setImportBusy(true);
+    try {
+      const { goods, orderFallbacks } = await readPackingListIds(file);
+      const goodsSet = new Set(goods);
+      // Order numbers are matched ONLY for sheet lines that carried no Goods No.
+      // (see orderFallbacks in packingListImport.js). Matching every order number
+      // ticked goods the packing list never listed — one line of an order put its
+      // whole order in the shipment — which is both wrong and impossible to read
+      // off a count.
+      const fallbackOrders = new Set(orderFallbacks);
+      const named = (o) =>
+        supplierRowIds(o).some((c) => goodsSet.has(c)) ||
+        (!!supplierOrderId(o) && fallbackOrders.has(supplierOrderId(o)));
+
+      const hit = supplierOrders.filter(named);
+      const ready = hit.filter(supplierShippable);
+      // Everything the sheet named that can't go out — already dispatched, or no
+      // box on the shelf. One number, because the split between those two doesn't
+      // change what anyone does next: they're all rows you can't tick.
+      const skipped = hit.length - ready.length;
+
+      const wasFiltered = !!supplierSearch.trim() || supplierSort !== "date" || supplierModeFilter !== "all";
+      if (wasFiltered) {
+        setSupplierSearch("");
+        setSupplierSort("date");
+        setSupplierModeFilter("all");
+      }
+
+      setSupplierSel(new Set(ready.map((o) => o.id)));
+      setImportSummary({
+        fileName: file.name,
+        // What the sheet ASKS for: one entry per printed line — its Goods No.,
+        // or its order number for a line that had none. Shown next to the count
+        // actually selected so the two can be read against each other at a
+        // glance; they match unless something on the sheet can't ship.
+        inExcel: goodsSet.size + fallbackOrders.size,
+        selected: ready.length,
+        skipped,
+      });
+      setSupplierShipMode(true);
+      setShipStartOpen(false);
+      showToast(
+        ready.length ? `${ready.length} goods selected` : "Nothing in that sheet is on the shelf right now",
+        ready.length ? "ok" : "warn"
+      );
+    } catch (err) {
+      showToast(err.message || "Could not read that file", "error");
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  // Esc closes the chooser — but not mid-parse, where the file is already being
+  // read and the dialog is the only thing reporting on it.
+  useEffect(() => {
+    if (!shipStartOpen) return undefined;
+    const onKey = (e) => { if (e.key === "Escape" && !importBusy) setShipStartOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [shipStartOpen, importBusy]);
 
   // Mode edits that haven't come back from the server yet, id -> chosen mode.
   // This tab re-polls every 20s, so without it a poll landing mid-PATCH paints
@@ -1706,6 +1838,31 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     [supplierShipRows, supplierSel]
   );
 
+  // While picking a shipment the table splits in two: what's going out at the
+  // top, everything still on the shelf underneath. A ticked row MOVES up rather
+  // than being listed in both — one row, one checkbox, so there's never a
+  // question of which copy is the real one, and the top table is a literal
+  // manifest of the batch about to ship. That matters most straight after an
+  // Excel import, where the top table IS the packing list.
+  const supplierSelectedRows = useMemo(
+    () => filteredSupplier.filter((o) => supplierSel.has(o.id)),
+    [filteredSupplier, supplierSel]
+  );
+  const supplierRestRows = useMemo(
+    () => filteredSupplier.filter((o) => !supplierSel.has(o.id)),
+    [filteredSupplier, supplierSel]
+  );
+  // Each table's own tickable subset, so its header select-all toggles that
+  // table and not the whole panel.
+  const supplierSelectedShippable = useMemo(
+    () => supplierShipRows.filter((o) => supplierSel.has(o.id)),
+    [supplierShipRows, supplierSel]
+  );
+  const supplierRestShippable = useMemo(
+    () => supplierShipRows.filter((o) => !supplierSel.has(o.id)),
+    [supplierShipRows, supplierSel]
+  );
+
   // Hand the selected 1688 rows to the shared ship confirm as the warehouse
   // boxes they matched.
   const requestSupplierShip = () => {
@@ -1724,6 +1881,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     setShipLogistics("");
     setShipConfirmIsBatch(false);
     setShipConfirmFromSupplier(true);
+    setShipConfirmGoods(orders.length);
     setShipConfirmItems(list);
   };
 
@@ -2328,36 +2486,45 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onChange={setSupplierSearch}
                 placeholder="Search order #, CN tracking, or product…"
               />
-              <button
-                type="button"
-                onClick={() => setExportOpen(true)}
-                disabled={supplierExporting}
-                className={BTN_GHOST}
-              >
-                <IconDownload className={`h-3.5 w-3.5 ${supplierExporting ? "animate-pulse" : ""}`} />
-                {supplierExporting ? "Exporting…" : "Export"}
-              </button>
-              <button
-                type="button"
-                onClick={() => setReportOpen(true)}
-                disabled={reportRunning}
-                className={BTN_GHOST}
-              >
-                <IconReport className={`h-3.5 w-3.5 ${reportRunning ? "animate-pulse" : ""}`} />
-                {reportRunning ? "Preparing…" : "Download Report"}
-              </button>
+              {/* Export and the billing report are paperwork you fetch BEFORE a
+                  shipment is picked, and both open a modal of their own. Once
+                  the panel is in shipment mode they'd be two more things to read
+                  past — and two ways to lose a half-built selection to a dialog
+                  — so the toolbar drops to shipment actions only. */}
               {!supplierShipMode ? (
-                <button
-                  type="button"
-                  onClick={() => setSupplierShipMode(true)}
-                  disabled={batchBusy}
-                  className={BTN_PRIMARY}
-                >
-                  <IconTruck className="h-3.5 w-3.5" /> Proceed to Shipment
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setExportOpen(true)}
+                    disabled={supplierExporting}
+                    className={BTN_GHOST}
+                  >
+                    <IconDownload className={`h-3.5 w-3.5 ${supplierExporting ? "animate-pulse" : ""}`} />
+                    {supplierExporting ? "Exporting…" : "Export"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReportOpen(true)}
+                    disabled={reportRunning}
+                    className={BTN_GHOST}
+                  >
+                    <IconReport className={`h-3.5 w-3.5 ${reportRunning ? "animate-pulse" : ""}`} />
+                    {reportRunning ? "Preparing…" : "Download Report"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShipStartOpen(true)}
+                    disabled={batchBusy}
+                    className={BTN_PRIMARY}
+                  >
+                    <IconTruck className="h-3.5 w-3.5" /> Proceed to Shipment
+                  </button>
+                </>
               ) : (
                 <>
-                  <span className="text-xs font-semibold text-[#412460]">{supplierSelCount} selected</span>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-[#412460]/10 px-3 py-2 text-xs font-bold text-[#412460]">
+                    <IconCheck className="h-3.5 w-3.5" /> {supplierSelCount} selected
+                  </span>
                   <button
                     type="button"
                     onClick={requestSupplierShip}
@@ -2366,23 +2533,165 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   >
                     <IconTruck className="h-3.5 w-3.5" /> {batchBusy ? "Shipping…" : "Ship selected"}
                   </button>
+                  {/* Re-import without leaving the mode — the first sheet picked
+                      is often the wrong revision. A sheet REPLACES the selection
+                      rather than adding to it, so what's ticked is always
+                      exactly what the banner below says it is. */}
+                  <button
+                    type="button"
+                    title="Replaces the current selection with the goods named in the sheet"
+                    onClick={() => importFileRef.current?.click()}
+                    disabled={importBusy || batchBusy}
+                    className={BTN_GHOST}
+                  >
+                    <IconUpload className={`h-3.5 w-3.5 ${importBusy ? "animate-pulse" : ""}`} />
+                    {importBusy ? "Reading…" : "Import Excel"}
+                  </button>
                   <button type="button" onClick={exitSupplierShip} disabled={batchBusy} className={BTN_GHOST}>
                     Cancel
                   </button>
                 </>
               )}
             </div>
-            <SupplierOrdersTable
-              rows={filteredSupplier}
-              loading={supplierLoading}
-              filtered={!!supplierSearch.trim() || supplierSort !== "date" || supplierModeFilter !== "all"}
-              selectable={supplierShipMode}
-              selected={supplierSel}
-              shippableRows={supplierShipRows}
-              onToggleSelect={toggleSupplierSel}
-              onToggleAll={(checked) => toggleAllSupplier(supplierShipRows, checked)}
-              onSetMode={setSupplierMode}
-              modeBusy={modeBusy}
+
+            {/* One number: how many goods the sheet just selected. Everything
+                else about the import (rows read, ids parsed, why a row missed)
+                was noise at a glance — the count is the only thing anyone acts
+                on, and the table below already shows exactly which rows. The
+                one exception is goods on the sheet that CAN'T ship, which is
+                said in plain words because silently dropping a line off a
+                packing list is how a shipment goes out short. */}
+            {supplierShipMode && importSummary && (
+              <div className="mb-4 flex items-center gap-3 rounded-2xl bg-[#412460]/[0.04] p-4 ring-1 ring-[#412460]/12">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-white text-[#412460] ring-1 ring-[#412460]/15">
+                  <IconSheet className="h-4 w-4" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  {/* Two numbers, side by side and labelled, because the only
+                      question being asked of this banner is "did it pick up
+                      everything on my sheet?" — which is a comparison, not a
+                      single figure. Equal is the good case and reads as such;
+                      a short count turns amber and the line below says why. */}
+                  <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+                    <span className="flex items-baseline gap-2">
+                      <span className={LABEL}>In Excel</span>
+                      <span className="text-sm font-bold text-[#2D2D2D]">{importSummary.inExcel}</span>
+                    </span>
+                    <span className="flex items-baseline gap-2">
+                      <span className={LABEL}>Selected goods</span>
+                      <span
+                        className={`text-sm font-bold ${
+                          importSummary.selected === importSummary.inExcel ? "text-[#412460]" : "text-[#B99353]"
+                        }`}
+                      >
+                        {importSummary.selected}
+                      </span>
+                    </span>
+                  </div>
+                  <p className="mt-1 truncate text-[11px] text-[#2D2D2D]/55">
+                    {importSummary.fileName}
+                    {importSummary.skipped > 0 && (
+                      <span className="text-[#B99353]">
+                        {" "}· {importSummary.skipped} on this sheet can&rsquo;t ship yet
+                      </span>
+                    )}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setImportSummary(null)}
+                  aria-label="Dismiss import summary"
+                  className="shrink-0 rounded-full p-1.5 text-[#2D2D2D]/35 transition-colors hover:bg-white hover:text-[#412460]"
+                >
+                  <IconClose className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Shipment mode reads top-down: the manifest first, then the shelf
+                it's being built from. Outside it the panel is one flat table, as
+                it always was. */}
+            {supplierShipMode ? (
+              <div className="space-y-7">
+                <section>
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <SectionTitle>Selected shipments ({supplierSelCount})</SectionTitle>
+                    {supplierSelCount > 0 && (
+                      <button type="button" onClick={clearSupplierSel} disabled={batchBusy} className={BTN_GHOST}>
+                        Clear selection
+                      </button>
+                    )}
+                  </div>
+                  {supplierSelectedRows.length > 0 ? (
+                    <SupplierOrdersTable
+                      rows={supplierSelectedRows}
+                      selectable
+                      selected={supplierSel}
+                      shippableRows={supplierSelectedShippable}
+                      onToggleSelect={toggleSupplierSel}
+                      onToggleAll={(checked) => toggleAllSupplier(supplierSelectedShippable, checked)}
+                      onSetMode={setSupplierMode}
+                      modeBusy={modeBusy}
+                    />
+                  ) : (
+                    <div className="rounded-2xl bg-[#F6F4F0] px-4 py-8 text-center">
+                      <p className="text-xs text-[#2D2D2D]/50">
+                        Nothing selected yet — tick the goods below, or
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => importFileRef.current?.click()}
+                        disabled={importBusy}
+                        className={`${BTN_GHOST} mt-3`}
+                      >
+                        <IconUpload className={`h-3.5 w-3.5 ${importBusy ? "animate-pulse" : ""}`} />
+                        {importBusy ? "Reading…" : "Import a packing list"}
+                      </button>
+                    </div>
+                  )}
+                </section>
+                <section>
+                  <div className="mb-3">
+                    <SectionTitle>All goods ({supplierRestRows.length})</SectionTitle>
+                  </div>
+                  <SupplierOrdersTable
+                    rows={supplierRestRows}
+                    loading={supplierLoading}
+                    filtered={!!supplierSearch.trim() || supplierSort !== "date" || supplierModeFilter !== "all"}
+                    empty={supplierSelectedRows.length > 0 ? "Every order here is already in the shipment above." : ""}
+                    selectable
+                    selected={supplierSel}
+                    shippableRows={supplierRestShippable}
+                    onToggleSelect={toggleSupplierSel}
+                    onToggleAll={(checked) => toggleAllSupplier(supplierRestShippable, checked)}
+                    onSetMode={setSupplierMode}
+                    modeBusy={modeBusy}
+                  />
+                </section>
+              </div>
+            ) : (
+              <SupplierOrdersTable
+                rows={filteredSupplier}
+                loading={supplierLoading}
+                filtered={!!supplierSearch.trim() || supplierSort !== "date" || supplierModeFilter !== "all"}
+                selected={supplierSel}
+                shippableRows={supplierShipRows}
+                onToggleSelect={toggleSupplierSel}
+                onToggleAll={(checked) => toggleAllSupplier(supplierShipRows, checked)}
+                onSetMode={setSupplierMode}
+                modeBusy={modeBusy}
+              />
+            )}
+
+            {/* The file picker both import buttons and the chooser drive. Kept
+                mounted (not inside the chooser) so re-importing from the toolbar
+                doesn't have to reopen a dialog to reach it. */}
+            <input
+              ref={importFileRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              onChange={handleImportFile}
+              className="hidden"
             />
           </div>
         )}
@@ -2409,6 +2718,89 @@ export default function WarehouseApp({ mode = "cellzen" }) {
           )}
         </div>
       </div>
+
+      {/* How this shipment gets picked. Two ways in, asked once, up front —
+          rather than a mode that silently starts empty and an import button
+          buried in a toolbar nobody reads on a warehouse tablet. */}
+      {shipStartOpen && (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-[#2D2D2D]/50 p-4 backdrop-blur-sm"
+          onClick={() => { if (!importBusy) setShipStartOpen(false); }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Choose how to pick this shipment"
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-6 shadow-2xl"
+          >
+            <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-[#412460]/10 text-[#412460]">
+              <IconTruck className="h-5 w-5" />
+            </span>
+            <h3 className="text-base font-bold">Proceed to shipment</h3>
+            <p className="mt-1 text-xs text-[#2D2D2D]/55">
+              How do you want to pick the goods going out?
+            </p>
+
+            <div className="mt-5 space-y-3">
+              {/* Excel leads: it's the one that saves the work, and it's what a
+                  packer already has in hand after exporting the packing list. */}
+              <button
+                type="button"
+                onClick={() => importFileRef.current?.click()}
+                disabled={importBusy}
+                className="flex w-full items-start gap-3 rounded-2xl bg-[#F6F4F0] p-4 text-left ring-1 ring-transparent transition-all hover:bg-white hover:ring-[#412460]/30 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#412460] text-white">
+                  <IconSheet className={`h-4 w-4 ${importBusy ? "animate-pulse" : ""}`} />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-[#2D2D2D]">
+                    {importBusy ? "Reading the sheet…" : "Import through Excel"}
+                  </span>
+                  <span className="mt-0.5 block text-xs text-[#2D2D2D]/55">
+                    Pick the packing list you exported. Every <strong className="font-semibold">Goods No.</strong> and{" "}
+                    <strong className="font-semibold">Order ID</strong> in it is ticked here automatically.
+                  </span>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={startManualShip}
+                disabled={importBusy}
+                className="flex w-full items-start gap-3 rounded-2xl bg-[#F6F4F0] p-4 text-left ring-1 ring-transparent transition-all hover:bg-white hover:ring-[#412460]/30 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-white text-[#412460] ring-1 ring-[#E6E2DB]">
+                  <IconKeyboard className="h-4 w-4" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-[#2D2D2D]">Manual shipment</span>
+                  <span className="mt-0.5 block text-xs text-[#2D2D2D]/55">
+                    Tick the received orders yourself, straight from the table.
+                  </span>
+                </span>
+              </button>
+            </div>
+
+            <p className="mt-4 text-[11px] text-[#2D2D2D]/40">
+              Either way, only 📦 Received goods can be selected — and you confirm the
+              logistics carrier before anything ships.
+            </p>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShipStartOpen(false)}
+                disabled={importBusy}
+                className={BTN_GHOST}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* GtradeA billing report — all time, or bounded by order date */}
       {reportOpen && (
@@ -2890,13 +3282,22 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 </button>
               )}
             </div>
+            {/* Goods vs parcels. The 1688 panel selects GOODS, but a ship acts on
+                the PARCEL they arrived in, and several 1688 lines routinely share
+                one CN tracking. Saying only the parcel count read as if rows had
+                been dropped between the panel and this dialog, so whenever the two
+                differ both numbers are named and the gap is explained. */}
             <h3 className="text-base font-bold">
-              {shipConfirmItems.length > 1
-                ? `Mark ${shipConfirmItems.length} items as shipped?`
-                : "Mark this item as shipped?"}
+              {shipConfirmGoods > shipConfirmItems.length
+                ? `Ship ${shipConfirmGoods} goods in ${shipConfirmItems.length} parcels?`
+                : shipConfirmItems.length > 1
+                  ? `Mark ${shipConfirmItems.length} items as shipped?`
+                  : "Mark this item as shipped?"}
             </h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              {shipConfirmItems.length > 1 ? (
+              {shipConfirmGoods > shipConfirmItems.length ? (
+                <>All {shipConfirmGoods} selected goods are dispatched — goods sharing a CN tracking are one parcel, so they ship together.</>
+              ) : shipConfirmItems.length > 1 ? (
                 "These move out of stock and into Dispatched."
               ) : (
                 <>This moves <span className="font-semibold text-[#412460]">{goodsCode(shipConfirmItems[0])}</span> out of stock and into Dispatched.</>
@@ -2931,7 +3332,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               </dl>
             )}
             <p className="mt-2 text-[11px] text-[#2D2D2D]/40">
-              {shipConfirmItems.length > 1 ? "Each ships via the mode set when its label was printed." : "Set when the label was printed — reprint the label to change it."}
+              {shipConfirmGoods > shipConfirmItems.length
+                ? "One line per parcel, named by the goods id on its label. Each ships via the mode set when that label was printed."
+                : shipConfirmItems.length > 1
+                  ? "Each ships via the mode set when its label was printed."
+                  : "Set when the label was printed — reprint the label to change it."}
             </p>
 
             <div className="mt-4 space-y-3">
@@ -2961,7 +3366,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 className="inline-flex items-center gap-1.5 rounded-full bg-[#412460] px-5 py-2.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-[#B99353] active:scale-[.98]"
               >
                 <IconCheck className="h-3.5 w-3.5" />
-                {shipConfirmItems.length > 1 ? `Ship ${shipConfirmItems.length} items` : "Mark as Shipped"}
+                {shipConfirmGoods > shipConfirmItems.length
+                  ? `Ship ${shipConfirmGoods} goods`
+                  : shipConfirmItems.length > 1
+                    ? `Ship ${shipConfirmItems.length} items`
+                    : "Mark as Shipped"}
               </button>
             </div>
           </div>
@@ -3930,7 +4339,10 @@ function WarehousePill({ order }) {
 // `shippableRows` is the subset that may be ticked — passed in rather than
 // recomputed here so the header's select-all, the toolbar's "n selected" counter
 // and the ship action are all driven by the exact same list.
-function SupplierOrdersTable({ rows, loading, filtered = false, selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, modeBusy }) {
+// `empty` overrides the no-rows message. Shipment mode splits these rows across
+// two of these tables, and the "All goods" one empties for a reason neither
+// default covers: everything visible is already in the shipment above it.
+function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, modeBusy }) {
   // Track images that failed to load and hide them via STATE, not by mutating the
   // DOM node — an imperative style change would persist across re-renders and could
   // permanently hide a later-valid image for the same row key.
@@ -3987,7 +4399,9 @@ function SupplierOrdersTable({ rows, loading, filtered = false, selectable = fal
         {/* Now that the search and the two dropdowns can each empty the table on
             their own, "nothing has synced yet" would be a flat lie — and would send
             staff hunting a sync problem that isn't there. */}
-        {filtered ? (
+        {empty ? (
+          empty
+        ) : filtered ? (
           "No 1688 orders match the current search and filters."
         ) : (
           <>No 1688 orders yet. They appear here automatically once gtradea has procurement data — or tap &quot;Sync now&quot;.</>

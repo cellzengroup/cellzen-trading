@@ -71,6 +71,17 @@ const SupplierOrder = sequelize
       // on an otherwise complete row when only the job details were available.
       // See services/gtradeaSync.js (PAYMENTS_PATH, ingestDetails).
       paid_amount: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+      // When the parcel this line travels in was DISPATCHED from the warehouse
+      // — stamped by POST /items/:id/ship, matched on china_tracking_no.
+      //
+      // Duplicates warehouse_items.shipped_at on purpose. The two retention
+      // windows outlive each other: the Dispatched panel drops its row 30 days
+      // after dispatch, while this row is kept for 60, so by the time the 1688
+      // sweep runs the warehouse row it would have read the date from is long
+      // gone. NULL means "never dispatched" — a received-but-unshipped line, or
+      // one still on the shelf — and the retention sweep only ever deletes rows
+      // where this is set, which is what keeps stock out of its reach.
+      dispatched_at: { type: DataTypes.DATE, allowNull: true },
       // When the order was placed on gtradea (the procurement job's created_at,
       // which lines up with the date encoded in order_number, e.g.
       // ORD-20260717-908966 -> 2026-07-17). NOT the same as synced_at, which is

@@ -27,7 +27,7 @@ const PrintJob = sequelize
         defaultValue: 1,
       },
       // Pre-rendered label image, so a phone-queued job prints byte-identical to
-      // one printed on the warehouse PC. The website renders the full 60x80mm
+      // one printed on the warehouse PC. The website renders the full 80x120mm
       // shipment label once, packs it to a 1-bit bitmap, and stores it here; the
       // print agent feeds it straight to the Deli 720C as a TSPL BITMAP. NULL for
       // simple native-barcode jobs (e.g. rack labels), which the agent builds

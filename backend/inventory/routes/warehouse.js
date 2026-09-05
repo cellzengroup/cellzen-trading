@@ -727,6 +727,22 @@ router.post('/items/:id/ship', authenticate, requireStaffOrAdmin, async (req, re
       logistics_name: logisticsName.slice(0, 120),
       shipment_from: shipmentMode,
     });
+    // Stamp the dispatch date onto this parcel's 1688 lines. They outlive the
+    // warehouse row (see retention.js — 60 days against 30), so the date has to
+    // live on them or the 1688 sweep has nothing to measure. Every line of the
+    // parcel is stamped: one CN tracking is one physical box, and it all ships
+    // at once. Never fatal — the box IS shipped by this point, and a 500 here
+    // would send staff to ship it a second time.
+    if (SupplierOrder && item.tracking_number) {
+      try {
+        await SupplierOrder.update(
+          { dispatched_at: item.shipped_at || new Date() },
+          { where: { china_tracking_no: item.tracking_number } }
+        );
+      } catch (e) {
+        console.error('Could not stamp dispatched_at on the 1688 lines (item shipped):', e?.message || e);
+      }
+    }
     await attachParcelSafely(item);
     res.json({ success: true, data: item });
   } catch (error) {
@@ -776,7 +792,7 @@ router.post('/print-jobs', authenticate, requireStaffOrAdmin, async (req, res) =
       const okDims =
         Number.isInteger(widthBytes) && widthBytes > 0 && widthBytes <= 512 &&
         Number.isInteger(height) && height > 0 && height <= 4096;
-      // base64 of a 60x80mm mono label is ~51KB; cap well above that, reject abuse.
+      // base64 of an 80x120mm mono label is ~100KB; cap well above that, reject abuse.
       if (okDims && /^[A-Za-z0-9+/=]+$/.test(bmp.data) && bmp.data.length <= 400000) {
         bitmap = { data: bmp.data, widthBytes, height };
       } else {

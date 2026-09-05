@@ -1,11 +1,11 @@
 // Warehouse label + barcode generation.
 //
-// Shipment (item) labels use the approved 60 x 80 mm design: CELLZEN logo, a
+// Shipment (item) labels use the approved 80 x 120 mm design: CELLZEN logo, a
 // Code-128 barcode of the item's goods code (the gtradea item code where there
 // is one — see goodsCode() in warehouseApi.js), the Shelf / Order / Tracking
 // number lines, the handling-icon row, and the footer.
 // The whole label is rendered ONCE onto a canvas at exact printer
-// resolution (480 x 640 dots = 60 x 80 mm at 8 dots/mm ≈ 203 dpi). That single
+// resolution (640 x 960 dots = 80 x 120 mm at 8 dots/mm ≈ 203 dpi). That single
 // image is the source of truth:
 //   - Download  → the canvas as a PNG.
 //   - Print     → the canvas packed to a 1-bit bitmap and sent to the Deli 720C
@@ -14,7 +14,7 @@
 // Rack/shelf labels are unchanged: a simple native barcode (no logo/icons).
 
 import { toCanvas } from "bwip-js";
-import { enqueuePrintJob, goodsCode, parcelProductIds, parcelSize } from "./warehouseApi";
+import { enqueuePrintJob, goodsCode, parcelProductIds } from "./warehouseApi";
 import { CELLZEN_LOGO_SVG, LABEL_ICONS_SVG } from "./labelAssets";
 import { GTRADEA_LABEL_ART, ART_W, ART_H } from "./gtradeaLabelArt";
 
@@ -27,26 +27,43 @@ const BLACK = "#000000"; // shipment-label content prints as solid black
 // 203 dpi ≈ 8 dots/mm (the standard TSPL approximation). The whole label is one
 // bitmap at printer resolution so the printed output matches the design exactly.
 const DOTS_PER_MM = 8;
-const LABEL_W_MM = 60;
-const LABEL_H_MM = 80;
-const CANVAS_W = LABEL_W_MM * DOTS_PER_MM; // 480
-const CANVAS_H = LABEL_H_MM * DOTS_PER_MM; // 640
-const CENTER_X = CANVAS_W / 2; // 240
+const LABEL_W_MM = 80;
+const LABEL_H_MM = 120;
+const CANVAS_W = LABEL_W_MM * DOTS_PER_MM; // 640
+const CANVAS_H = LABEL_H_MM * DOTS_PER_MM; // 960
+const CENTER_X = CANVAS_W / 2; // 320
+
+// ------------------------------------------------- CELLZEN design, scaled up
+// The CELLZEN label was drawn on the old 60 x 80 mm stock, and every position
+// below is one of those hand-tuned 480 x 640 dots. Rather than re-tune the whole
+// stack for the 80 x 120 mm stock, the design is scaled up AS A UNIT: CZ_S is the
+// largest uniform scale that fits — width-bound, so the design still fills the
+// label edge to edge exactly as it did — and CZ_DY centres it on the taller
+// stock. cz()/czY() turn a design dot into a printer dot, so every constant below
+// stays readable as the number the design was actually tuned with, and the
+// physical size of everything on the sticker grows with the stock (a third
+// bigger) instead of sitting in the top-left corner of it.
+const CZ_W = 480;
+const CZ_H = 640;
+const CZ_S = Math.min(CANVAS_W / CZ_W, CANVAS_H / CZ_H); // 4/3
+const CZ_DY = Math.round((CANVAS_H - CZ_H * CZ_S) / 2);
+const cz = (v) => Math.round(v * CZ_S);       // design dot -> printer dot
+const czY = (v) => CZ_DY + cz(v);             // ... and down onto the taller stock
 
 // Nudge all content slightly right of centre (to sit better on the label).
-const CONTENT_DX = 8;
+const CONTENT_DX = cz(8);
 const CX = CENTER_X + CONTENT_DX; // content centre line (all elements centre here)
-const CONTENT_W = 462; // max text width, centred on CX (small side margins)
-const FOOTER_W = 470; // the long support line may use a touch more width
+const CONTENT_W = cz(462); // max text width, centred on CX (small side margins)
+const FOOTER_W = cz(470); // the long support line may use a touch more width
 const LETTER_SPACING = 0; // no extra letter tracking on the text lines
 
 // Vertical layout (dots). Image blocks use their TOP; text uses its BASELINE.
 // The barcode band holds the bars + a gap + the goods number; the Shelf / Order /
 // Tracking block sits just below it.
-const LOGO_TOP = 16;
-const LOGO_W = 270;
-const BARCODE_TOP = 122;
-const BARCODE_MAX_W = 468;
+const LOGO_TOP = czY(16);
+const LOGO_W = cz(270);
+const BARCODE_TOP = czY(122);
+const BARCODE_MAX_W = cz(468);
 // Module scale (printer dots per narrow bar), PINNED rather than chosen per code.
 //
 // It used to step 4 -> 3 -> 2, taking the widest scale whose barcode still fit
@@ -59,35 +76,37 @@ const BARCODE_MAX_W = 468;
 // horizontally. Two boxes side by side would have carried visibly different
 // barcodes.
 //
-// 3 is simply the widest scale a 10-character code fits in at 60 mm, so it is
-// the one every id can share. Keep it an integer: a module has to land on whole
-// printer dots or the bars blur and stop scanning.
-const BARCODE_SCALE = 3;
+// 3 was the widest scale a 10-character code fit in at 60 mm. On the 80 mm stock
+// a design dot is 4/3 of a printer dot, so 4 is that same bar width in
+// millimetres and is the scale every id shares now: GTI-100119 comes to 508 dots,
+// inside the 624 this stock allows. Keep it an integer: a module has to land on
+// whole printer dots or the bars blur and stop scanning.
+const BARCODE_SCALE = 4;
 // Bar height in printer DOTS (bars only — the number underneath is drawn
 // separately). Expressed in dots rather than bwip-js's millimetres so it stays
 // fixed no matter what BARCODE_SCALE is: bwip takes mm at 72dpi and multiplies
 // by the scale, so asking for a constant mm value would make the printed height
 // swing with the scale. 114 and 79 are what the old scale-4 render produced, so
 // the bars come off the printer exactly as tall as they always have.
-const BARCODE_BAR_DOTS = 114;
+const BARCODE_BAR_DOTS = cz(114);
 const barMm = (dots, scale) => dots / (2.8346 * scale); // dots -> bwip-js mm@72dpi
 // The goods number, drawn by us under the bars (smaller + letter-spaced).
-const CODE_GAP = 12; // space between the bars and the number
-const CODE_SIZE = 42;
-const CODE_SPACING = 12; // letter spacing on the number
+const CODE_GAP = cz(12); // space between the bars and the number
+const CODE_SIZE = cz(42);
+const CODE_SPACING = cz(12); // letter spacing on the number
 
 // Optional "SHIPMENT: BY AIR/LAND" banner, drawn full-bleed under the logo when
 // a shipment mode is picked at print time. Everything below it (down through the
 // info block) has to keep fitting in the same space, so the barcode band shrinks
 // to make room instead of pushing the info lines / icons / footer around.
-const MODE_BAR_TOP = 128;
-const MODE_BAR_H = 32;
-const MODE_BAR_FONT = 19;
-const MODE_BAR_SPACING = 2;
-const BARCODE_TOP_WITH_MODE = MODE_BAR_TOP + MODE_BAR_H + 14;
-const BARCODE_BAR_DOTS_WITH_MODE = 79; // vs. BARCODE_BAR_DOTS for the normal barcode
-const CODE_GAP_WITH_MODE = 10;
-const CODE_SIZE_WITH_MODE = 32; // vs. CODE_SIZE for the normal barcode's number
+const MODE_BAR_TOP = czY(128);
+const MODE_BAR_H = cz(32);
+const MODE_BAR_FONT = cz(19);
+const MODE_BAR_SPACING = cz(2);
+const BARCODE_TOP_WITH_MODE = MODE_BAR_TOP + MODE_BAR_H + cz(14);
+const BARCODE_BAR_DOTS_WITH_MODE = cz(79); // vs. BARCODE_BAR_DOTS for the normal barcode
+const CODE_GAP_WITH_MODE = cz(10);
+const CODE_SIZE_WITH_MODE = cz(32); // vs. CODE_SIZE for the normal barcode's number
 
 // The info block — "Shelf Number:", "Order Number:", "Tracking Number:" — laid
 // out as one stack between the barcode band and the handling icons.
@@ -96,24 +115,34 @@ const CODE_SIZE_WITH_MODE = 32; // vs. CODE_SIZE for the normal barcode's number
 // governs it) so they read as a set. A cellzen item has no 1688 order number,
 // so its block is two lines and simply ends higher — the icons and footer stay
 // put either way.
-const INFO_TOP_Y = 330;
-const INFO_LINE_GAP = 35;
-const INFO_FONT_MAX = 30;
-const ICONS_TOP = 422;
-const ICONS_W = 250;
-const FOOTER1_Y = 542;
-const FOOTER2_Y = 574;
-const FOOTER3_Y = 606;
+const INFO_TOP_Y = czY(330);
+const INFO_LINE_GAP = cz(35);
+const INFO_FONT_MAX = cz(30);
+const ICONS_TOP = czY(422);
+const ICONS_W = cz(250);
+const FOOTER1_Y = czY(542);
+const FOOTER2_Y = czY(574);
+const FOOTER3_Y = czY(606);
+const FOOTER_FONT_MAX = cz(28); // the three footer lines share one size
 
 const FONT_STACK = "'Inter',system-ui,-apple-system,'Segoe UI',Arial,sans-serif";
 const SUPPORT_PHONE = "+8613073040201";
 
-// Inter, hosted on Supabase Storage (public bucket) and loaded via FontFace so
-// the label renders in the same face on every device — not the local machine's
-// fonts. Best-effort: if Supabase is unreachable the canvas falls back to the
-// system sans in FONT_STACK, so a label still prints.
-const INTER_BASE =
-  "https://sdecwugvmhyychwxnrvh.supabase.co/storage/v1/object/public/public-assets/fonts/inter";
+// Inter, served from THIS site (frontend/public/fonts/Inter) and loaded via
+// FontFace so the label renders in the same face on every device — not the local
+// machine's fonts.
+//
+// It used to be fetched from a Supabase Storage bucket, which turned out to be a
+// silent single point of failure: the moment that project passed its egress
+// quota every request came back 402 and EVERY label printed in the machine's
+// system sans instead of Inter, with nothing but a console warning to say so.
+// The four faces are 90 KB in total — far too little to be worth an external
+// dependency the printer's typeface hangs on. Same origin as the app now, so a
+// label can only lose Inter if the app itself failed to load.
+//
+// The fallback below stays regardless: a label that prints in the wrong face
+// still beats one that doesn't print.
+const INTER_BASE = "/fonts/Inter";
 const INTER_FACES = [
   { weight: "400", file: "inter-latin-400-normal.woff2" },
   { weight: "500", file: "inter-latin-500-normal.woff2" },
@@ -137,7 +166,7 @@ function loadInterFonts() {
             weight,
             style: "normal",
           });
-          // Bound the fetch: a slow/offline Supabase must never hang printing.
+          // Bound the fetch: a slow or unreachable font must never hang printing.
           await Promise.race([
             face.load(),
             new Promise((_, reject) => setTimeout(() => reject(new Error("font load timeout")), 4000)),
@@ -145,12 +174,14 @@ function loadInterFonts() {
           document.fonts.add(face);
         } catch (e) {
           allOk = false;
-          console.warn(`Inter ${weight} not loaded from Supabase (using fallback):`, (e && e.message) || e);
+          console.warn(`Inter ${weight} not loaded (using fallback):`, (e && e.message) || e);
         }
       })
     );
     // If some faces didn't load, let a later print retry (the woff2 is HTTP-cached
     // once fetched, so retries are cheap) instead of caching the fallback forever.
+    // Worth keeping now that the files are local: the first print of a session can
+    // race a cold cache, and the retry is what gets Inter onto the second one.
     if (!allOk) _interLoaded = null;
   })();
   return _interLoaded;
@@ -396,66 +427,72 @@ async function loadLabelFonts() {
 }
 
 // ============================================================ GtradeA label
-// The approved GtradeA design (frontend/public/Images/barcode.svg). Its fixed
-// artwork — mark, fragile panel, rules, the "Shelf No:"/"Order No:"/"Tracking
-// No:" wording, "HANDLE WITH CARE", "www.gtradea.com" — is drawn straight from
-// the design's own vector paths (see gtradeaLabelArt.js), so it is exact by
-// construction rather than retyped as canvas coordinates. Only the six values
-// that change per box are set as live text.
-
-// Art direction applied ON TOP of the design file — kept here, rather than
-// edited into the generated artwork, so what deviates from the source SVG is
-// visible in one place and the art can be regenerated at any time.
-// Values are ARTBOARD units: 1 unit ≈ 0.84 printer dots ≈ 0.105 mm.
+// The approved GtradeA design (frontend/public/Images/newbarcode80120.svg). Its
+// fixed artwork — mark, fragile panel, the four rules, the "Shelf No:" /
+// "Order Included Inside" / "Order No:" / "Tracking No:" wording, "HANDLE WITH
+// CARE", "www.gtradea.com", the shipment chip — is drawn straight from the
+// design's own vector paths (see gtradeaLabelArt.js), so it is exact by
+// construction rather than retyped as canvas coordinates. Only the values that
+// change per box are set as live text.
 //
-// ART_SHIFT_X moves the whole design across the stock; positive is right. It is
-// CLAMPED below so it can never cut the artwork off: the designer put the
-// rotated "HANDLE WITH CARE" at x 563.2 on a 569-wide artboard, i.e. 5.8 units
-// (4.9 printer dots) from the edge, so the design is already flush right and
-// there is only about 3 units of travel. Asking for more silently gives you the
-// most that still prints whole, rather than a label with the text sliced off.
-const ART_SHIFT_X = 3;
-const ART_RIGHT_INK = 563.2; // rightmost ink in the design, measured from the file
-const ART_EDGE_KEEP = 2;     // printer dots of white to preserve at the trim
+// The artboard IS the label: 800 x 1200 units is 80 x 120 mm at 10 units per mm,
+// so it maps onto the 640 x 960 dot bitmap by a flat 0.8 with nothing left over.
+// That is why there is no art direction here any more — no shift across the
+// stock, no group nudges, no seam to open up. Everything is where the designer
+// put it.
+// Values below are ARTBOARD units: 1 unit = 0.1 mm = 0.8 printer dots.
 
-// Groups tagged in gtradeaLabelArt.js, nudged as units.
-const ART_GROUPS = {
-  head: { dy: 30 },  // gtradea mark + "Shelf No:" block, dropped off the top trim
-  code: { dy: 12 },  // barcode + item code, dropped a little
-};
-
-// One transform maps the whole 569 x 726 artboard onto the label stock: the
-// largest uniform scale that fits, centred. Uniform, never stretched — the
-// artboard is a slightly different shape to the stock, and squashing it would
-// show up immediately on the round mark.
+// One transform maps the whole artboard onto the label stock: the largest
+// uniform scale that fits, centred. Uniform, never stretched — squashing it
+// would show up immediately on the round mark.
 function artTransform() {
   const scale = Math.min(CANVAS_W / ART_W, CANVAS_H / ART_H);
-  const base = (CANVAS_W - ART_W * scale) / 2;
-  // Never let the shift push the design's rightmost ink past the trim.
-  const maxShift = (CANVAS_W - ART_EDGE_KEEP - base) / scale - ART_RIGHT_INK;
   return {
     scale,
-    dx: base + Math.min(ART_SHIFT_X, maxShift) * scale,
+    dx: (CANVAS_W - ART_W * scale) / 2,
     dy: (CANVAS_H - ART_H * scale) / 2,
   };
 }
 
-// Shift a tagged group inside the artboard coordinate space. The caller has
-// already established that space, so this is a plain translate on top.
-function applyGroup(ctx, group) {
-  const g = group && ART_GROUPS[group];
-  if (g) ctx.translate(g.dx || 0, g.dy || 0);
+// Two parts of the design are drawn LARGER than the artboard sets them: the
+// gtradea mark and the shelf block are what someone picks a box out by from
+// across the aisle, and at the design's size they were the quietest things on a
+// label that had grown a third. Each is scaled about an ANCHOR rather than its
+// own centre, so it grows into stock that is free:
+//   logo  - anchored top-left, so it grows down and right into the gap above the
+//           barcode and never crosses the trim.
+//   shelf - anchored top-RIGHT, so it grows LEFT. Anchoring it left instead would
+//           push a long shelf code (the block is set flush left, and the design's
+//           own value already ends 26 units off the trim) straight off the label.
+// The scale is deliberately modest: these sit beside artwork that is NOT scaled,
+// and the design's proportions have to survive.
+const ART_ZOOM = {
+  logo:  { scale: 1.15, x: 45, y: 36 },
+  shelf: { scale: 1.15, x: 774, y: 56 },
+};
+
+// Scale a tagged group about its anchor. The caller has already established the
+// artboard coordinate space, so this is a plain transform on top of it.
+function applyZoom(ctx, group) {
+  const z = group && ART_ZOOM[group];
+  if (!z) return;
+  ctx.translate(z.x, z.y);
+  ctx.scale(z.scale, z.scale);
+  ctx.translate(-z.x, -z.y);
 }
 
 // Fixed artwork, painted in the design's order. Fills collapse to pure black or
 // pure white: the stock is monochrome thermal, and the glass icon is knocked
 // OUT of the fragile panel, so its white has to survive as white.
-function drawLabelArt(ctx, { scale, dx, dy }) {
+function drawLabelArt(ctx, { scale, dx, dy }, listDy = 0) {
   for (const el of GTRADEA_LABEL_ART) {
     ctx.save();
     ctx.translate(dx, dy);
     ctx.scale(scale, scale);
-    applyGroup(ctx, el.group);
+    // The "Order Included Inside" caption is the one piece of artwork that moves:
+    // it heads the list below it, so it travels with it (see listLayout).
+    if (el.group === "list" && listDy) ctx.translate(0, listDy);
+    applyZoom(ctx, el.group);
     const f = String(el.fill || "").toLowerCase();
     ctx.fillStyle = f === "white" || f === "#ffffff" || f === "#fff" ? "#FFFFFF" : "#000000";
     if (el.rect) ctx.fillRect(el.rect[0], el.rect[1], el.rect[2], el.rect[3]);
@@ -464,8 +501,8 @@ function drawLabelArt(ctx, { scale, dx, dy }) {
   }
 }
 
-// The six values that change per box, measured off the design file. `x` is the
-// ink's left edge and `top`/`bottom` its ink box, all in artboard coordinates.
+// The values that change per box, measured off the design file. `x` is the ink's
+// left edge and `top`/`bottom` its ink box, all in artboard coordinates.
 //
 // `ref` is the exact string the designer set, and it alone decides the type
 // size. Sizing from the live value instead would make the type jump about —
@@ -473,22 +510,20 @@ function drawLabelArt(ctx, { scale, dx, dy }) {
 // out at two different sizes on two different days.
 //
 // `right` is the hard edge the text may not cross (the next element, or the
-// trim). `center` centres the field on that x instead of setting it flush left.
-// `group` ties the field to an ART_GROUPS nudge so it travels with its artwork —
-// the shelf code has to move with the "Shelf No:" label above it.
+// rules' right edge at 566). `center` centres the field on that x instead of
+// setting it flush left.
 const GT_FIELDS = {
-  shelf:    { x: 385.6, top: 49.4,  bottom: 73.5,  right: 559, weight: "700", ref: "GT-01-003", group: "head" },
+  shelf:    { x: 600.6, top: 85.4,   bottom: 109.5,  right: 780, weight: "700", ref: "GT-01-003", group: "shelf" },
   // ref is a real gtradea product id — the id this field actually prints, and
-  // the one the China Operations table lists the parcel under. (Previously
-  // "PR-1028", then the box id "GTP-000123".) All three are caps + digits of the
-  // same length with no descender, so the ink box — and therefore the type size
-  // and baseline this field derives from it — is unchanged across them; the
-  // string is only kept honest about what actually prints here.
-  item:     { x: 118,   top: 341.4, bottom: 365.5, right: 521, weight: "700", ref: "GTI-100119", center: 189, group: "code" },
-  order:    { x: 37.5,  top: 493.6, bottom: 515.5, right: 521, weight: "700", ref: "ORD-20260730-195740" },
-  tracking: { x: 37.4,  top: 594.6, bottom: 616.5, right: 521, weight: "700", ref: "435291915403962" },
-  stamp:    { x: 36.7,  top: 710.2, bottom: 725.3, right: 393, weight: "400", ref: "July 30, 2026 05:48 PM" },
-  mode:     { x: 422.5, top: 688.7, bottom: 704,   right: 517, weight: "700", ref: "VIA AIR", center: 460, ink: "#FFFFFF" },
+  // the one the China Operations table lists the parcel under. Caps + digits of
+  // the same length with no descender, so the ink box — and therefore the type
+  // size and baseline derived from it — is stable across every id that prints
+  // here. Centred on the BARCODE BOX, so the number sits under the bars.
+  item:     { x: 154.2, top: 485.3,  bottom: 517.7,  right: 566, weight: "700", ref: "GTI-100119", center: 265.5 },
+  order:    { x: 82.7,  top: 849,    bottom: 874,    right: 566, weight: "700", ref: "ORD-20260730-195740" },
+  tracking: { x: 82.6,  top: 968,    bottom: 993,    right: 566, weight: "700", ref: "435291915403962" },
+  stamp:    { x: 45.9,  top: 1117,   bottom: 1138.7, right: 590, weight: "400", ref: "July 30, 2026 05:48 PM" },
+  mode:     { x: 627.8, top: 1093.3, bottom: 1118,   right: 765, weight: "700", ref: "VIA AIR", center: 688.5, ink: "#FFFFFF" },
 };
 
 // Ink height of `text` at `px` — what the design's bounding boxes actually
@@ -526,7 +561,7 @@ function drawField(ctx, field, text, t) {
   ctx.save();
   ctx.translate(t.dx, t.dy);
   ctx.scale(t.scale, t.scale);
-  applyGroup(ctx, field.group);
+  applyZoom(ctx, field.group); // the shelf code grows with the caption above it
   ctx.fillText(text, x, baseline);
   ctx.restore();
 }
@@ -535,113 +570,162 @@ function drawField(ctx, field, text, t) {
 // item code, generated at printer resolution. It is drawn 1:1 at a fixed
 // whole-module scale so bars land on dot boundaries and scan.
 //
-// The scale is pinned for the same reason as BARCODE_SCALE on the cellzen label:
-// this used to try 4, then 3, then 2, taking the first that fit the design's
-// box, which made the barcode's size depend on how long the id happened to be.
-// The design's box is 310 artboard units (~261 dots) wide and only scale 2 fits
-// an id of this length in it — PR-1072 came to 210 dots there and GTI-100119
-// comes to 254 — so 2 is the one scale every id can share.
-const GT_BARCODE_BOX = { x: 34, y: 151, w: 310, h: 181 };
-const GT_BARCODE_SCALE = 2;
+// The scale is pinned rather than chosen per id: it used to try 4, then 3, then
+// 2, taking the first that fit, which made the barcode a different SIZE for
+// different ids — and because bwip-js multiplies bar height by the scale too,
+// dropping a scale shrank the bars vertically as well. Two boxes side by side
+// carried visibly different barcodes.
+//
+// 3 is the pin. A 10-character id comes to 381 dots there, a little over the
+// design's own 441-unit box (353 dots), so the bars are centred on that box and
+// allowed to run wider than it rather than being squashed into it: the design
+// leaves 64 units of clear stock before the fragile panel, and even at 381 dots
+// there is ~46 units (4.6 mm) of quiet zone left — well over the 10 modules
+// Code-128 asks for. GT_BARCODE_MAX_W is the backstop for an id longer than the
+// design ever anticipated; past that the bars do get squashed.
+const GT_BARCODE_BOX = { x: 45, y: 215, w: 441, h: 258 };
+const GT_BARCODE_SCALE = 3;
+const GT_BARCODE_MAX_W = 510; // artboard units of clear stock (20..530)
 
 function drawLabelBarcode(ctx, code, t) {
   if (!code) return;
-  const boxW = GT_BARCODE_BOX.w * t.scale;
   const boxH = GT_BARCODE_BOX.h * t.scale;
   // bwip-js takes bar height in mm at 72dpi, then multiplies by the scale —
   // solve it back (barMm) so the bars come out the height of the design's box.
   const bc = shipmentBarcodeCanvas(code, GT_BARCODE_SCALE, barMm(boxH, GT_BARCODE_SCALE));
-  // Clamp only as a backstop for an id longer than the design ever anticipated;
-  // at GT_BARCODE_SCALE a normal item code sits inside the box already, so this
-  // is a no-op and the bars are never squashed out of proportion.
-  const w = Math.min(bc.width, boxW);
-  const x = t.dx + (GT_BARCODE_BOX.x * t.scale) + (boxW - w) / 2;
-  // Carries the same nudge as the PR number below it, so bars and number stay
-  // locked together as one block.
-  const y = t.dy + ((GT_BARCODE_BOX.y + ART_GROUPS.code.dy) * t.scale) + (boxH - bc.height) / 2;
+  const w = Math.min(bc.width, GT_BARCODE_MAX_W * t.scale);
+  const cx = t.dx + (GT_BARCODE_BOX.x + GT_BARCODE_BOX.w / 2) * t.scale;
+  const y = t.dy + GT_BARCODE_BOX.y * t.scale + (boxH - bc.height) / 2;
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(bc, Math.round(x), Math.round(y), w, bc.height);
+  ctx.drawImage(bc, Math.round(cx - w / 2), Math.round(y), w, bc.height);
   ctx.imageSmoothingEnabled = true;
-  // Hand back the rect actually drawn: the product list centres on the BARS, and
-  // guessing at their position from the artboard maths lands a few dots off.
-  return { x: Math.round(x), w };
 }
 
-// What is in the parcel, listed under the goods id.
+// -------------------------------------------------- "Order Included Inside"
+// What is in the parcel, listed under the design's "Order Included Inside"
+// caption (the caption itself is fixed artwork).
 //
-// Only drawn when the bag holds MORE THAN ONE product — a box with a single
-// product says everything it needs to in the id line above, so its label is
-// unchanged. When it holds several, EVERY one of them is listed, the id line's
-// own included: a picker holding the box has to be able to count the things it
-// should contain off the label, and a list that quietly omits one (because it is
-// printed larger above) reads as "two products" on a bag of three.
+// A supplier bags several 1688 lines under ONE tracking number, and the
+// "Order No:" block below can only name one of them, so the box's own label was
+// the one place that could not say what was actually inside it. EVERY id is
+// listed here, the one printed above the bars included: someone holding the box
+// has to be able to check the whole contents off the label, and a list that
+// quietly leaves out the id shown above reads as "two things" in a bag of three.
+// A parcel with one line lists that one id, so the block reads the same way on
+// every box.
 //
-// A parcel whose lines can't all be named — two lines sharing one product id,
-// or one gtradea hasn't published an id for — lists what it can and closes with
-// "+2", so the count is still right even when the ids can't carry it.
-//
-// The band is the clear stock between that id line and the first rule, measured
-// off the rendered artwork rather than derived from it (y 332..378 in printer
-// dots). Rows are capped to the WIDTH OF THE BARS so each one centres under the
-// barcode instead of drifting across the label, and the type steps down — then
-// wraps to a second row — rather than ever crossing out of the band.
-// Bottom pulled 3 dots off the rule: centred in the full band, a two-row list
-// came within 2 dots of it, which print tolerance would close.
-const GT_LIST_BAND = { top: 332, bottom: 375 };
-const GT_LIST_PX_MAX = 20;
-const GT_LIST_PX_MIN = 13;
+// Set as the design has it: comma-separated, wrapped over as many rows as the
+// band holds, and with the SHARED PREFIX written once — "GTI-100119, 100210,
+// 100212" rather than repeating "GTI-" on every one of them.
+const GT_LIST = {
+  x: 82.7,          // the left margin the captions and values are set on
+  right: 566,       // the rules' right edge
+  bandTop: 623,     // clear stock starts under the rule above
+  bandBottom: 787,  // ... and ends at the rule below
+  bandPad: 8,       // never crowd either rule
+  captionTop: 648,  // where the design sets the caption, and what dy is measured from
+  captionInk: 22,   // its ink height
+  captionGap: 18,   // caption ink bottom -> first row's ink top, from the design
+  ink: 30,          // the design's row ink height (a comma descends below the digits)
+  inkMin: 15,       // never set smaller: list fewer ids and count the rest
+  pitch: 40 / 30,   // row pitch as a multiple of the ink height, from the design
+  firstRow: 4,      // ids on the first row — it carries the one id set in full
+  nextRow: 5,       // ... and on every row after it, which are bare numbers
+  ref: "GTI-100119, 100210, 100212", // sizes every row, so they cannot jump about
+};
 
-function drawProductList(ctx, item, bar) {
-  if (!bar) return;
-  const size = parcelSize(item);
-  if (size < 2) return; // one product — the id line above already says it all
-  const ids = parcelProductIds(item).filter(Boolean);
-  // Never a bare "+3" with nothing in front of it: with no ids at all to print,
-  // the count is spelled out instead.
-  const codes = ids.length
-    ? (ids.length < size ? [...ids, `+${size - ids.length}`] : ids)
-    : [`${size} PRODUCTS`];
+// The ids to list, with the prefix they share written once.
+//
+// A prefix is only collapsed when EVERY id carries it, and only the leading
+// non-digit run counts — so "GTI-100119, GTI-100210" prints as
+// "GTI-100119, 100210" while a mixed bag stays spelled out in full. The first id
+// always keeps its prefix, so the list still reads as ids rather than as a row
+// of bare numbers.
+function includedIds(item) {
+  const ids = [...new Set(parcelProductIds(item).filter(Boolean).map((c) => String(c).trim()))];
+  if (ids.length < 2) return ids;
+  const prefix = (ids[0].match(/^\D+/) || [])[0];
+  if (!prefix || !ids.every((c) => c.startsWith(prefix) && c.length > prefix.length)) return ids;
+  return [ids[0], ...ids.slice(1).map((c) => c.slice(prefix.length))];
+}
 
-  const rowsFor = (n) => {
-    const per = Math.ceil(codes.length / n);
-    const out = [];
-    for (let i = 0; i < codes.length; i += per) out.push(codes.slice(i, i + per).join("   "));
-    return out;
+// Rows of a FIXED number of ids, comma-separated: four on the first row and five
+// on every row after it.
+//
+// Fixed rather than "as many as fit the width" because a parcel of two or three
+// then always sits on one line with nothing hanging under it, and a bigger one
+// breaks in the same place every time, so two labels side by side read the same
+// way. Four on the first row and five after because only the FIRST id is set in
+// full ("GTI-100215") — every one after it is the bare number, so the later rows
+// hold one more in the same width. A wrapped row keeps no trailing comma; the
+// break carries it, which is how the design sets it.
+function listRows(ids) {
+  const rows = [];
+  for (let i = 0; i < ids.length; ) {
+    const take = rows.length ? GT_LIST.nextRow : GT_LIST.firstRow;
+    rows.push(ids.slice(i, i + take).join(", "));
+    i += take;
+  }
+  return rows;
+}
+
+// Work out the rows, their type size, and how far the whole block sits from the
+// design's own position — measured once and used by BOTH the artwork (the
+// caption is tagged "list", so it travels with the rows) and drawIncludedList.
+//
+// The block is CENTRED in the band between the two rules. The designer drew it
+// with two rows of ids, which fills that band almost exactly; a parcel with one
+// row would otherwise leave all of the leftover stock in one gap under the
+// value, which reads as a mistake rather than as spacing. Centring reproduces
+// the design at two rows (it comes out 2 units off what was drawn) and keeps a
+// one-row and a four-row block looking equally deliberate.
+function listLayout(ctx, item) {
+  const ids = includedIds(item);
+  if (!ids.length) return null;
+
+  const room = GT_LIST.right - GT_LIST.x;
+  const band = GT_LIST.bandBottom - GT_LIST.bandTop - 2 * GT_LIST.bandPad;
+  const pxFor = (v) => (100 * v) / inkHeight(ctx, GT_LIST.ref, 100, "700");
+  const blockHeight = (n, v) =>
+    GT_LIST.captionInk + GT_LIST.captionGap + v * ((n - 1) * GT_LIST.pitch + 1);
+  // ONE size for every row, so the list reads as one block: the size has to suit
+  // the widest row and the number of rows at once.
+  const fits = (rows, v) => {
+    if (blockHeight(rows.length, v) > band) return false;
+    ctx.font = `700 ${pxFor(v)}px ${FONT_STACK}`;
+    return rows.every((row) => ctx.measureText(row).width <= room);
   };
-  // Only ever shrinks, and measures the real glyphs rather than assuming an
-  // advance width — the label font is not guaranteed to be monospace.
-  const sizeFor = (rows) => {
-    let px = GT_LIST_PX_MAX;
-    for (const line of rows) {
-      ctx.font = `500 ${px}px ${FONT_STACK}`;
-      const w = ctx.measureText(line).width;
-      if (w > bar.w) px = Math.max(1, Math.floor(px * (bar.w / w)));
-    }
-    return px;
-  };
 
-  let rows = rowsFor(1);
-  let px = sizeFor(rows);
-  if (px < GT_LIST_PX_MIN) { rows = rowsFor(2); px = sizeFor(rows); }
-  // Still too small to read at two rows: list what fits and say how many are
-  // left, rather than printing a line nobody can make out.
-  if (px < GT_LIST_PX_MIN) {
-    const shown = codes.slice(0, 2);
-    rows = [`${shown.join("   ")}  +${codes.length - shown.length}`];
-    px = Math.max(GT_LIST_PX_MIN, sizeFor(rows));
+  // Shrink the type before dropping anything; only once the rows would be too
+  // small to read does the list close with a count, so the number of things in
+  // the box is still right even when the band cannot name them all.
+  let rows = listRows(ids);
+  let v = GT_LIST.ink;
+  while (v > GT_LIST.inkMin && !fits(rows, v)) v -= 0.5;
+  for (let keep = ids.length - 1; keep >= 1 && !fits(rows, v); keep -= 1) {
+    rows = listRows([...ids.slice(0, keep), `+${ids.length - keep}`]);
   }
 
-  const cx = bar.x + bar.w / 2;
-  const cy = (GT_LIST_BAND.top + GT_LIST_BAND.bottom) / 2;
-  const lh = px * 1.2; // tight leading — the band is only 43 dots of stock
-  const first = cy - ((rows.length - 1) * lh) / 2;
+  const top = GT_LIST.bandTop + (GT_LIST.bandBottom - GT_LIST.bandTop - blockHeight(rows.length, v)) / 2;
+  return { rows, v, px: pxFor(v), dy: top - GT_LIST.captionTop };
+}
+
+function drawIncludedList(ctx, t, layout) {
+  if (!layout) return;
+  const { rows, v, px, dy } = layout;
+  const first = GT_LIST.captionTop + dy + GT_LIST.captionInk + GT_LIST.captionGap;
 
   ctx.save();
-  ctx.fillStyle = INK;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.font = `500 ${px}px ${FONT_STACK}`;
-  rows.forEach((line, i) => ctx.fillText(line, cx, Math.round(first + i * lh)));
+  ctx.translate(t.dx, t.dy);
+  ctx.scale(t.scale, t.scale);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#000000";
+  ctx.font = `700 ${px}px ${FONT_STACK}`;
+  const ascent = ctx.measureText(GT_LIST.ref).actualBoundingBoxAscent;
+  rows.forEach((row, i) => {
+    ctx.fillText(row, GT_LIST.x, first + i * v * GT_LIST.pitch + ascent);
+  });
   ctx.restore();
 }
 
@@ -656,7 +740,10 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
   const t = artTransform();
-  drawLabelArt(ctx, t);
+  // Measured before the artwork is painted: the list decides where its own
+  // caption sits, and the caption is part of that artwork.
+  const list = listLayout(ctx, item);
+  drawLabelArt(ctx, t, list ? list.dy : 0);
   // The GOODS id — gtradea's own "Product ID" (GTI-100119), the id the China
   // Operations table lists this parcel under. It has to be the id on the
   // sticker: staff read the label and then look the box up in the portal, and
@@ -664,12 +751,12 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   // typing it into gtradea finds nothing.
   //
   // A parcel can hold several products, so this names ONE of them — the lowest,
-  // picked stably (see goodsCode / item_code) — and the rest are listed under
-  // the bars. Scanning is unaffected either way: the resolver matches every id a
-  // box has ever been printed with, box ids included, so the GTP labels already
-  // on the shelves keep resolving.
+  // picked stably (see goodsCode / item_code); what is in the bag is spelled out
+  // by the list under the rule (see drawIncludedList). Scanning is unaffected
+  // either way: the resolver matches every id a box has ever been printed with,
+  // box ids included, so the GTP labels already on the shelves keep resolving.
   const code = goodsCode(item);
-  const bar = drawLabelBarcode(ctx, code, t);
+  drawLabelBarcode(ctx, code, t);
 
   // The shipment panel always reads one way or the other — it's part of the
   // fixed artwork, so it can never be left blank. Fall back to the mode already
@@ -678,7 +765,7 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
 
   drawField(ctx, GT_FIELDS.shelf, item.rackId || "-", t);
   drawField(ctx, GT_FIELDS.item, code, t);
-  drawProductList(ctx, item, bar);
+  drawIncludedList(ctx, t, list);
   drawField(ctx, GT_FIELDS.order, item.orderNumber || "-", t);
   drawField(ctx, GT_FIELDS.tracking, item.trackingNumber || "-", t);
   drawField(ctx, GT_FIELDS.stamp, formatLabelStamp(item.createdAt), t);
@@ -688,7 +775,7 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
 }
 
 // ---------------------------------------------------------------- shipment label
-// Render the full 60 x 80 mm shipment label. `shipmentMode` is the optional
+// Render the full 80 x 120 mm shipment label. `shipmentMode` is the optional
 // "air" | "land" pick from the print dialog — when set, a full-bleed
 // "SHIPMENT: BY AIR/LAND" banner is drawn under the logo and the barcode band
 // shrinks to make room for it. Returns { png, mono } where `mono` is the
@@ -763,7 +850,7 @@ async function renderCellzenLabel(item, shipmentMode = null) {
   const footer1Text = `Recorded by: ${item.createdByName || "-"}`;
   const footer2Text = `If any doubts please inform ${SUPPORT_PHONE}`;
   const footer3Text = formatLabelDate(item.createdAt);
-  const sFooter = fitFont(ctx, footer2Text, FOOTER_W, 28, "500", LETTER_SPACING);
+  const sFooter = fitFont(ctx, footer2Text, FOOTER_W, FOOTER_FONT_MAX, "500", LETTER_SPACING);
   drawTextAt(ctx, footer1Text, FOOTER1_Y, sFooter, "400", LETTER_SPACING);
   drawTextAt(ctx, footer2Text, FOOTER2_Y, sFooter, "500", LETTER_SPACING);
   drawTextAt(ctx, footer3Text, FOOTER3_Y, sFooter, "500", LETTER_SPACING);
@@ -929,7 +1016,7 @@ export async function downloadRackLabel(rackId) {
 //   1. Local bridge  — the warehouse PC prints the full-design bitmap instantly.
 //   2. Cloud queue   — any other device (incl. phones) queues the SAME bitmap;
 //                      the on-site agent prints it identically seconds later.
-//   3. Browser print — last resort: print the rendered PNG on a 60 x 80 page.
+//   3. Browser print — last resort: print the rendered PNG on an 80 x 120 page.
 // Returns { how: "local" | "queued" | "browser", full: boolean }. `full` is
 // false when the canvas render failed (e.g. no Path2D support) and every path
 // above fell back to a bare barcode — callers should surface that distinctly,

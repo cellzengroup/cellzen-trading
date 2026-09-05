@@ -4,7 +4,7 @@
  * ----------------------------
  * A tiny local HTTP service that runs on the warehouse PC (the one with the
  * Deli DL-720C plugged in over USB). The website's Print button POSTs here:
- *   - Shipment labels send a pre-rendered image (the full 60 x 80 mm design);
+ *   - Shipment labels send a pre-rendered image (the full 80 x 120 mm design);
  *     the bridge prints it verbatim as a native TSPL BITMAP.
  *   - Rack/shelf labels send just a code; the bridge builds a native barcode.
  * Either way it goes out as a RAW spool job — no browser print dialog, and a
@@ -30,8 +30,8 @@ const DEFAULTS = {
   port: 9110,
   printerName: "",      // exact Windows printer name; "" = auto-detect (Deli/720)
   dpi: 203,             // Deli 720C native resolution (8 dots/mm)
-  widthMm: 60,          // media (label stock) width  — the shipment-label roll
-  heightMm: 80,         // media (label stock) height
+  widthMm: 80,          // media (label stock) width  — the shipment-label roll
+  heightMm: 120,        // media (label stock) height
   gapMm: 3,             // gap between die-cut labels; set 0 for continuous stock
   direction: 1,         // flip to 0 if labels print upside down
   density: 10,          // darkness 0-15
@@ -131,7 +131,7 @@ function pickPrinter(printers) {
     return cfg.printerName;
   // Otherwise only auto-pick something that really is the thermal label printer.
   // Deliberately NO "else just take the first installed printer": on a PC that
-  // doesn't have the Deli that would quietly spool 60x80mm label jobs to an
+  // doesn't have the Deli that would quietly spool 80x120mm label jobs to an
   // office laser or to Microsoft Print to PDF. That matters most in the
   // several-PCs-one-printer layout — such a PC would also claim phone jobs off
   // the shared cloud queue and swallow them where nobody is watching.
@@ -218,8 +218,8 @@ function buildTSPL(code, copies) {
 
   const dpi = cfg.dpi || 203;
   const dotsPerMm = dpi / 25.4;
-  const mediaW = Math.round((cfg.widthMm || 60) * dotsPerMm);  // label width in dots
-  const mediaH = Math.round((cfg.heightMm || 80) * dotsPerMm); // label height in dots
+  const mediaW = Math.round((cfg.widthMm || 80) * dotsPerMm);  // label width in dots
+  const mediaH = Math.round((cfg.heightMm || 120) * dotsPerMm); // label height in dots
   const narrow = cfg.barcodeNarrow || 3;
   const barH = cfg.barcodeHeight || 150;
   const showText = cfg.showText !== false;
@@ -257,7 +257,7 @@ function buildTSPL(code, copies) {
   return lines.join("\r\n");
 }
 
-// Build a TSPL job that prints a pre-rendered label image (the full 60x80mm
+// Build a TSPL job that prints a pre-rendered label image (the full 80x120mm
 // shipment design). `bitmap` = { data: base64 packed 1-bit rows, widthBytes,
 // height }, packed MSB-first with bit 0 = black — TSPL BITMAP polarity. Returns
 // a Buffer because the image bytes are binary and must survive verbatim.
