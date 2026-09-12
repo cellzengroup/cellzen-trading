@@ -37,10 +37,24 @@ input[type=number] {
   --color-cz-secondary-light: #B99353;
   --color-cz-secondary-dark: #B99353;
 
-  --font-sans: "Inter", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+  /* Drives Tailwind's `font-sans` and Preflight's default on <html>. Spelled
+     out rather than var()-ed so the theme layer never depends on a :root block
+     that Tailwind emits after it. */
+  --font-sans: "Aeonik Pro", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  --font-serif: "Aeonik Pro", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
 
-  /* Chinese font support */
-  --font-chinese: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
+  /* `font-mono` is on ~40 elements — barcodes, HS codes, and the right-aligned
+     money columns in the duty breakdown. Pointing it at Aeonik keeps the site
+     to one face; `tnum` is what makes that safe, since the only thing those
+     call sites actually needed from a monospace was digits that line up.
+     Alphabetic runs (a barcode's letters) are no longer fixed-pitch — if some
+     spot genuinely needs that, give it a real mono stack locally. */
+  --font-mono: "Aeonik Pro", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", ui-sans-serif, system-ui, sans-serif;
+  --font-mono--font-feature-settings: "tnum";
+
+  /* Chinese font support — Aeonik leads so Latin runs inside zh copy stay on
+     brand; Noto supplies the CJK glyphs Aeonik doesn't have. */
+  --font-chinese: "Aeonik Pro", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
 
   --animate-fade-in: fadeIn 0.5s ease-in-out;
   --animate-slide-up: slideUp 0.3s ease-out;
@@ -75,169 +89,121 @@ input[type=number] {
   animation: whScanline 2s ease-in-out infinite;
 }
 
-/* ── Roboto ── */
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 100;
-  font-display: swap;
-  src: local("Roboto Thin"), url("/fonts/Roboto/Roboto-Thin.ttf") format("truetype");
-}
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 200;
-  font-display: swap;
-  src: local("Roboto ExtraLight"), url("/fonts/Roboto/Roboto-ExtraLight.ttf") format("truetype");
-}
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 300;
-  font-display: swap;
-  src: local("Roboto Light"), url("/fonts/Roboto/Roboto-Light.ttf") format("truetype");
-}
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: local("Roboto"), url("/fonts/Roboto/Roboto-Regular.ttf") format("truetype");
-}
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: local("Roboto Medium"), url("/fonts/Roboto/Roboto-Medium.ttf") format("truetype");
-}
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: local("Roboto SemiBold"), url("/fonts/Roboto/Roboto-SemiBold.ttf") format("truetype");
-}
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: local("Roboto Bold"), url("/fonts/Roboto/Roboto-Bold.ttf") format("truetype");
-}
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 800;
-  font-display: swap;
-  src: local("Roboto ExtraBold"), url("/fonts/Roboto/Roboto-ExtraBold.ttf") format("truetype");
-}
-@font-face {
-  font-family: "Roboto";
-  font-style: normal;
-  font-weight: 900;
-  font-display: swap;
-  src: local("Roboto Black"), url("/fonts/Roboto/Roboto-Black.ttf") format("truetype");
-}
+/* ── Aeonik Pro — the only typeface on the site ────────────────────────────
+   Self-hosted as WOFF from frontend/public/fonts/Aeonic, converted from the
+   supplied TTFs. Unlike the Gilroy set this replaced, these files' own tables
+   are honest — usWeightClass and italicAngle matched every filename — so the
+   descriptors below simply restate what the fonts already declare, and the
+   conversion asserted on that rather than trusting the names.
 
-/* ── Galderglynn Titling ── */
+   THE SET IS INCOMPLETE, and the gaps are the important thing here. Ten faces
+   exist; Aeonik Pro's roman cuts for Air, Medium and Black were not supplied,
+   Thin has no italic, and the family ships no SemiBold (600) at all:
+
+       weight              roman      italic
+       100 Air               --         yes
+       200 Thin             yes          --
+       300 Light            yes         yes
+       400 Regular          yes         yes
+       500 Medium            --         yes
+       700 Bold             yes         yes
+       900 Black             --         yes
+
+   Missing faces are deliberately NOT declared. A @font-face pointing at a file
+   that isn't there costs a failed request and a flash of fallback; leaving the
+   slot empty instead lets CSS's own weight matching pick the nearest declared
+   face, which degrades quietly and in the right direction:
+
+     - `font-weight: 500` (h2/h3) finds no 500 roman and resolves DOWN to 400
+       Regular. So h2 currently renders at body weight, separated from h1 by
+       size alone. Drop `Aeonik Pro Medium.ttf` in and re-run the conversion and
+       h2 becomes true Medium with no change to this file.
+     - 100 roman resolves up to 200 Thin; 600/800 and 900 roman resolve to
+       700 Bold.
+     - A 200 italic resolves DOWN to 100 Air Italic, not up to 300. Below 400,
+       CSS checks weights <= the target in DESCENDING order first, so Thin's
+       missing italic falls to the hairline two steps lighter rather than to
+       Light. `aeonik-thin italic` is therefore much lighter than `aeonik-thin`
+       suggests — use `aeonik-light italic` if you want the nearest real
+       italic to Thin.
+
+   `local()` is omitted on purpose: Aeonik Pro is a licensed CoType face that
+   circulates in mismatched cuts, and a local() hit would let a viewer's
+   installed copy silently replace ours with different metrics.
+
+   Aeonik Pro covers 654 codepoints — Latin, Cyrillic (98) and Greek (75) — and
+   NO CJK, so every stack that uses it keeps the Chinese faces behind it. Drop
+   those and the zh locale renders as tofu.
+*/
 @font-face {
-  font-family: "Galderglynn Titling";
-  font-style: normal;
-  font-weight: 100;
-  font-display: swap;
-  src: local("Galderglynn Titling Hl"), url("/fonts/Header/Galderglynn Titling Hl.otf") format("opentype");
-}
-@font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: italic;
   font-weight: 100;
   font-display: swap;
-  src: local("Galderglynn Titling Hl It"), url("/fonts/Header/Galderglynn Titling Hl It.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-AirItalic.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: normal;
   font-weight: 200;
   font-display: swap;
-  src: local("Galderglynn Titling Th"), url("/fonts/Header/Galderglynn Titling Th.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-Thin.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
-  font-style: italic;
-  font-weight: 200;
-  font-display: swap;
-  src: local("Galderglynn Titling Th It"), url("/fonts/Header/Galderglynn Titling Th It.otf") format("opentype");
-}
-@font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: normal;
   font-weight: 300;
   font-display: swap;
-  src: local("Galderglynn Titling El"), url("/fonts/Header/Galderglynn Titling El.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-Light.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: italic;
   font-weight: 300;
   font-display: swap;
-  src: local("Galderglynn Titling El It"), url("/fonts/Header/Galderglynn Titling El It.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-LightItalic.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: normal;
   font-weight: 400;
   font-display: swap;
-  src: local("Galderglynn Titling Lt"), url("/fonts/Header/Galderglynn Titling Lt.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-Regular.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: italic;
   font-weight: 400;
   font-display: swap;
-  src: local("Galderglynn Titling Lt It"), url("/fonts/Header/Galderglynn Titling Lt It.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-RegularItalic.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: local("Galderglynn Titling Rg"), url("/fonts/Header/Galderglynn Titling Rg.otf") format("opentype");
-}
-@font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: italic;
   font-weight: 500;
   font-display: swap;
-  src: local("Galderglynn Titling Rg It"), url("/fonts/Header/Galderglynn Titling Rg It.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-MediumItalic.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: normal;
   font-weight: 700;
   font-display: swap;
-  src: local("Galderglynn Titling Bd"), url("/fonts/Header/Galderglynn Titling Bd.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-Bold.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: italic;
   font-weight: 700;
   font-display: swap;
-  src: local("Galderglynn Titling Bd It"), url("/fonts/Header/Galderglynn Titling Bd It.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-BoldItalic.woff") format("woff");
 }
 @font-face {
-  font-family: "Galderglynn Titling";
-  font-style: normal;
-  font-weight: 900;
-  font-display: swap;
-  src: local("Galderglynn Titling Bl"), url("/fonts/Header/Galderglynn Titling Bl.otf") format("opentype");
-}
-@font-face {
-  font-family: "Galderglynn Titling";
+  font-family: "Aeonik Pro";
   font-style: italic;
   font-weight: 900;
   font-display: swap;
-  src: local("Galderglynn Titling Bl It"), url("/fonts/Header/Galderglynn Titling Bl It.otf") format("opentype");
+  src: url("/fonts/Aeonic/AeonikPro-BlackItalic.woff") format("woff");
 }
 
 /* ── Base styles ── */
@@ -249,9 +215,47 @@ input[type=number] {
   --cz-secondary-light: #b99353;
   --cz-secondary-dark: #ededed;
 
-  --font-roboto: "Roboto", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
-  --font-galdgder: "Galderglynn Titling", "Noto Serif SC", ui-serif, Georgia, "Times New Roman", serif;
-  --font-chinese: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  /* The one stack. Everything else here is an alias onto it — Aeonik first,
+     then the CJK faces it has no glyphs for, then a system sans so text still
+     shows while the WOFF is in flight. */
+  --font-aeonik: "Aeonik Pro", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+
+  /* Deprecated aliases. ~29 components still say var(--font-roboto) /
+     var(--font-galdgder) or the premium-font-galdgder* classes; pointing them
+     at Aeonik is what keeps a missed call site from silently dropping to a
+     system font. Prefer --font-aeonik in new code. */
+  --font-roboto: var(--font-aeonik);
+  --font-galdgder: var(--font-aeonik);
+  --font-gilroy: var(--font-aeonik);
+
+  /* Chinese still leads with Aeonik so Latin runs inside zh copy (SKUs, part
+     numbers, prices) stay in the brand face; the CJK glyphs come from Noto. */
+  --font-chinese: "Aeonik Pro", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", sans-serif;
+
+  /* Weight ladder, named so call sites read as intent rather than numbers.
+     Aeonik Pro ships fewer cuts than the names suggest, so several of these
+     deliberately collapse onto the same real face rather than disappearing —
+     dropping a name would break the legacy utility classes that use it:
+       --fw-semibold  600 -> no 600 exists; CSS resolves it to 700 Bold
+       --fw-extrabold 800 -> likewise resolves to 700 Bold
+       --fw-black     900 -> roman missing; italic is real, roman -> 700
+       --fw-air       100 -> roman missing; italic is real, roman -> 200 Thin
+     `--fw-medium` (500) is the one to watch: the italic is real but the roman
+     is not supplied yet, so upright 500 currently paints as 400 Regular. */
+  --fw-air: 100;
+  --fw-thin: 200;
+  --fw-light: 300;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --fw-extrabold: 800;
+  --fw-black: 900;
+
+  /* Gilroy-era names kept so nothing that referenced them breaks. Aeonik's
+     lightest cut is Air (100) and its heaviest is Black (900). */
+  --fw-ultralight: var(--fw-thin);
+  --fw-heavy: var(--fw-black);
 }
 
 html {
@@ -261,7 +265,8 @@ html {
 }
 
 body {
-  font-family: var(--font-roboto);
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-regular);
   background: var(--cz-paper);
   color: var(--cz-ink);
   overflow-x: hidden;
@@ -272,9 +277,11 @@ body {
   font-family: var(--font-chinese);
 }
 
-/* Global CJK support fallback */
+/* Catch-all so nothing inherits a stray face. Specificity 0,0,0 — any class or
+   element rule below still wins, which is how the heading ladder and the
+   monospace/`font-mono` spots keep their own family. */
 * {
-  font-family: var(--font-roboto);
+  font-family: var(--font-aeonik);
 }
 
 /* Near-invisible horizontal scrollbar only */
@@ -319,53 +326,140 @@ body {
   background: rgba(45, 45, 45, 0.08);
 }
 
+/* Type ladder: h1 Bold, h2/h3 Medium, h4-h6 Regular. Body copy stays Regular
+   (see `body`), with Light available via .aeonik-light.
+
+   h2 asks for 500 but no upright Medium was supplied, so today CSS resolves it
+   to 400 Regular and h2 is separated from h1 by size alone. Adding
+   `Aeonik Pro Medium.ttf` and re-running the conversion fixes that with no edit
+   here. A Tailwind font-* class on an element still overrides all of this —
+   these are only the defaults for headings that don't say otherwise. */
 h1, h2, h3, h4, h5, h6 {
-  font-family: var(--font-galdgder);
-  font-weight: 600;
+  font-family: var(--font-aeonik);
+}
+h1 { font-weight: var(--fw-bold); }
+h2 { font-weight: var(--fw-medium); }
+h3 { font-weight: var(--fw-medium); }
+h4, h5, h6 { font-weight: var(--fw-regular); }
+
+/* Aeonik Pro's figures are PROPORTIONAL by default, so a column of prices or
+   quantities comes out visibly ragged. The family ships `tnum` on every face,
+   so switch it on everywhere digits stack vertically: invoice grids, inventory
+   tables, the numeric inputs that feed them. Add the `tabular-figures` class
+   (or Tailwind's `tabular-nums`) anywhere else numbers need to line up. */
+table,
+th,
+td,
+input[type="number"],
+.tabular-figures {
+  font-variant-numeric: tabular-nums;
+}
+@utility tabular-figures {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Utility classes ── */
-@utility premium-font-galdgderlight {
-  font-family: var(--font-galdgder);
-  font-weight: 300;
+
+/* The Aeonik ladder. Use these in new code. Add Tailwind's `italic` alongside
+   any of them for the matching italic cut — but note which cuts actually exist:
+   Air and Black are ITALIC-ONLY, Thin is ROMAN-ONLY, and there is no Medium
+   roman yet. The upright faces genuinely on disk are Thin, Light, Regular and
+   Bold; the rest resolve to their nearest neighbour (see the @font-face note
+   at the top of this file). */
+/* Real upright cut on disk — these four render exactly what they say. */
+@utility aeonik-thin {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-thin);
 }
-@utility premium-font-galdgdersemi {
-  font-family: var(--font-galdgder);
-  font-weight: 600;
+@utility aeonik-light {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-light);
 }
-@utility premium-font-galdgderbold {
-  font-family: var(--font-galdgder);
-  font-weight: 700;
+@utility aeonik-regular {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-regular);
 }
-@utility text-font-roboto-black {
-  font-family: var(--font-roboto);
-  font-weight: 900;
-}
-@utility text-font-roboto-semi {
-  font-family: var(--font-roboto);
-  font-weight: 600;
-}
-@utility text-font-roboto-bold {
-  font-family: var(--font-roboto);
-  font-weight: 700;
+@utility aeonik-bold {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-bold);
 }
 
+/* Real ITALIC cut only — pair with Tailwind's `italic` to get the actual face.
+   Upright, `aeonik-air` paints as Thin and `aeonik-black` as Bold. */
+@utility aeonik-air {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-air);
+}
+@utility aeonik-black {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-black);
+}
+
+/* No cut at this weight in either style — kept because they name a real design
+   intent and will pick up a proper face if one is ever added. `aeonik-medium`
+   is the near-term one: its italic is real today and its roman arrives with
+   `Aeonik Pro Medium.ttf`. */
+@utility aeonik-medium {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-medium);
+}
+@utility aeonik-semibold {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-semibold);
+}
+@utility aeonik-extrabold {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-extrabold);
+}
+
+/* Legacy names, kept only so the ~29 components still using them don't have to
+   change in one sweep. They resolve to Aeonik now — the weights are unchanged,
+   only the face is. `premium-font-galdgdersemi` asks for 600, which Aeonik has
+   no cut for, so it paints as Bold. Migrate call sites to the aeonik-*
+   utilities above. */
+@utility premium-font-galdgderlight {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-light);
+}
+@utility premium-font-galdgdersemi {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-semibold);
+}
+@utility premium-font-galdgderbold {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-bold);
+}
+@utility text-font-roboto-black {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-black);
+}
+@utility text-font-roboto-semi {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-semibold);
+}
+@utility text-font-roboto-bold {
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-bold);
+}
+
+/* The descendant halves of the legacy classes: these force the family onto
+   every child, which is what makes them stick on nested markup. */
 .premium-font-galdgderlight,
 .premium-font-galdgderlight * {
-  font-family: var(--font-galdgder);
-  font-weight: 300;
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-light);
 }
 
 .premium-font-galdgdersemi,
 .premium-font-galdgdersemi * {
-  font-family: var(--font-galdgder);
-  font-weight: 600;
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-semibold);
 }
 
 .premium-font-galdgderbold,
 .premium-font-galdgderbold * {
-  font-family: var(--font-galdgder);
-  font-weight: 700;
+  font-family: var(--font-aeonik);
+  font-weight: var(--fw-bold);
 }
 
 /* Landing page animations */

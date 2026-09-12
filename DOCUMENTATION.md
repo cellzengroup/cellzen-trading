@@ -56,7 +56,7 @@ cellzen-trading/
 ├── frontend/                              # React SPA (Vite)
 │   ├── public/                            # Static assets
 │   │   ├── Images/                        # Product & branding images
-│   │   ├── fonts/                         # Roboto, Galderglynn Titling
+│   │   ├── fonts/                         # Aeonik Pro (Aeonic/)
 │   │   └── *.svg, *.png, *.jpg            # Logos, backgrounds
 │   ├── src/
 │   │   ├── App.jsx                        # Main router & app wrapper
@@ -643,15 +643,86 @@ colors: {
 
 ### Typography
 
-| Font | Weight | Usage | CSS Class |
-|---|---|---|---|
-| Galderglynn Titling | 300 (Light) | Headings | `premium-font-galdgderlight` |
-| Galderglynn Titling | 600 (Semi) | Subheadings | `premium-font-galdgdersemi` |
-| Galderglynn Titling | 700 (Bold) | Display | `premium-font-galdgderbold` |
-| Roboto | 700 (Bold) | Body emphasis | `text-font-roboto-bold` |
-| Inter | 400 | Body text | Default |
+**Aeonik Pro is the only typeface on the site.** Galderglynn Titling, Roboto,
+Inter and Gilroy were all removed; nothing should introduce another family.
 
-Fonts are loaded from `/frontend/public/fonts/`.
+Ten faces ship, self-hosted as WOFF from `/frontend/public/fonts/Aeonic/` and
+declared in `frontend/src/index.css`. **The set is incomplete**, and which cuts
+are real is the single most important thing on this page:
+
+| Weight | CSS | Roman | Italic | Utility | Usage |
+|---|---|---|---|---|---|
+| Air | 100 | ❌ | ✅ | `aeonik-air` | Display (italic only) |
+| Thin | 200 | ✅ | ❌ | `aeonik-thin` | Reserved for design |
+| Light | 300 | ✅ | ✅ | `aeonik-light` | Body copy (alternate) |
+| Regular | 400 | ✅ | ✅ | `aeonik-regular` | Body copy, `h4`–`h6` |
+| Medium | 500 | ❌ | ✅ | `aeonik-medium` | `h2`, `h3` |
+| SemiBold | 600 | ❌ | ❌ | `aeonik-semibold` | — (no cut exists) |
+| Bold | 700 | ✅ | ✅ | `aeonik-bold` | `h1` |
+| ExtraBold | 800 | ❌ | ❌ | `aeonik-extrabold` | — (no cut exists) |
+| Black | 900 | ❌ | ✅ | `aeonik-black` | Display (italic only) |
+
+**Only four upright cuts exist: Thin, Light, Regular, Bold.** Add Tailwind's
+`italic` alongside a utility to get the matching italic cut where one is marked
+✅ above.
+
+Missing faces are deliberately not declared in `@font-face`. Pointing a
+descriptor at a file that isn't there costs a failed request and a flash of
+fallback; leaving the slot empty lets CSS weight matching pick the nearest real
+face and degrade quietly:
+
+| Asked for | Actually paints as |
+|---|---|
+| 100 roman | 200 Thin |
+| 500 roman | 400 Regular |
+| 600 / 800 | 700 Bold |
+| 900 roman | 700 Bold |
+| 200 italic | **100 Air Italic** (down, not up — see note) |
+
+Note the 200-italic row: below weight 400, CSS checks weights *less than or
+equal to* the target in descending order first, so Thin's missing italic falls
+to the 100 hairline rather than up to Light. `aeonik-thin italic` is therefore
+much lighter than the class name suggests — reach for `aeonik-light italic` if
+you want the nearest real italic to Thin.
+
+**`h2`/`h3` are the live consequence.** They ask for 500, and with no Medium
+roman supplied they currently paint at 400 — the same weight as body text,
+separated from `h1` by size alone. Dropping `Aeonik Pro Medium.ttf` into
+`frontend/public/fonts/Aeonic/` and re-running the TTF→WOFF conversion fixes
+this with no code change anywhere. Doing so is also worth a `<link rel=preload>`
+for it in `frontend/index.html`.
+
+Three more things worth knowing before changing anything here:
+
+- **Aeonik has no CJK glyphs** (654 codepoints: Latin, 98 Cyrillic, 75 Greek).
+  Every stack keeps `Noto Sans SC` / `Microsoft YaHei` / `PingFang SC` behind
+  it — remove those and the `zh` locale renders as tofu.
+- **Its figures are proportional by default**, so number columns come out
+  ragged. Every face ships `tnum`; `table`/`th`/`td`/`input[type=number]` get
+  `tabular-nums` in `index.css`. Use `.tabular-figures` (or Tailwind
+  `tabular-nums`) anywhere else numbers have to line up.
+- **`font-mono` is mapped to Aeonik + `tnum`**, not to a monospace stack, so
+  barcode / HS-code / money cells stay on-brand with aligned digits. If
+  something genuinely needs fixed-pitch *letters*, give it a real mono stack
+  locally.
+
+Unlike the Gilroy set this replaced, the supplied Aeonik TTFs carried honest
+metadata — `usWeightClass` and `italicAngle` matched every filename — and the
+conversion asserts on that rather than trusting the names. `local()` is
+deliberately omitted so a differently-cut Aeonik installed on a viewer's
+machine can't shadow ours.
+
+The warehouse label (`frontend/src/utils/warehouseLabels.js`) registers only
+Regular and Bold via `FontFace`, and its draw calls still ask for 400/500/600/
+700. With the middle cuts absent the printed label collapses to two weights:
+the goods number and lower footer lines lighten to Regular, and the Shelf /
+Order / Tracking block darkens to Bold.
+
+Legacy classes (`premium-font-galdgder*`, `text-font-roboto-*`) and the
+`--font-roboto` / `--font-galdgder` / `--font-gilroy` variables still exist and
+now resolve to Aeonik, purely so the ~29 components still using them didn't
+have to change at once. Prefer `--font-aeonik` and the `aeonik-*` utilities in
+new code.
 
 ### Animations
 
@@ -776,7 +847,7 @@ function MyComponent() {
 ### Tailwind CSS (`tailwind.config.js`)
 
 - **Content:** `./frontend/index.html`, `./frontend/src/**/*.{js,jsx,ts,tsx}`
-- **Theme:** Custom brand colors (`cz.*`, `primary.*`), fonts (Inter, Galderglynn), animations
+- **Theme:** Custom brand colors (`cz.*`, `primary.*`), fonts (Aeonik Pro), animations
 - **Plugins:** None
 
 ### PostCSS (`postcss.config.js`)

@@ -2982,7 +2982,7 @@ export default function StaffCreateInvoice() {
               {/* ── Excel-style spreadsheet grid ── */}
               <div
                 className="overflow-x-auto border-y border-[#c6c6c6]"
-                style={{ fontFamily: 'Calibri, "Segoe UI", Arial, sans-serif', userSelect: 'none' }}
+                style={{ fontFamily: 'var(--font-aeonik)', fontVariantNumeric: 'tabular-nums', userSelect: 'none' }}
                 onMouseLeave={() => { if (fillDrag) setFillDrag(prev => prev); }}
                 onClick={(e) => { if (e.target === e.currentTarget) setFocusedCell(null); }}
               >
@@ -3441,7 +3441,7 @@ export default function StaffCreateInvoice() {
                                   width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
                                   background: item.hsConfidence === 'high' ? '#22c55e' : item.hsConfidence === 'medium' ? '#f59e0b' : item.hsConfidence === 'low' ? '#fbbf24' : '#d1d5db',
                                 }} />
-                                <span style={{ fontSize: 13, fontFamily: 'monospace', color: '#1f1f1f', letterSpacing: '0.03em' }}>{item.hsCode}</span>
+                                <span style={{ fontSize: 13, fontFamily: 'var(--font-aeonik)', fontVariantNumeric: 'tabular-nums', color: '#1f1f1f', letterSpacing: '0.03em' }}>{item.hsCode}</span>
                               </div>
                             ) : (
                               <span style={{ fontSize: 11, color: '#bbb', fontStyle: 'italic' }}>—</span>
@@ -4155,7 +4155,7 @@ export default function StaffCreateInvoice() {
               position: 'fixed', top: ctxMenu.y, left: ctxMenu.x, zIndex: 99999,
               background: '#fff', border: '1px solid #c0c0c0',
               boxShadow: '4px 4px 14px rgba(0,0,0,0.20)',
-              minWidth: 220, fontFamily: 'Segoe UI, Calibri, Arial, sans-serif',
+              minWidth: 220, fontFamily: 'var(--font-aeonik)',
               fontSize: 13, borderRadius: 3, paddingTop: 4, paddingBottom: 4,
             }}
             onContextMenu={(e) => e.preventDefault()}

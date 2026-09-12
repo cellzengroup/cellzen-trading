@@ -125,44 +125,55 @@ const FOOTER2_Y = czY(574);
 const FOOTER3_Y = czY(606);
 const FOOTER_FONT_MAX = cz(28); // the three footer lines share one size
 
-const FONT_STACK = "'Inter',system-ui,-apple-system,'Segoe UI',Arial,sans-serif";
+const FONT_STACK = "'Aeonik Pro',system-ui,-apple-system,'Segoe UI',Arial,sans-serif";
 const SUPPORT_PHONE = "+8613073040201";
 
-// Inter, served from THIS site (frontend/public/fonts/Inter) and loaded via
-// FontFace so the label renders in the same face on every device — not the local
-// machine's fonts.
+// Aeonik Pro, served from THIS site (frontend/public/fonts/Aeonic) and loaded
+// via FontFace so the label renders in the same face on every device — not the
+// local machine's fonts.
 //
 // It used to be fetched from a Supabase Storage bucket, which turned out to be a
 // silent single point of failure: the moment that project passed its egress
 // quota every request came back 402 and EVERY label printed in the machine's
-// system sans instead of Inter, with nothing but a console warning to say so.
-// The four faces are 90 KB in total — far too little to be worth an external
-// dependency the printer's typeface hangs on. Same origin as the app now, so a
-// label can only lose Inter if the app itself failed to load.
+// system sans instead of the brand face, with nothing but a console warning to
+// say so. Same origin as the app now, so a label can only lose Aeonik if the app
+// itself failed to load.
+//
+// These are declared in index.css too, but the canvas cannot rely on that:
+// @font-face is lazy, and a face no DOM node has painted yet is not loaded when
+// ctx.font asks for it — it would measure and draw in the fallback. FontFace
+// here forces the fetch before the first measurement.
+//
+// ONLY TWO FACES, because only two of the upright cuts this label needs were
+// supplied. The draw calls below still ask for 400/500/600/700 — those are the
+// design's weights and worth keeping as intent — but with just 400 and 700
+// registered, the canvas resolves 500 down to Regular and 600 up to Bold, the
+// same way CSS would. Net effect on the printed label: the goods number and the
+// two lower footer lines lighten from Medium to Regular, and the Shelf / Order /
+// Tracking block darkens from SemiBold to Bold. Adding Medium here (and its
+// woff) restores the middle of that ramp without touching any draw call.
 //
 // The fallback below stays regardless: a label that prints in the wrong face
 // still beats one that doesn't print.
-const INTER_BASE = "/fonts/Inter";
-const INTER_FACES = [
-  { weight: "400", file: "inter-latin-400-normal.woff2" },
-  { weight: "500", file: "inter-latin-500-normal.woff2" },
-  { weight: "600", file: "inter-latin-600-normal.woff2" },
-  { weight: "700", file: "inter-latin-700-normal.woff2" },
+const AEONIK_BASE = "/fonts/Aeonic";
+const AEONIK_FACES = [
+  { weight: "400", file: "AeonikPro-Regular.woff" },
+  { weight: "700", file: "AeonikPro-Bold.woff" },
 ];
 
-let _interLoaded = null;
-function loadInterFonts() {
-  if (_interLoaded) return _interLoaded;
+let _aeonikLoaded = null;
+function loadAeonikFonts() {
+  if (_aeonikLoaded) return _aeonikLoaded;
   if (typeof FontFace === "undefined" || typeof document === "undefined" || !document.fonts) {
-    _interLoaded = Promise.resolve();
-    return _interLoaded;
+    _aeonikLoaded = Promise.resolve();
+    return _aeonikLoaded;
   }
-  _interLoaded = (async () => {
+  _aeonikLoaded = (async () => {
     let allOk = true;
     await Promise.all(
-      INTER_FACES.map(async ({ weight, file }) => {
+      AEONIK_FACES.map(async ({ weight, file }) => {
         try {
-          const face = new FontFace("Inter", `url(${INTER_BASE}/${file}) format('woff2')`, {
+          const face = new FontFace("Aeonik Pro", `url(${AEONIK_BASE}/${file}) format('woff')`, {
             weight,
             style: "normal",
           });
@@ -174,17 +185,17 @@ function loadInterFonts() {
           document.fonts.add(face);
         } catch (e) {
           allOk = false;
-          console.warn(`Inter ${weight} not loaded (using fallback):`, (e && e.message) || e);
+          console.warn(`Aeonik ${weight} not loaded (using fallback):`, (e && e.message) || e);
         }
       })
     );
-    // If some faces didn't load, let a later print retry (the woff2 is HTTP-cached
+    // If some faces didn't load, let a later print retry (the woff is HTTP-cached
     // once fetched, so retries are cheap) instead of caching the fallback forever.
     // Worth keeping now that the files are local: the first print of a session can
-    // race a cold cache, and the retry is what gets Inter onto the second one.
-    if (!allOk) _interLoaded = null;
+    // race a cold cache, and the retry is what gets Aeonik onto the second one.
+    if (!allOk) _aeonikLoaded = null;
   })();
-  return _interLoaded;
+  return _aeonikLoaded;
 }
 
 // Browser-print fallback page size (matches the loaded label stock).
@@ -411,14 +422,14 @@ function packMono(ctx, width, height) {
   return { data: bytesToBase64(out), widthBytes, width, height };
 }
 
-// Wait for Inter, but hard-bound the whole step so a slow/offline network can
+// Wait for Aeonik, but hard-bound the whole step so a slow/offline network can
 // never hang label rendering — we fall back to a system sans (see FONT_STACK)
 // and still print. Shared by both label designs.
 async function loadLabelFonts() {
   try {
     await Promise.race([
       (async () => {
-        await loadInterFonts();
+        await loadAeonikFonts();
         if (document.fonts && document.fonts.ready) await document.fonts.ready;
       })(),
       new Promise((resolve) => setTimeout(resolve, 5000)),
@@ -886,10 +897,10 @@ function renderRackLabelDataUrl({ code, lines, caption }) {
   ctx.fillRect(0, 0, W, 12);
 
   ctx.fillStyle = INK;
-  ctx.font = "700 32px Inter, system-ui, sans-serif";
+  ctx.font = `700 32px ${FONT_STACK}`;
   ctx.fillText(String(code), 26, 70);
 
-  ctx.font = "15px Inter, system-ui, sans-serif";
+  ctx.font = `15px ${FONT_STACK}`;
   let y = 108;
   for (const ln of lines || []) {
     ctx.fillStyle = INK;
@@ -911,7 +922,7 @@ function renderRackLabelDataUrl({ code, lines, caption }) {
 
   if (caption) {
     ctx.fillStyle = "#7d7561";
-    ctx.font = "12px Inter, system-ui, sans-serif";
+    ctx.font = `12px ${FONT_STACK}`;
     ctx.fillText(String(caption), 26, H - 8);
   }
 

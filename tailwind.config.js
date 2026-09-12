@@ -7,7 +7,12 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Inter"', 'sans-serif'],
+        // Aeonik Pro is the only face on the site. The CJK fallbacks are
+        // required, not decorative: Aeonik ships no Han glyphs, so the zh
+        // locale renders as tofu without them.
+        sans: ['"Aeonik Pro"', '"Noto Sans SC"', '"Microsoft YaHei"', '"PingFang SC"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        serif: ['"Aeonik Pro"', '"Noto Sans SC"', '"Microsoft YaHei"', '"PingFang SC"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        aeonik: ['"Aeonik Pro"', '"Noto Sans SC"', '"Microsoft YaHei"', '"PingFang SC"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
       colors: {
         primary: {

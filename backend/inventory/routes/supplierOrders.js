@@ -25,13 +25,20 @@ const PACKING_TEMPLATE_DIR = fs.existsSync(path.join(__dirname, '..', '..', '..'
   ? path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'Invoice')
   : path.join(__dirname, '..', '..', '..', 'dist', 'Invoice');
 const PACKING_TEMPLATE_PATH = path.join(PACKING_TEMPLATE_DIR, 'GtradeA Sent Goods.xlsx');
-// The PDF export embeds a real TTF rather than leaning on a PDF base-14 font:
-// 1688 listing titles are machine-translated and carry accented and occasional
-// non-Latin characters, which a WinAnsi-encoded base font drops silently.
-// Resolved the same dev/dist way as the template dir above.
-const PACKING_FONT_DIR = fs.existsSync(path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'fonts', 'Roboto'))
-  ? path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'fonts', 'Roboto')
-  : path.join(__dirname, '..', '..', '..', 'dist', 'fonts', 'Roboto');
+// The PDF export embeds a real font file rather than leaning on a PDF base-14
+// font: 1688 listing titles are machine-translated and carry accented and
+// occasional non-Latin characters, which a WinAnsi-encoded base font drops
+// silently. Resolved the same dev/dist way as the template dir above.
+//
+// Aeonik Pro (the site's only typeface) replaced Roboto here. It's a WOFF, not
+// a TTF — pdfkit hands the file to fontkit, which reads WOFF's zlib container
+// natively and subsets it the same way, so the export is byte-for-byte the
+// same shape as before. Coverage is what matters for this route and it holds:
+// Latin Extended, Cyrillic and Greek, which is the range the accented titles
+// land in.
+const PACKING_FONT_DIR = fs.existsSync(path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'fonts', 'Aeonic'))
+  ? path.join(__dirname, '..', '..', '..', 'frontend', 'public', 'fonts', 'Aeonic')
+  : path.join(__dirname, '..', '..', '..', 'dist', 'fonts', 'Aeonic');
 
 // Same staff-or-admin gate used across the inventory routes (see warehouse.js).
 // Data is SHARED — every staff/admin sees every 1688 order. No per-user scoping.
@@ -1121,19 +1128,19 @@ const PDF_BAND = '#E8E4DD';   // title/total band — same as the sheet's FFE8E4
 const PDF_INK = '#2D2D2D';
 const PDF_GRID = '#9A9285';
 
-// Roboto ships with the site; a base-14 PDF font would silently drop the
+// Aeonik ships with the site; a base-14 PDF font would silently drop the
 // accented characters that turn up in machine-translated 1688 titles. Falls
 // back to Helvetica if the font directory isn't where it's expected.
 function registerPdfFonts(doc) {
-  const regular = path.join(PACKING_FONT_DIR, 'Roboto-Regular.ttf');
-  const bold = path.join(PACKING_FONT_DIR, 'Roboto-Bold.ttf');
+  const regular = path.join(PACKING_FONT_DIR, 'AeonikPro-Regular.woff');
+  const bold = path.join(PACKING_FONT_DIR, 'AeonikPro-Bold.woff');
   if (fs.existsSync(regular) && fs.existsSync(bold)) {
     try {
       doc.registerFont('body', regular);
       doc.registerFont('bold', bold);
       return;
     } catch (e) {
-      console.error('[1688 export] could not load Roboto, falling back:', e?.message || e);
+      console.error('[1688 export] could not load Aeonik, falling back:', e?.message || e);
     }
   }
   doc.registerFont('body', 'Helvetica');

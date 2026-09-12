@@ -5,6 +5,14 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" media="(prefers-color-scheme: light)" />
     <link rel="icon" type="image/svg+xml" href="/favicon-light.svg" media="(prefers-color-scheme: dark)" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <!-- The two Aeonik weights on every page: Regular carries body text AND
+         h2/h3 (which ask for 500 but resolve down to 400 until a Medium roman
+         is supplied), Bold carries h1. @font-face alone defers the fetch until
+         layout finds the text, showing a frame of fallback sans first; these
+         start the download with the stylesheet. The other eight faces load on
+         demand. Add Medium here if AeonikPro-Medium.woff is ever added. -->
+    <link rel="preload" href="/fonts/Aeonic/AeonikPro-Regular.woff" as="font" type="font/woff" crossorigin />
+    <link rel="preload" href="/fonts/Aeonic/AeonikPro-Bold.woff" as="font" type="font/woff" crossorigin />
     <title>Cellzen: Group of Companies</title>
   </head>
   <body>
