@@ -72,6 +72,8 @@ export async function resilientFetch(path, init = {}) {
   }
 
   const bases = getApiBaseCandidates();
+  const method = String(init.method || "GET").toUpperCase();
+  const isRead = method === "GET" || method === "HEAD";
   let lastErr = null;
   let firstResponse = null;
   for (const base of bases) {
@@ -83,6 +85,12 @@ export async function resilientFetch(path, init = {}) {
         cachedWorkingBase = base;
         return res;
       }
+      // A write the server ANSWERED — even with an error — has reached the
+      // backend. Sending it again to the twin host would repeat it (a put-away
+      // that came back 409, a ship that came back 500) and put a whole extra
+      // round trip in front of the error. Only reads go looking for a better
+      // host; a write only moves on after a network error, when nothing answered.
+      if (!isRead) return res;
       // Non-2xx/3xx — keep this response as a fallback but try the next base
       // first to see if a better one exists.
       if (!firstResponse) firstResponse = res;

@@ -13,7 +13,7 @@ const { withConnectionRetry } = require('../dbRetry');
 const { downloadImage } = require('../../config/supabase');
 const gtradeaSync = require('../services/gtradeaSync');
 const { extractProductNames } = require('../services/productNames');
-const { classifyShipmentModes, toShipmentFrom } = require('../services/shipmentMode');
+const { classifyShipmentModes, effectiveOrderMode, toShipmentFrom } = require('../services/shipmentMode');
 
 const router = express.Router();
 
@@ -260,10 +260,23 @@ router.patch('/:id/ship-mode', authenticate, requireStaffOrAdmin, async (req, re
     // Only IN-STOCK items are touched: an already-shipped item records how it
     // actually travelled, and rewriting that would be a lie about a completed
     // shipment.
+    //
+    // The box takes the PARCEL's mode, though, not just this line's: one CN
+    // tracking is one box, and put-away stores it By Land if any of its lines has
+    // to travel by land. Retagging from the edited line alone let a correction on
+    // the T-shirt line of a T-shirt + power bank parcel send the whole box — power
+    // bank included — by air.
     let propagated = 0;
+    let boxMode = effective;
     if (WarehouseItem && order.china_tracking_no) {
+      const lines = await withConnectionRetry(() => SupplierOrder.findAll({
+        where: { china_tracking_no: order.china_tracking_no },
+        attributes: ['id', 'product_name', 'ship_mode_override'],
+      }));
+      const lineModes = await Promise.all(lines.map((line) => effectiveOrderMode(line)));
+      boxMode = lineModes.includes('land') ? 'land' : 'air';
       const [count] = await withConnectionRetry(() => WarehouseItem.update(
-        { shipment_from: toShipmentFrom(effective) },
+        { shipment_from: toShipmentFrom(boxMode) },
         { where: { tracking_number: order.china_tracking_no, status: 'in_stock' } }
       ));
       propagated = count || 0;
@@ -283,7 +296,8 @@ router.patch('/:id/ship-mode', authenticate, requireStaffOrAdmin, async (req, re
         // How many boxes on the shelf were retagged — the panel uses it to tell
         // staff the change reached the physical stock, not just this table.
         warehouse_items_updated: propagated,
-        warehouse_shipment_from: toShipmentFrom(effective),
+        // The box's mode as retagged — the parcel's, which can differ from this line's.
+        warehouse_shipment_from: toShipmentFrom(boxMode),
       },
     });
   } catch (error) {

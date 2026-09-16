@@ -4,7 +4,7 @@ const { Op } = require('sequelize');
 const { Rack, WarehouseItem, PrintJob, SupplierOrder, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { withConnectionRetry } = require('../dbRetry');
-const { effectiveOrderMode, toShipmentFrom } = require('../services/shipmentMode');
+const { effectiveOrderMode, toShipmentFrom, classifyShipmentModes } = require('../services/shipmentMode');
 
 const router = express.Router();
 
@@ -66,6 +66,17 @@ const normRack = (v) => String(v || '').trim().toUpperCase();
 const SHELF_PATTERN = /^[A-Za-z]{1,6}\d{0,4}-\d{1,4}-\d{1,6}$/;
 const isShelfCode = (v) => SHELF_PATTERN.test(String(v || '').trim());
 
+// A 1688 line's ship_mode_override as the data allows it: 'air', 'land' or null.
+const normShipMode = (v) => {
+  const s = String(v || '').trim().toLowerCase();
+  return s === 'air' || s === 'land' ? s : null;
+};
+
+// Thrown inside a write when the box turns out to have shipped between the route
+// reading it and writing to it — so a transaction rolls back and the route answers
+// 409. Not a connection error, so withConnectionRetry never retries it.
+class NotInStockError extends Error {}
+
 // Escape LIKE/ILIKE metacharacters so a tracking number containing % or _ is
 // matched literally instead of being treated as a wildcard pattern.
 const escapeLike = (v) => String(v).replace(/[\\%_]/g, (c) => `\\${c}`);
@@ -102,56 +113,60 @@ async function trackingsForSearch(term) {
   return [...new Set(orders.map((o) => o.china_tracking_no).filter(Boolean))];
 }
 
-// Generate the INTERNAL goods number for a newly put-away item: CZN-00001,
-// CZN-00002, … Every box that belongs to the same 1688 order (order_number)
-// shares ONE goods number — if another box from this order is already on file,
-// its code is reused instead of minting a new one. Otherwise the next
-// sequential number is the max existing CZN number + 1, zero-padded to 5 digits.
+// Mint the ids a newly put-away box gets, in ONE round trip. Put-away is the scan
+// the warehouse waits on, and every query is a trip to the database, so these
+// used to be two or three:
 //
-// NOTE: for gtradea items this code is no longer what staff see — the label,
-// its barcode and the GtradeA panel show the gtradea item code (item_code).
-// `code` stays as the stable internal key that groups the boxes of one order
-// together.
-async function generateItemCode(orderNumber) {
-  if (orderNumber) {
-    const existing = await WarehouseItem.findOne({
-      where: { order_number: orderNumber },
-      order: [['createdAt', 'ASC']],
-      attributes: ['code'],
-    });
-    if (existing?.code) return existing.code;
-  }
-
-  // Max sequence in ONE aggregate query. This used to pull every CZN row back
-  // into Node just to scan for the largest number — put-away is on the scan →
-  // print hot path (staff wait on it at the shelf), so the whole row set is
-  // never shipped over the wire for a single max.
-  //
-  // `[0-9]{1,9}` (not "strip every non-digit") caps the match at 9 digits, so the
-  // ::int cast can't overflow on an oddly-shaped code — and a code with no digits
-  // at all yields NULL, which MAX() simply skips.
+//   code    — the INTERNAL goods number: CZN-00001, CZN-00002, … Every box that
+//             belongs to the same 1688 order (order_number) shares ONE goods
+//             number: if another box from this order is already on file, its code
+//             is reused instead of minting a new one. Otherwise the next number is
+//             the max existing CZN number + 1, zero-padded to 5 digits. For gtradea
+//             items this is no longer what staff see — the label, its barcode and
+//             the GtradeA panel show the gtradea item code (item_code); `code`
+//             stays as the stable internal key grouping the boxes of one order.
+//   boxCode — the id of the BOX: GTP-000001, GTP-000002, … One per physical
+//             parcel, never shared. Same shape as a gtradea product id (three
+//             letters, dash, six digits) on purpose: the barcode is then exactly as
+//             wide for a box of four products as for a box of one.
+//
+// Both maxima are aggregates, never rows pulled back into Node. `[0-9]{1,9}` (not
+// "strip every non-digit") caps the match at 9 digits, so the ::int cast can't
+// overflow on an oddly-shaped code, and a code with no digits at all yields NULL,
+// which MAX() simply skips. A null order number matches no earlier box — the same
+// answer as when that lookup was skipped outright.
+async function generateCodes(orderNumber) {
   const [[row]] = await sequelize.query(
-    `SELECT MAX((substring(code from '[0-9]{1,9}'))::int) AS max_seq
-       FROM warehouse_items
-      WHERE code ILIKE 'CZN%'`
+    `SELECT
+       (SELECT code FROM warehouse_items
+         WHERE order_number = :orderNumber
+         ORDER BY "createdAt" ASC LIMIT 1) AS prior_code,
+       (SELECT MAX((substring(code from '[0-9]{1,9}'))::int)
+          FROM warehouse_items WHERE code ILIKE 'CZN%') AS max_code,
+       (SELECT MAX((substring(box_code from '[0-9]{1,9}'))::int)
+          FROM warehouse_items WHERE box_code ILIKE 'GTP%') AS max_box`,
+    { replacements: { orderNumber: orderNumber || null } }
   );
-  return `CZN-${String((row?.max_seq || 0) + 1).padStart(5, '0')}`;
+  return {
+    code: row?.prior_code || `CZN-${String((row?.max_code || 0) + 1).padStart(5, '0')}`,
+    boxCode: `GTP-${String((row?.max_box || 0) + 1).padStart(6, '0')}`,
+  };
 }
 
-// Mint the id of the BOX: GTP-000001, GTP-000002, … One per physical parcel,
-// never shared — unlike `code`, which every box of one order deliberately shares.
-// This is what the label's barcode carries, so it must resolve to exactly one row.
-//
-// Same shape as a gtradea product id (three letters, dash, six digits) on purpose:
-// the barcode is then exactly as wide for a box of four products as for a box of
-// one, which is the whole reason the box id exists.
-async function generateBoxCode() {
-  const [[row]] = await sequelize.query(
-    `SELECT MAX((substring(box_code from '[0-9]{1,9}'))::int) AS max_seq
-       FROM warehouse_items
-      WHERE box_code ILIKE 'GTP%'`
-  );
-  return `GTP-${String((row?.max_seq || 0) + 1).padStart(6, '0')}`;
+// Every 1688 line travelling under one CN tracking number, in the one order every
+// path picks from — item_code first with blanks last, then order number and id —
+// so the pick is the same on every read. The first row is the box's order (its
+// ids, its mode); the whole list is what the response's product list is built
+// from (attachParcelProducts), which is why the columns cover both.
+function parcelLines(tracking) {
+  return SupplierOrder.findAll({
+    where: { china_tracking_no: tracking },
+    attributes: [
+      'id', 'china_tracking_no', 'job_code', 'item_code', 'order_number',
+      'product_name', 'product_image', 'quantity', 'ship_mode_override',
+    ],
+    order: [['item_code', 'ASC NULLS LAST'], ['order_number', 'ASC'], ['id', 'ASC']],
+  });
 }
 
 // ============================================================ RACKS
@@ -273,15 +288,29 @@ router.get('/items/export.csv', authenticate, requireStaffOrAdmin, async (req, r
 //
 // Runs against a LIST so it costs one query for a whole page — pass [item] for a
 // single row. Rows that aren't gtradea, or have no tracking, are left untouched.
-async function attachParcelProducts(rows) {
+//
+// `details` adds one more field, `products` — each distinct product in the
+// parcel as { item_code, product_name, product_image, quantity }, for the Store
+// sheet that shows what was just put away. Single-row responses only (see
+// attachParcelSafely): a photo URL and a full title on every one of 5000 list
+// rows would bloat the poll and the instant-paint cache for a field no list
+// screen reads.
+//
+// `orders` — the parcel's supplier_orders rows, when the caller already has them
+// (put-away fetched them to match the scan) — skips the query. They must carry
+// the attributes below and come in the same order.
+async function attachParcelProducts(rows, { details = false, orders: preloaded = null } = {}) {
   if (!SupplierOrder) return rows;
   const need = rows.filter((r) => r && r.source === 'gtradea' && r.tracking_number);
   if (!need.length) return rows;
 
   const trackings = [...new Set(need.map((r) => r.tracking_number))];
-  const orders = await SupplierOrder.findAll({
+  const orders = preloaded || await SupplierOrder.findAll({
     where: { china_tracking_no: { [Op.in]: trackings } },
-    attributes: ['china_tracking_no', 'job_code', 'item_code', 'order_number', 'product_name'],
+    attributes: [
+      'china_tracking_no', 'job_code', 'item_code', 'order_number', 'product_name',
+      ...(details ? ['product_image', 'quantity'] : []),
+    ],
     // One tracking can carry several items (two variants in one parcel), and
     // unlike job_code their item_codes DIFFER — so the row that wins decides
     // which id gets printed. Order by item_code so the winner is always the same
@@ -298,6 +327,7 @@ async function attachParcelProducts(rows) {
   const lineIdsByTracking = {};
   const ordersByTracking = {};
   const linesByTracking = {};
+  const productsByTracking = {};
   for (const o of orders) {
     const t = o.china_tracking_no;
     if (!first[t]) first[t] = o;
@@ -312,6 +342,26 @@ async function attachParcelProducts(rows) {
     }
     if (o.order_number && !(ordersByTracking[t] || []).includes(o.order_number)) {
       (ordersByTracking[t] ||= []).push(o.order_number);
+    }
+    // Distinct PRODUCTS, not lines: two lines of one listing carry the same
+    // title and photo, and showing it twice would read as two different goods.
+    // Their quantities add up instead — both lots are in the bag.
+    if (details) {
+      const list = (productsByTracking[t] ||= []);
+      const qty = Number.isFinite(o.quantity) ? o.quantity : null;
+      const same = list.find((q) => q.item_code === (o.item_code || null)
+        && q.product_name === (o.product_name || null)
+        && q.product_image === (o.product_image || null));
+      if (same) {
+        if (qty !== null) same.quantity = (same.quantity || 0) + qty;
+      } else {
+        list.push({
+          item_code: o.item_code || null,
+          product_name: o.product_name || null,
+          product_image: o.product_image || null,
+          quantity: qty,
+        });
+      }
     }
   }
 
@@ -339,6 +389,12 @@ async function attachParcelProducts(rows) {
     set('product_ids', lineIds);
     set('order_numbers', orderNos);
     set('product_count', count);
+    if (details) {
+      // A parcel whose 1688 lines are gone still names the product the box was
+      // stored with — just without a photo, which only the lines carry.
+      set('products', productsByTracking[r.tracking_number]
+        || (r.product_name ? [{ item_code: r.item_code || null, product_name: r.product_name, product_image: null, quantity: null }] : []));
+    }
   }
   return rows;
 }
@@ -354,9 +410,9 @@ async function attachParcelProducts(rows) {
 // row from one of them would drop the parcel's product list out of a box that
 // was showing it — and the next label printed for that box would name one
 // product again, until a page refresh went through GET /items.
-async function attachParcelSafely(item) {
+async function attachParcelSafely(item, orders = null) {
   try {
-    await attachParcelProducts([item]);
+    await attachParcelProducts([item], { details: true, orders });
   } catch (e) {
     console.error('Parcel product lookup failed (the write itself succeeded):', e?.message || e);
   }
@@ -473,6 +529,16 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     }
     if (!trackingNumber) return res.status(400).json({ success: false, message: 'Tracking number is required' });
 
+    // Reported back as a Server-Timing header, so the time put-away takes on the
+    // server can be read straight off a real request in the browser.
+    const startedAt = Date.now();
+
+    // GtradeA section: the tracking number MUST correspond to a known 1688
+    // supplier order. Free-form trackings are rejected; the matched order # +
+    // product are linked onto the item for the shipment panel. Cellzen is
+    // unchanged (source defaults to 'cellzen', any tracking allowed).
+    const source = String(req.body?.source || 'cellzen').trim().toLowerCase() === 'gtradea' ? 'gtradea' : 'cellzen';
+
     // What gets held under the scanner at put-away is usually the courier's
     // tracking barcode — but the label this app prints carries the GOODS id, and
     // staff scan that here too: at a box coming back to another shelf, or simply
@@ -484,17 +550,24 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     // Only the ids that name ONE box are matched here. pr_code and code are
     // shared by every box of an order, so an old sticker carrying one of those
     // would otherwise block a SIBLING box from being stored.
+    //
+    // The parcel's 1688 lines are read at the same time — the two don't depend on
+    // each other, so the scan waits one round trip for both instead of two. On the
+    // rare 409 that read simply goes unused.
     const scanned = escapeLike(trackingNumber);
-    const already = await WarehouseItem.findOne({
-      where: {
-        status: 'in_stock',
-        [Op.or]: [
-          { tracking_number: { [Op.iLike]: scanned } },
-          { item_code: { [Op.iLike]: scanned } },
-          { box_code: { [Op.iLike]: scanned } },
-        ],
-      },
-    });
+    const [already, trackingLines] = await Promise.all([
+      WarehouseItem.findOne({
+        where: {
+          status: 'in_stock',
+          [Op.or]: [
+            { tracking_number: { [Op.iLike]: scanned } },
+            { item_code: { [Op.iLike]: scanned } },
+            { box_code: { [Op.iLike]: scanned } },
+          ],
+        },
+      }),
+      source === 'gtradea' && SupplierOrder ? parcelLines(trackingNumber) : null,
+    ]);
     if (already) {
       return res.status(409).json({
         success: false,
@@ -502,12 +575,6 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
         data: already,
       });
     }
-
-    // GtradeA section: the tracking number MUST correspond to a known 1688
-    // supplier order. Free-form trackings are rejected; the matched order # +
-    // product are linked onto the item for the shipment panel. Cellzen is
-    // unchanged (source defaults to 'cellzen', any tracking allowed).
-    const source = String(req.body?.source || 'cellzen').trim().toLowerCase() === 'gtradea' ? 'gtradea' : 'cellzen';
     let orderNumber = null;
     let productName = null;
     let prCode = null;
@@ -515,20 +582,21 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
     // Null until a 1688 order says otherwise, so the model's 'By Air' default
     // still applies to a plain cellzen put-away.
     let shipmentFrom = null;
+    // The parcel's 1688 lines (gtradea only): the match is the first of them, and
+    // the response's product list is built from all of them.
+    let parcel = null;
     if (source === 'gtradea') {
       if (!SupplierOrder) {
         return res.status(503).json({ success: false, message: '1688 orders are not configured' });
       }
-      // Ordered by item_code, NOT synced_at: a parcel with two items in it has
-      // two candidate rows, and this pick decides which item_code goes on the
-      // box. The list route resolves the same way (see GET /items), so a box
-      // shows the same id at put-away as it does on every later read — with
+      // Ordered by item_code, NOT synced_at (see parcelLines): a parcel with two
+      // items in it has two candidate rows, and this pick decides which item_code
+      // goes on the box. The list route resolves the same way (see GET /items), so
+      // a box shows the same id at put-away as it does on every later read — with
       // synced_at the two could disagree, and the printed label would stop
       // matching the panel the next time gtradea re-synced.
-      let match = await SupplierOrder.findOne({
-        where: { china_tracking_no: trackingNumber },
-        order: [['item_code', 'ASC NULLS LAST']],
-      });
+      parcel = trackingLines || [];
+      let match = parcel[0] || null;
       // Not a tracking number — try it as a GOODS id. A box that has shipped and
       // come back is scanned by the label on it, and that label reads GTI-100119;
       // so does the China Operations row someone may be typing from. Resolving it
@@ -546,16 +614,18 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
           trackingNumber = byGoods.china_tracking_no;
           // Re-read by tracking so the item_code / shipment mode picked below are
           // the same ones every other path picks for this parcel (lowest item_code
-          // of the tracking), rather than whichever line was scanned.
-          match = await SupplierOrder.findOne({
-            where: { china_tracking_no: trackingNumber },
-            order: [['item_code', 'ASC NULLS LAST']],
-          });
-          // The parcel may already be on a shelf under its tracking number, which
-          // the id check above couldn't see because it was scanned by goods id.
-          const stored = await WarehouseItem.findOne({
-            where: { tracking_number: { [Op.iLike]: escapeLike(trackingNumber) }, status: 'in_stock' },
-          });
+          // of the tracking), rather than whichever line was scanned. Side by side
+          // with it: whether the parcel is already on a shelf under its tracking
+          // number, which the id check above couldn't see because it was scanned
+          // by goods id. Neither read needs the other.
+          const [lines, stored] = await Promise.all([
+            parcelLines(trackingNumber),
+            WarehouseItem.findOne({
+              where: { tracking_number: { [Op.iLike]: escapeLike(trackingNumber) }, status: 'in_stock' },
+            }),
+          ]);
+          parcel = lines;
+          match = parcel[0] || null;
           if (stored) {
             return res.status(409).json({
               success: false,
@@ -601,73 +671,74 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       // what the dangerous-goods classifier worked out. Without this the box
       // was born on the model's 'By Air' default and a lithium shipment printed
       // as air freight seconds after being scanned.
-      shipmentFrom = toShipmentFrom(await effectiveOrderMode(match));
+      // A parcel travels as ONE box, so it goes By Land if ANY of its lines has
+      // to: a lithium power bank bagged with a T-shirt must not print as air
+      // freight just because the T-shirt's line happens to sort first.
+      const lineModes = await Promise.all(parcel.map((line) => effectiveOrderMode(line)));
+      shipmentFrom = toShipmentFrom(lineModes.includes('land') ? 'land' : 'air');
     }
 
-    // Auto-create the shelf on first sight (spec: a new shelf code is created).
-    await Rack.findOrCreate({ where: { id: rackId }, defaults: { id: rackId } });
+    // Auto-create the shelf on first sight (spec: a new shelf code is created) and
+    // mint the goods number + box id, side by side — neither needs the other. The
+    // shelf is one INSERT ... ON CONFLICT DO NOTHING, where findOrCreate used a
+    // transaction of three statements.
+    const [, codes] = await Promise.all([
+      Rack.bulkCreate([{ id: rackId }], { ignoreDuplicates: true }),
+      generateCodes(orderNumber),
+    ]);
 
     // Dedupe is handled by the id-aware in-stock check at the top (and repeated
     // for a goods id once it resolves to a tracking number). The partial unique
     // index on warehouse_items (tracking_number WHERE status='in_stock') remains
     // the atomic backstop for concurrent double-scans, handled in the catch below.
 
-    // Mint (or reuse) the goods number and insert. The tracking_number partial
-    // unique index is the atomic backstop for a concurrent double-scan of the
-    // same tracking number (not retryable — the item is already stored).
+    // Insert. The tracking_number partial unique index is the atomic backstop for
+    // a concurrent double-scan of the same tracking number (not retryable — the
+    // item is already stored).
+    const itemFields = ({ code, boxCode }) => ({
+      code,
+      box_code: boxCode,
+      tracking_number: trackingNumber,
+      rack_id: rackId,
+      status: 'in_stock',
+      source,
+      order_number: orderNumber,
+      product_name: productName,
+      pr_code: prCode,
+      item_code: itemCode,
+      // Omitted entirely when there's no 1688 match, so the column default
+      // ('By Air') applies rather than an explicit null overwriting it.
+      ...(shipmentFrom ? { shipment_from: shipmentFrom } : {}),
+      created_by_user_id: req.user.id,
+      created_by_name: req.user.name || null,
+    });
+    // MAX(box_code)+1 is not atomic, so put-aways in the same instant can pick the
+    // same number. That collision is on box_code, not tracking, and it is safely
+    // retryable — the next attempt just takes the next number — so it is retried a
+    // few times, for the rare burst of simultaneous scans. Any other unique
+    // collision is the in-stock tracking index: the box really is already stored
+    // (perhaps by the very request it raced), so it answers 409, on any attempt.
+    const uniqueOn = (error, name) => error.name === 'SequelizeUniqueConstraintError'
+      && String(error.parent?.constraint || '').includes(name);
     let item;
-    try {
-      item = await WarehouseItem.create({
-        code: await generateItemCode(orderNumber),
-        box_code: await generateBoxCode(),
-        tracking_number: trackingNumber,
-        rack_id: rackId,
-        status: 'in_stock',
-        source,
-        order_number: orderNumber,
-        product_name: productName,
-        pr_code: prCode,
-        item_code: itemCode,
-        // Omitted entirely when there's no 1688 match, so the column default
-        // ('By Air') applies rather than an explicit null overwriting it.
-        ...(shipmentFrom ? { shipment_from: shipmentFrom } : {}),
-        created_by_user_id: req.user.id,
-        created_by_name: req.user.name || null,
-      });
-    } catch (error) {
-      // MAX(box_code)+1 is not atomic, so two put-aways in the same instant can
-      // pick the same number. That collision is on box_code, not tracking, and it
-      // is safely retryable — the second scan just takes the next number. A
-      // tracking collision means the box really is already stored, so it still 409s.
-      const dupBox = error.name === 'SequelizeUniqueConstraintError'
-        && String(error.parent?.constraint || '').includes('box_code');
-      if (dupBox) {
-        item = await WarehouseItem.create({
-          code: await generateItemCode(orderNumber),
-          box_code: await generateBoxCode(),
-          tracking_number: trackingNumber,
-          rack_id: rackId,
-          status: 'in_stock',
-          source,
-          order_number: orderNumber,
-          product_name: productName,
-          pr_code: prCode,
-          item_code: itemCode,
-          ...(shipmentFrom ? { shipment_from: shipmentFrom } : {}),
-          created_by_user_id: req.user.id,
-          created_by_name: req.user.name || null,
-        });
-      } else if (error.name === 'SequelizeUniqueConstraintError') {
-        return res.status(409).json({ success: false, message: 'Already in stock — this tracking number is already stored' });
-      } else {
+    for (let attempt = 1; !item; attempt += 1) {
+      try {
+        item = await WarehouseItem.create(itemFields(attempt === 1 ? codes : await generateCodes(orderNumber)));
+      } catch (error) {
+        if (uniqueOn(error, 'box_code') && attempt < 3) continue;
+        if (error.name === 'SequelizeUniqueConstraintError' && !uniqueOn(error, 'box_code')) {
+          return res.status(409).json({ success: false, message: 'Already in stock — this tracking number is already stored' });
+        }
         throw error;
       }
     }
     // The put-away sheet prints the label straight off this response, so the
     // parcel's product list has to ride along — without it a bag holding five
     // products printed a label naming one, and only a later page refresh (which
-    // goes through GET /items) ever showed the rest.
-    await attachParcelSafely(item);
+    // goes through GET /items) ever showed the rest. Built from the lines already
+    // read above, so it costs no further query.
+    await attachParcelSafely(item, parcel);
+    res.set('Server-Timing', `app;dur=${Date.now() - startedAt}`);
     res.status(201).json({ success: true, data: item });
   } catch (error) {
     console.error('Put-away item error:', error);
@@ -691,9 +762,109 @@ router.post('/items/:id/shipment-mode', authenticate, requireStaffOrAdmin, async
     if (mode !== 'By Air' && mode !== 'By Land') {
       return res.status(400).json({ success: false, message: 'Shipment mode must be "By Air" or "By Land"' });
     }
-    await item.update({ shipment_from: mode });
+    // applyToOrders — sent by the Store tab's "Item stored" sheet — carries the
+    // choice onto the box's 1688 lines too, so the Mode column and the
+    // BYAIR/BYLAND packing lists split on it agree with the label. Opt-in: the
+    // print dialog keeps recording a label's mode on the box alone.
+    const applyToOrders = req.body?.applyToOrders === true;
+    // The sheet can still be open when someone else ships the box. A shipped
+    // parcel records how it actually travelled — the 1688 route refuses the same
+    // rewrite — so this path refuses rather than edit a completed shipment.
+    // Checked here for a clear early answer, and again inside the write itself.
+    const alreadyShipped = () => res.status(409).json({
+      success: false,
+      message: `${item.item_code || item.code} has already shipped — its mode can't be changed`,
+      data: item,
+    });
+    if (applyToOrders && item.status !== 'in_stock') return alreadyShipped();
+
+    let lineOverrides = [];
+    // What those lines held before this write, handed back so a later call can
+    // put them back exactly. Lines aren't a function of the box's mode — one
+    // parcel can mix a lithium line with a phone case — so no pick could.
+    let previousLineOverrides = [];
+    // Lines a dangerous-goods rule keeps By Land although the box was set By Air.
+    const keptLand = [];
+    if (applyToOrders && SupplierOrder && item.source === 'gtradea' && item.tracking_number) {
+      const pick = mode === 'By Land' ? 'land' : 'air';
+      const lines = await withConnectionRetry(() => SupplierOrder.findAll({
+        where: { china_tracking_no: item.tracking_number },
+        attributes: ['id', 'item_code', 'product_name', 'ship_mode_override'],
+      }));
+      previousLineOverrides = lines.map((l) => ({ id: l.id, override: normShipMode(l.ship_mode_override) }));
+      const restore = Array.isArray(req.body?.restoreLineOverrides) ? req.body.restoreLineOverrides : null;
+      if (restore) {
+        // restoreLineOverrides — the sheet switching back to the mode the box was
+        // put away with — puts each line back exactly as that snapshot says, so a
+        // By Land → By Air round trip leaves the parcel as it found it. Only this
+        // parcel's lines, and only 'air', 'land' or null.
+        const own = new Set(lines.map((l) => String(l.id)));
+        lineOverrides = restore
+          .filter((r) => r && own.has(String(r.id)) && (r.override === null || normShipMode(r.override)))
+          .map((r) => ({ id: r.id, override: normShipMode(r.override) }));
+      } else if (lines.length) {
+        // Otherwise each line follows the pick: its override is cleared where the
+        // classifier already agrees and set to the pick where it doesn't — except
+        // that By Air never overrides a line a dangerous-goods RULE puts on land
+        // (lithium, blades, …). A box-level switch is too blunt to overrule a
+        // regulated term the staff member may not even see on the sheet; that takes
+        // the line's own Mode dropdown in the 1688 panel. Such lines are left
+        // exactly as they are and reported back.
+        const autos = await classifyShipmentModes(lines.map((l) => l.product_name || ''));
+        lines.forEach((l, i) => {
+          const auto = autos[i];
+          // (A line staff already set to air in the 1688 panel ships by air as it
+          // is: it isn't "kept" anything, and its override stays as the pick has it.)
+          if (pick === 'air' && auto.mode === 'land' && auto.source === 'rule'
+              && normShipMode(l.ship_mode_override) !== 'air') {
+            keptLand.push({ id: l.id, item_code: l.item_code, product_name: l.product_name, reason: auto.reason });
+            return;
+          }
+          lineOverrides.push({ id: l.id, override: auto.mode === pick ? null : pick });
+        });
+      }
+    }
+
+    // For the sheet, the box must STILL be in stock when the write lands: a ship
+    // that committed after the read above would otherwise have its recorded mode
+    // rewritten. Matched in the update itself, so a race rolls the write back.
+    const stillInStock = applyToOrders ? { status: 'in_stock' } : {};
+    try {
+      if (lineOverrides.length) {
+        // One transaction: lines saying land under a box saying By Air is the very
+        // mismatch this exists to prevent, so the writes land together or not at
+        // all. The box goes through a static update so a retry after a dropped
+        // connection re-sends it, rather than finding the instance "unchanged".
+        await withConnectionRetry(() => sequelize.transaction(async (transaction) => {
+          for (const override of [null, 'air', 'land']) {
+            const ids = lineOverrides.filter((l) => l.override === override).map((l) => l.id);
+            if (ids.length) {
+              await SupplierOrder.update({ ship_mode_override: override }, { where: { id: { [Op.in]: ids } }, transaction });
+            }
+          }
+          const [count] = await WarehouseItem.update(
+            { shipment_from: mode },
+            { where: { id: item.id, ...stillInStock }, transaction }
+          );
+          if (!count) throw new NotInStockError();
+        }));
+        item.set('shipment_from', mode);
+      } else if (applyToOrders) {
+        const [count] = await withConnectionRetry(() => WarehouseItem.update(
+          { shipment_from: mode },
+          { where: { id: item.id, ...stillInStock } }
+        ));
+        if (!count) throw new NotInStockError();
+        item.set('shipment_from', mode);
+      } else {
+        await item.update({ shipment_from: mode });
+      }
+    } catch (error) {
+      if (error instanceof NotInStockError) return alreadyShipped();
+      throw error;
+    }
     await attachParcelSafely(item);
-    res.json({ success: true, data: item });
+    res.json({ success: true, data: item, ordersUpdated: lineOverrides.length, previousLineOverrides, keptLand });
   } catch (error) {
     console.error('Update shipment mode error:', error);
     res.status(500).json({ success: false, message: 'Unable to update shipment mode' });
@@ -760,7 +931,49 @@ router.delete('/items/:id', authenticate, requireStaffOrAdmin, async (req, res) 
     }
     const item = await WarehouseItem.findByPk(req.params.id);
     if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
-    await item.destroy();
+    // restoreLineOverrides — sent by the Store sheet's Cancel when that sheet had
+    // changed the box's mode — puts the parcel's 1688 lines back exactly as they
+    // were before (the snapshot POST /items/:id/shipment-mode hands out), in the
+    // same transaction as the delete. Only lines of THIS box's tracking number are
+    // touched, and only with 'air', 'land' or null.
+    const restore = Array.isArray(req.body?.restoreLineOverrides) ? req.body.restoreLineOverrides : [];
+    // A box that has shipped keeps its lines as they travelled: its record can
+    // still be cleared, but a stale sheet's Cancel doesn't rewrite them.
+    if (restore.length && SupplierOrder && item.tracking_number && item.status === 'in_stock') {
+      const lines = await withConnectionRetry(() => SupplierOrder.findAll({
+        where: { china_tracking_no: item.tracking_number },
+        attributes: ['id'],
+      }));
+      const own = new Set(lines.map((l) => String(l.id)));
+      const wanted = restore
+        .filter((r) => r && own.has(String(r.id)) && (r.override === null || normShipMode(r.override)))
+        .map((r) => ({ id: r.id, override: normShipMode(r.override) }));
+      try {
+        await withConnectionRetry(() => sequelize.transaction(async (transaction) => {
+          for (const override of [null, 'air', 'land']) {
+            const ids = wanted.filter((l) => l.override === override).map((l) => l.id);
+            if (ids.length) {
+              await SupplierOrder.update({ ship_mode_override: override }, { where: { id: { [Op.in]: ids } }, transaction });
+            }
+          }
+          // Still in stock at the moment of the delete: a ship that committed after
+          // the read above rolls the line restore back instead of rewriting the
+          // lines of a parcel that has already travelled.
+          const removed = await WarehouseItem.destroy({ where: { id: item.id, status: 'in_stock' }, transaction });
+          if (!removed) throw new NotInStockError();
+        }));
+      } catch (error) {
+        if (error instanceof NotInStockError) {
+          return res.status(409).json({
+            success: false,
+            message: `${item.item_code || item.code} has already shipped — it can't be cancelled`,
+          });
+        }
+        throw error;
+      }
+    } else {
+      await item.destroy();
+    }
     res.json({ success: true, removed: 1 });
   } catch (error) {
     console.error('Delete item error:', error);

@@ -86,8 +86,10 @@ server call.
 A shelf can come into existence via: (1) this panel's "Add Shelf" form, (2)
 scanning an unrecognized shelf label while on the Racks tab
 (`handleScanAddShelf`), or (3) **automatically** the first time a shelf code
-is scanned in the Store tab (`handleStoreDecode` → `createRack`, and again
-server-side via `Rack.findOrCreate` in the put-away endpoint). All three
+is scanned in the Store tab (`handleStoreDecode` → `createRack`, sent in the
+background and only for a shelf the page doesn't already know — and again
+server-side as one `INSERT … ON CONFLICT DO NOTHING` in the put-away
+endpoint, so the scan never waits on it). All three
 funnel through the same `createRack()` API call and treat "already exists"
 (409) as a harmless no-op — this is intentional: staff should never be
 blocked from putting a box away just because they forgot to pre-register the

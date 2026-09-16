@@ -17,7 +17,7 @@ const WarehouseItem = sequelize
         allowNull: false,
         // Internal generated code, e.g. CZN-00001. NOT unique: every box that
         // belongs to the same 1688 order (order_number) intentionally shares
-        // the same code — see generateItemCode() in routes/warehouse.js.
+        // the same code — see generateCodes() in routes/warehouse.js.
       },
       tracking_number: {
         type: DataTypes.STRING,

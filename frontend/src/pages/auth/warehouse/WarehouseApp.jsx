@@ -11,6 +11,7 @@ import {
   putAwayItem,
   shipItem,
   updateItemShipmentMode,
+  updateItemShipmentModeWithOrders,
   deleteItem,
   exportItemsCsv,
   loadSupplierOrders,
@@ -246,6 +247,61 @@ const supplierAsItem = (o) => ({
   status: "in_stock",
 });
 
+// What a put-away of `code` will most likely store, worked out from the 1688
+// orders already loaded in the page — so the "Item stored" sheet can show the
+// product the instant a code is read instead of after the server round trip.
+// Mirrors the server's picks in POST /items (backend/inventory/routes/warehouse.js):
+// the code as a CN tracking number first, then as a goods id; the parcel's lines
+// ordered by item code with blanks last; the box's id and mode from that first
+// line; one product per distinct item, quantities summed. The server's reply
+// replaces all of it the moment it lands, so a stale list can only make the
+// preview briefly wrong, never the stored box.
+function previewPutAway(orders, code) {
+  const c = String(code || "").trim().toUpperCase();
+  if (!c || !orders?.length) return null;
+  const byTracking = (t) => orders.filter((o) => (o.cnTracking || "").toUpperCase() === t);
+  let lines = byTracking(c);
+  if (!lines.length) {
+    const byGoods = orders.find((o) => o.cnTracking && (o.itemCode || "").toUpperCase() === c);
+    if (byGoods) lines = byTracking(byGoods.cnTracking.toUpperCase());
+  }
+  if (!lines.length) return null;
+  // The server's order exactly (parcelLines): item code with blanks last, then
+  // order number, then id — so two lines sharing an item code preview the same
+  // order # the box will really get.
+  const cmp = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  lines = [...lines].sort((a, b) => {
+    if (a.itemCode && b.itemCode) {
+      const byCode = cmp(a.itemCode, b.itemCode);
+      if (byCode) return byCode;
+    } else if (a.itemCode || b.itemCode) {
+      return a.itemCode ? -1 : 1;
+    }
+    return cmp(a.orderNumber || "", b.orderNumber || "") || cmp(String(a.id), String(b.id));
+  });
+  const products = [];
+  for (const o of lines) {
+    const qty = Number.isFinite(o.quantity) ? o.quantity : null;
+    const same = products.find((p) => p.itemCode === o.itemCode && p.name === o.productName && p.image === o.productImage);
+    if (same) {
+      if (qty !== null) same.quantity = (same.quantity || 0) + qty;
+    } else {
+      products.push({ itemCode: o.itemCode, name: o.productName, image: o.productImage, quantity: qty });
+    }
+  }
+  const first = lines[0];
+  return {
+    trackingNumber: first.cnTracking.toUpperCase(),
+    itemCode: first.itemCode || "",
+    orderNumber: first.orderNumber,
+    productName: first.productName,
+    products,
+    // The parcel travels as one box: By Land if ANY line has to, as put-away
+    // decides it — not just the first line's mode.
+    shipmentFrom: lines.some((o) => o.shipMode === "land") ? "By Land" : "By Air",
+  };
+}
+
 // The 1688 panel's two dropdowns — "Sort by" and, to its right, "Mode". Both are
 // FILTERS and they STACK: Received + By Air leaves exactly the received orders that
 // still have to fly, which is the whole reason the pair exists. Narrowing rather
@@ -404,6 +460,150 @@ function ShipmentBadge({ mode }) {
       <span className={`h-1.5 w-1.5 rounded-full ${air ? "bg-sky-500" : "bg-amber-500"}`} />
       {air ? "By Air" : "By Land"}
     </span>
+  );
+}
+
+// The By Air / By Land switch in the "Item stored" sheet's Mode of shipment row
+// — pill-sized, to sit on the right like the other rows' values. Two buttons
+// rather than the <select> the 1688 panel uses: the keyboard-wedge listener
+// ignores keystrokes while a <select> has focus, so a dropdown opened and then
+// dismissed with Esc would swallow the next box's scan.
+//
+// Never disabled and no colour transition: a pick shows the moment it's tapped
+// and the save runs behind it (see changeSavedItemMode).
+function ShipModeToggle({ value, onChange }) {
+  const land = value === "By Land";
+  return (
+    <div role="radiogroup" aria-label="Shipment mode" className="inline-flex shrink-0 gap-0.5 rounded-full bg-[#F6F4F0] p-0.5">
+      {[
+        { mode: "By Air", on: !land, tone: "bg-sky-50 text-sky-700 ring-sky-200", dot: "bg-sky-500" },
+        { mode: "By Land", on: land, tone: "bg-amber-50 text-amber-700 ring-amber-200", dot: "bg-amber-500" },
+      ].map((o) => (
+        <button
+          key={o.mode}
+          type="button"
+          role="radio"
+          aria-checked={o.on}
+          onClick={() => onChange(o.mode)}
+          className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide active:scale-[.97] ${
+            o.on ? `${o.tone} shadow-sm ring-1` : "text-[#2D2D2D]/45 hover:text-[#2D2D2D]"
+          }`}
+        >
+          <span className={`h-1.5 w-1.5 rounded-full ${o.on ? o.dot : "bg-[#2D2D2D]/25"}`} />
+          {o.mode}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// A product photo URL that is safe to put in an href. The photo comes from
+// gtradea, not from us, so only a real http(s) address becomes a link — a
+// `javascript:` value would otherwise run on click. Protocol-relative URLs
+// (//cbu01.alicdn.com/…) are pinned to https so the new tab doesn't depend on
+// the page's own scheme.
+const productPhotoUrl = (url) => {
+  const s = String(url || "").trim();
+  if (!s) return "";
+  try {
+    const u = new URL(s.startsWith("//") ? `https:${s}` : s);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : "";
+  } catch {
+    return "";
+  }
+};
+
+// The products inside a box that was just put away — photo + name for each, so
+// whoever is at the shelf can check the goods in hand against the order.
+// Clicking the photo or the name opens the photo on its own in a new tab.
+//
+// The <img> and both links carry no-referrer: the photos are hotlinked off
+// alicdn, which 403s a Referer from our domain (see SupplierOrdersTable). For
+// the links it's rel="noreferrer" that strips it from the new tab's request.
+function StoredProducts({ products }) {
+  const [broken, setBroken] = useState(() => new Set());
+  if (!products.length) return null;
+  const single = products.length === 1;
+  return (
+    <div className="mt-5">
+      <p className={LABEL}>{single ? "Product" : `Products · ${products.length}`}</p>
+      <ul className="mt-2 space-y-2">
+        {products.map((p, idx) => {
+          const href = productPhotoUrl(p.image);
+          const size = single ? "h-20 w-20" : "h-14 w-14";
+          const photo = href && !broken.has(href) ? (
+            <img
+              src={href}
+              alt={p.name || "Product photo"}
+              referrerPolicy="no-referrer"
+              onError={() => setBroken((prev) => (prev.has(href) ? prev : new Set(prev).add(href)))}
+              className={`${size} rounded-xl bg-white object-cover ring-1 ring-[#ECE9E3]`}
+            />
+          ) : (
+            <span className={`${size} flex items-center justify-center rounded-xl bg-white text-[#2D2D2D]/25 ring-1 ring-[#ECE9E3]`}>
+              <IconBox className="h-6 w-6" />
+            </span>
+          );
+          return (
+            <li key={`${p.itemCode}|${idx}`} className="flex items-center gap-3 rounded-2xl bg-[#F6F4F0] p-2.5">
+              {href ? (
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  referrerPolicy="no-referrer"
+                  title="Open the photo in a new tab"
+                  className="shrink-0 rounded-xl transition hover:opacity-85 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#412460]/40"
+                >
+                  {photo}
+                </a>
+              ) : (
+                <span className="shrink-0">{photo}</span>
+              )}
+              <div className="min-w-0 flex-1">
+                {/* Two lines at rest — 1688 titles run long. Hovering the name (or
+                    tabbing to it) opens a tooltip box with the whole description.
+                    Below the name, not above: above, the sheet's scroll box would
+                    clip a long title on the first product. Capped at the name
+                    column's width so it can't push the sheet sideways on a phone,
+                    and pointer-events-none so it never sits on top of a click. */}
+                <div className="group/pname relative">
+                  {href ? (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      referrerPolicy="no-referrer"
+                      className="line-clamp-2 break-words text-sm font-semibold text-[#2D2D2D] underline-offset-2 transition-colors hover:text-[#412460] hover:underline"
+                    >
+                      {p.name || "Open photo"}
+                    </a>
+                  ) : (
+                    <p className="line-clamp-2 break-words text-sm font-semibold text-[#2D2D2D]">{p.name || "—"}</p>
+                  )}
+                  {p.name && (
+                    <span
+                      role="tooltip"
+                      className="pointer-events-none absolute left-0 top-full z-20 mt-1.5 hidden w-max max-w-full break-words rounded-xl bg-[#2D2D2D] px-3 py-2 text-xs font-medium leading-snug text-white shadow-lg group-focus-within/pname:block group-hover/pname:block"
+                    >
+                      {p.name}
+                    </span>
+                  )}
+                </div>
+                {/* Under the name, both on the left: the product id, then how many
+                    of it the parcel holds. */}
+                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+                  <span className="font-semibold text-[#412460]/80">{p.itemCode || "—"}</span>
+                  <span className="text-[#2D2D2D]/50">
+                    Qty <span className="font-semibold text-[#2D2D2D]/80">{p.quantity ?? "—"}</span>
+                  </span>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -572,12 +772,72 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // Success sheet shown after a successful put-away (auto-dismisses so the
   // continuous camera flow isn't blocked; OK dismisses immediately).
   const [savedItem, setSavedItem] = useState(null);
+  // The sheet's By Air / By Land picks never wait on the network: the switch
+  // flips at once and the save runs behind it. Every BOX has its own queue in
+  // `modeQueues` (queue key -> tail promise; see queueKeyOf). Its saves run one
+  // after another, so the server always ends on the LAST pick, and printing and
+  // Cancel for that box wait on its tail — only its, so one box's slow put-away
+  // never holds up another box's label. Per box id, `modePick` is the mode on
+  // screen and `modeSaved` the one the server last confirmed — what a failed save
+  // reverts to. `modeFailures` holds, per queue key, why the latest save was
+  // refused, so a print that waited on it doesn't go out with the old mode.
+  const modeQueues = useRef(new Map());
+  const modePick = useRef(new Map());
+  const modeSaved = useRef(new Map());
+  const modeFailures = useRef(new Map());
+  // Per box id: the mode it was put away with; whether a sheet save has since
+  // written to its 1688 lines; and `linesBefore`, what those lines held before
+  // that first save — what Cancel restores.
+  const modeAtPutAway = useRef(new Map());
+  // A scan opens the sheet at once, before the server has stored anything, as a
+  // PENDING sheet (id "pending-N"). Per pending id, `pendingBoxes` holds the
+  // put-away's promise (the stored box, or null if the server refused the scan)
+  // and `pendingAdopted` the stored box once it has landed. `pendingIdOf` maps a
+  // stored box back to the pending id it started as, which stays its queue key.
+  const pendingBoxes = useRef(new Map());
+  const pendingAdopted = useRef(new Map());
+  const pendingIdOf = useRef(new Map());
+  // Per pending id, the sheet it pushed aside ({ item, touched }), and the pending
+  // ids the server refused. A refused scan puts back what it displaced — skipping
+  // along this chain past any sheet that was itself a refused scan, so two bad
+  // codes in a row can't resurrect a "Storing item" sheet that will never finish.
+  const pendingDisplaced = useRef(new Map());
+  const pendingRefused = useRef(new Set());
+  const pendingSeq = useRef(0);
+  // Codes whose put-away is still on the wire, so a double read isn't sent twice.
+  const inFlightTrackings = useRef(new Set());
+  // Which sheet is on screen (its id, and the item itself) and whether anyone has
+  // touched it: a pending sheet starts its auto-dismiss only once its box is
+  // stored, and only if it is still the one showing and nobody has touched it. A
+  // scan the server refuses puts back the sheet it displaced, which is what the
+  // item is kept for. Set synchronously by showSaved and adoptStored; the effect
+  // catches every other open and close.
+  const sheetTouched = useRef(false);
+  const sheetIdRef = useRef(null);
+  const sheetItemRef = useRef(null);
+  useEffect(() => {
+    sheetIdRef.current = savedItem ? savedItem.id : null;
+    sheetItemRef.current = savedItem;
+  }, [savedItem]);
   const savedTimer = useRef(null);
+  const armSavedTimer = useCallback((id) => {
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSavedItem((prev) => (prev && prev.id === id ? null : prev)), 6000);
+  }, []);
   const showSaved = useCallback((item) => {
+    if (!item.pending) {
+      modeAtPutAway.current.set(item.id, {
+        mode: item.shipmentFrom === "By Land" ? "By Land" : "By Air",
+        linesTouched: false,
+      });
+    }
+    sheetTouched.current = false;
+    sheetIdRef.current = item.id;
+    sheetItemRef.current = item;
     setSavedItem(item);
     if (savedTimer.current) clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSavedItem(null), 6000);
-  }, []);
+    if (!item.pending) armSavedTimer(item.id);
+  }, [armSavedTimer]);
   useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
 
   // Lock body scroll while the mobile menu is open (landing-page behaviour).
@@ -624,9 +884,20 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   }, [loadData]);
 
   // Keep the instant-paint cache in step with the live list so the next open of
-  // this section paints immediately (then reconciles via loadData).
+  // this section paints immediately (then reconciles via loadData). Written when
+  // the browser is idle rather than in the frame after every change: it
+  // stringifies the whole list — thousands of rows, megabytes — synchronously,
+  // which on a phone stalled the camera and the "Item stored" sheet right after
+  // each put-away. Rapid changes collapse into one write; a tab closed inside that
+  // window misses only the last one, and loadData reconciles on the next open.
   useEffect(() => {
-    writeItemsCache(mode, items);
+    const write = () => writeItemsCache(mode, items);
+    if (typeof window.requestIdleCallback === "function") {
+      const handle = window.requestIdleCallback(write, { timeout: 3000 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const timer = setTimeout(write, 1500);
+    return () => clearTimeout(timer);
   }, [items, mode]);
 
   // Standalone /warehouse isn't covered by the global auth:expired redirect, so
@@ -699,6 +970,35 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // before sending it: otherwise a goods id reaches the server as if it were a
   // tracking number and comes back "this tracking number doesn't exist in the
   // orders", which says nothing about what actually happened.
+  // The 1688 orders, readable from the scan path. storeTracking is declared long
+  // before the 1688 section's state, so it reads them through this ref (kept in
+  // step down there) to preview a put-away — see previewPutAway.
+  const supplierOrdersRef = useRef([]);
+
+  // The server's answer to a pending sheet's put-away. The box joins the lists,
+  // and the sheet — if it still shows that scan — becomes the stored box, keeping
+  // a mode already picked while it was pending (its queued save sends it under
+  // the real id). Runs inside the put-away promise, before anything awaiting the
+  // box sees it, so the picks it carries over are the latest there will be.
+  const adoptStored = useCallback((pendingId, item) => {
+    const serverMode = item.shipmentFrom === "By Land" ? "By Land" : "By Air";
+    modeAtPutAway.current.set(item.id, { mode: serverMode, linesTouched: false });
+    modeSaved.current.set(item.id, serverMode);
+    const pick = modePick.current.get(pendingId);
+    if (pick) modePick.current.set(item.id, pick);
+    pendingAdopted.current.set(pendingId, item);
+    pendingIdOf.current.set(item.id, pendingId);
+    const shown = pick ? { ...item, shipmentFrom: pick } : item;
+    setItems((prev) => [shown, ...prev]);
+    setFeed((prev) => [shown, ...prev].slice(0, 8));
+    upsertRack({ id: item.rackId, note: "", createdAt: item.createdAt });
+    setSavedItem((prev) => (prev && prev.id === pendingId ? shown : prev));
+    if (sheetIdRef.current === pendingId) {
+      sheetIdRef.current = item.id;
+      if (!sheetTouched.current) armSavedTimer(item.id);
+    }
+  }, [upsertRack, armSavedTimer]);
+
   const storeTracking = useCallback(
     async (rackId, scanned) => {
       const known = findItem(scanned);
@@ -711,18 +1011,72 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       // A shipped box being put away again (a return, a mis-dispatch) is a real
       // put-away: send the TRACKING number it is stored under, not the goods id
       // that was scanned.
-      const tracking = known?.trackingNumber || scanned;
+      const tracking = String(known?.trackingNumber || scanned).trim().toUpperCase();
+      // The same code read again while its put-away is still on the wire: the
+      // sheet already shows it, and a second POST would only come back 409.
+      if (inFlightTrackings.current.has(tracking)) return;
+      inFlightTrackings.current.add(tracking);
+      // The sheet opens NOW, from what the page already knows. The server's reply
+      // fills in the rest (adoptStored) or closes it with the reason. The sheet it
+      // pushes aside is remembered: a code the server refuses — a second barcode on
+      // the same parcel, a product EAN — must not take away the box that was being
+      // checked and labelled.
+      const pendingId = `pending-${++pendingSeq.current}`;
+      pendingDisplaced.current.set(pendingId, { item: sheetItemRef.current, touched: sheetTouched.current });
+      showSaved({
+        id: pendingId,
+        pending: true,
+        status: "in_stock",
+        rackId,
+        trackingNumber: tracking,
+        shipmentFrom: "By Air",
+        products: [],
+        ...(isGtradea ? previewPutAway(supplierOrdersRef.current, tracking) : null),
+      });
+      const stored = putAwayItem(rackId, tracking, mode).then((item) => {
+        adoptStored(pendingId, item);
+        return item;
+      });
+      pendingBoxes.current.set(pendingId, stored.catch(() => null));
       try {
-        const item = await putAwayItem(rackId, String(tracking).trim().toUpperCase(), mode);
-        setItems((prev) => [item, ...prev]);
-        setFeed((prev) => [item, ...prev].slice(0, 8));
-        upsertRack({ id: item.rackId, note: "", createdAt: item.createdAt });
-        showSaved(item);
+        await stored;
       } catch (e) {
+        pendingRefused.current.add(pendingId);
+        if (sheetIdRef.current === pendingId) {
+          // Put back what this scan displaced, walking back along the chain: a
+          // sheet whose own put-away landed comes back as its stored box; one that
+          // was itself a refused scan is skipped for what IT displaced; one still on
+          // the wire comes back pending. Nothing usable left: the sheet closes. The
+          // auto-dismiss is re-armed only for a stored, untouched sheet.
+          let entry = pendingDisplaced.current.get(pendingId);
+          let back = null;
+          let touched = false;
+          const visited = new Set();
+          while (entry?.item && !visited.has(entry.item.id)) {
+            visited.add(entry.item.id);
+            const candidate = entry.item;
+            const adopted = candidate.pending ? pendingAdopted.current.get(candidate.id) : null;
+            if (adopted || !candidate.pending || !pendingRefused.current.has(candidate.id)) {
+              back = adopted || candidate;
+              touched = entry.touched;
+              break;
+            }
+            entry = pendingDisplaced.current.get(candidate.id);
+          }
+          const picked = back ? modePick.current.get(back.id) : null;
+          if (back && picked) back = { ...back, shipmentFrom: picked };
+          sheetIdRef.current = back ? back.id : null;
+          sheetItemRef.current = back;
+          sheetTouched.current = touched;
+          setSavedItem((prev) => (prev && prev.id === pendingId ? back : prev));
+          if (back && !back.pending && !touched) armSavedTimer(back.id);
+        }
         showToast(e.message || "Failed to store item", e.status === 409 ? "warn" : "error");
+      } finally {
+        inFlightTrackings.current.delete(tracking);
       }
     },
-    [mode, showToast, upsertRack, showSaved, findItem]
+    [mode, isGtradea, showToast, showSaved, findItem, adoptStored, armSavedTimer]
   );
 
   const handleStoreDecode = useCallback(
@@ -733,13 +1087,16 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         const id = t.toUpperCase();
         activeShelfRef.current = id;
         setActiveShelf(id);
-        try {
-          const created = await createRack(id);
-          if (created) upsertRack(created);
-        } catch {
-          /* shelf create is best-effort */
-        }
         showToast(`Shelf set: ${id}`, "ok");
+        // Nothing waits on the shelf existing server-side: POST /items creates it
+        // on the first box put away there anyway. Only a shelf this page has never
+        // seen is sent at all, in the background, so a re-scanned shelf costs no
+        // request and doesn't compete for a DB connection with the next put-away.
+        if (!racks.some((r) => r.id === id)) {
+          createRack(id)
+            .then((created) => { if (created) upsertRack(created); })
+            .catch(() => { /* best-effort — the put-away creates it regardless */ });
+        }
         return;
       }
       if (!activeShelfRef.current) {
@@ -748,7 +1105,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       }
       await storeTracking(activeShelfRef.current, t);
     },
-    [showToast, storeTracking, upsertRack, shelfExample]
+    [showToast, storeTracking, upsertRack, shelfExample, racks]
   );
 
   const handleManualSave = async () => {
@@ -990,6 +1347,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         try {
           const updated = await updateItemShipmentMode(item.id, shipMode);
           setItems((prev) => prev.map((i) => (i.id === updated.id ? updated : i)));
+          // The feed row's own print button pre-fills its mode from this row.
+          setFeed((prev) => prev.map((i) => (i.id === updated.id ? { ...i, shipmentFrom: updated.shipmentFrom } : i)));
+          // Should the "Item stored" sheet be showing this box, its switch has to
+          // show what was just saved here, and its next save has to measure
+          // against this rather than the mode it saw before.
+          modePick.current.set(updated.id, updated.shipmentFrom);
+          modeSaved.current.set(updated.id, updated.shipmentFrom);
+          setSavedItem((prev) => (prev && prev.id === updated.id ? { ...prev, shipmentFrom: updated.shipmentFrom } : prev));
         } catch (e) {
           showToast(e.message || "Failed to save shipment mode", "warn");
         }
@@ -1014,7 +1379,21 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     const copies = Math.max(1, Math.min(parseInt(printQty, 10) || 1, 20));
     const shipMode = printShipMode;
     setPrintQtyTarget(null);
-    if (item) await doPrintLabel(item, copies, shipMode);
+    if (!item) return;
+    // Opened from the "Item stored" sheet — decided when the dialog opened, since
+    // a scan may have put another box on the sheet by now: a mode picked here goes
+    // through the sheet's own save, so the box and its 1688 lines move together
+    // exactly as with the sheet's switch. It prints only once every save has
+    // settled and the server holds that mode; a failed save prints nothing — its
+    // toast already says why.
+    if (item.fromSheet) {
+      queueModeSave(item, shipMode);
+      await settleModeSaves(item);
+      if (savedModeOf(item) !== shipMode) return;
+      await doPrintLabel({ ...item, shipmentFrom: shipMode }, copies, shipMode);
+      return;
+    }
+    await doPrintLabel(item, copies, shipMode);
   };
   const handleDownloadLabel = (item) =>
     downloadItemLabel(item).catch((e) => showToast(e.message || "Download failed", "error"));
@@ -1323,23 +1702,193 @@ export default function WarehouseApp({ mode = "cellzen" }) {
 
   // "Item stored" sheet actions. Any interaction stops the sheet's auto-dismiss
   // so it doesn't disappear mid-tap.
-  const keepSavedSheet = () => { if (savedTimer.current) clearTimeout(savedTimer.current); };
+  const keepSavedSheet = () => {
+    sheetTouched.current = true;
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+  };
+  // The box behind a sheet: the sheet's own item once stored. A sheet opened the
+  // instant a code was read is still waiting on its put-away, so this is that
+  // promise instead — the stored box, or null if the server refused the scan.
+  const sheetBox = (sheet) => (sheet?.pending ? pendingBoxes.current.get(sheet.id) : sheet);
+  // The key a box's mode saves queue under: the pending id it started as, kept
+  // after its put-away lands, so saves made before and after share one queue.
+  const queueKeyOf = (box) => (box.pending ? box.id : pendingIdOf.current.get(box.id) || box.id);
+  // Resolves once no mode save is left on THIS box's queue — saves queued while
+  // waiting included — so printing and Cancel act on what the server holds, never
+  // on a pick still on its way (and perhaps about to be refused).
+  const settleModeSaves = async (box) => {
+    const key = queueKeyOf(box);
+    let tail;
+    do {
+      tail = modeQueues.current.get(key);
+      await tail;
+    } while (tail !== modeQueues.current.get(key));
+  };
+  // The mode the server holds for a box once saves have settled: the last
+  // confirmed sheet save if there was one, otherwise the box's own.
+  const savedModeOf = (box) =>
+    modeSaved.current.get(box.id) || (box.shipmentFrom === "By Land" ? "By Land" : "By Air");
+  // Boxes (by queue key) whose print is waiting — on the put-away, a mode save or
+  // the printer. The ref is the guard: repeat taps meanwhile are ignored instead of
+  // each queueing another label. The state only drives the button's waiting look.
+  const printWaitRef = useRef(new Set());
+  const [printWaiting, setPrintWaiting] = useState(() => new Set());
+  const markPrintWaiting = (key, waiting) => {
+    if (waiting) printWaitRef.current.add(key);
+    else printWaitRef.current.delete(key);
+    setPrintWaiting(new Set(printWaitRef.current));
+  };
+  // Runs `fn(box, mode)` for the sheet's box once the box exists and its mode
+  // saves have settled — one run per box at a time. If a save made while this
+  // waited was refused, nothing runs: acting on the old mode would silently
+  // contradict the last tap, so the reason stays on screen instead.
+  const whenSheetBoxSettled = async (sheet, fn) => {
+    const key = queueKeyOf(sheet);
+    if (printWaitRef.current.has(key)) return;
+    markPrintWaiting(key, true);
+    modeFailures.current.delete(key);
+    try {
+      // The label needs the ids only the server mints, so a pending sheet waits
+      // for its box, and a refused scan does nothing.
+      const box = await sheetBox(sheet);
+      if (!box) return;
+      await settleModeSaves(box);
+      const failed = modeFailures.current.get(key);
+      if (failed) {
+        showToast(`${goodsCode(box)}: not printed — the mode change wasn't saved (${failed})`, "error");
+        return;
+      }
+      await fn(box, savedModeOf(box));
+    } finally {
+      markPrintWaiting(key, false);
+    }
+  };
   // Straight to the printer, one copy, no dialog — this is the scan → print path
   // staff run all day at the shelf, and the item already carries everything the
   // label needs (item code, order #, tracking) from the put-away response.
   const printSavedItemNow = () => {
     keepSavedSheet();
-    if (savedItem) doPrintLabel(savedItem, 1, savedItem.shipmentFrom === "By Land" ? "By Land" : "By Air");
+    if (!savedItem) return;
+    whenSheetBoxSettled(savedItem, (box, mode) => doPrintLabel({ ...box, shipmentFrom: mode }, 1, mode));
   };
   // The "more than one package" case still goes through the copies + mode dialog.
-  const printSavedItem = () => { keepSavedSheet(); if (savedItem) handlePrintLabel(savedItem); };
+  // `fromSheet` rides on the dialog's target: whether a mode picked there is this
+  // box's sheet decision is settled NOW, not when Print is pressed — by then a
+  // scan may have put another box on the sheet.
+  const printSavedItem = () => {
+    keepSavedSheet();
+    if (!savedItem) return;
+    whenSheetBoxSettled(savedItem, (box, mode) => handlePrintLabel({ ...box, shipmentFrom: mode, fromSheet: true }));
+  };
+  // The sheet's By Air / By Land switch.
+  const changeSavedItemMode = (nextMode) => {
+    keepSavedSheet();
+    if (savedItem) queueModeSave(savedItem, nextMode);
+  };
+  // A By Air / By Land decision for a box on the sheet, or in the copies dialog
+  // opened from it. The sheet, the feed and the list change in the same frame;
+  // the save follows on that box's own queue together with its 1688 lines, so the
+  // Mode column and packing lists follow, not just this box's label.
+  const queueModeSave = (sheet, nextMode) => {
+    // A pending sheet's put-away may have landed in the same frame as this tap,
+    // before the sheet re-rendered as the stored box: key the pick by the real
+    // id then, or adoptStored has already carried over the picks it will ever see.
+    const adopted = sheet.pending ? pendingAdopted.current.get(sheet.id) : null;
+    const box = adopted || sheet;
+    const key = box.id;
+    const shown = modePick.current.get(key) || (box.shipmentFrom === "By Land" ? "By Land" : "By Air");
+    if (nextMode === shown) return;
+    // A stored box's first pick records what the server holds; a pending box
+    // gets that from its put-away reply instead (adoptStored).
+    if (!(sheet.pending && !adopted) && !modeSaved.current.has(key)) modeSaved.current.set(key, shown);
+    const paint = (id, mode) => {
+      modePick.current.set(id, mode);
+      const apply = (i) => (i.id === id ? { ...i, shipmentFrom: mode } : i);
+      setItems((prev) => prev.map(apply));
+      setFeed((prev) => prev.map(apply));
+      setSavedItem((prev) => (prev && prev.id === id ? { ...prev, shipmentFrom: mode } : prev));
+    };
+    paint(key, nextMode);
+    const queueKey = queueKeyOf(sheet);
+    const job = (modeQueues.current.get(queueKey) || Promise.resolve()).then(async () => {
+      // A pending box has no id to save against until its put-away lands, and a
+      // scan the server refused has nothing to save at all.
+      const stored = await sheetBox(sheet);
+      if (!stored) return;
+      const id = stored.id;
+      // Skipped when a newer pick for this box is queued behind it, or when the
+      // taps have come back round to what the server already holds — either way
+      // the round trip would change nothing.
+      if (modePick.current.get(id) !== nextMode || modeSaved.current.get(id) === nextMode) return;
+      // Back to the mode the box was put away with, after a save had changed its
+      // lines: put them back exactly rather than re-deriving them from the pick.
+      // On a mixed parcel the two differ, and re-deriving would leave a staff
+      // override on a line nobody meant to touch — a lithium line marked air.
+      const putAway = modeAtPutAway.current.get(id);
+      const restoring = Boolean(putAway?.linesTouched && nextMode === putAway.mode);
+      try {
+        const { item: updated, previousLineOverrides, keptLand } = await updateItemShipmentModeWithOrders(
+          id,
+          nextMode,
+          restoring ? { restoreLineOverrides: putAway.linesBefore } : undefined
+        );
+        modeSaved.current.set(id, updated.shipmentFrom);
+        modeFailures.current.delete(queueKey);
+        if (putAway) {
+          if (restoring) {
+            putAway.linesTouched = false; // the lines are as they were at put-away
+          } else if (!putAway.linesTouched) {
+            // What the lines held before this sheet's first change — what a restore
+            // or Cancel puts back. Later saves only moved them further from it.
+            putAway.linesBefore = previousLineOverrides;
+            putAway.linesTouched = true;
+          }
+        }
+        if (keptLand.length) {
+          showToast(
+            `${keptLand.map((l) => l.item_code || l.product_name).join(", ")} kept By Land — restricted for air freight`,
+            "warn"
+          );
+        }
+        if (modePick.current.get(id) !== nextMode) return; // superseded while in flight
+        // The reply's product lookup is best-effort server-side; an empty one must
+        // not wipe the photos the put-away already brought.
+        const merged = updated.products.length ? updated : { ...updated, products: stored.products };
+        setItems((prev) => prev.map((i) => (i.id === id ? merged : i)));
+        setFeed((prev) => prev.map((i) => (i.id === id ? merged : i)));
+        setSavedItem((prev) => (prev && prev.id === id ? merged : prev));
+      } catch (e) {
+        // A newer pick is queued and will be sent; only the latest one reverts.
+        if (modePick.current.get(id) !== nextMode) return;
+        modeFailures.current.set(queueKey, e.message || "save failed");
+        paint(id, modeSaved.current.get(id));
+        // Named, because by now the sheet may be showing a different box.
+        showToast(`${goodsCode(stored)}: ${e.message || "Failed to update shipment mode"}`, "error");
+      }
+    });
+    modeQueues.current.set(queueKey, job);
+    // Forget a finished queue — unless more was queued behind it meanwhile.
+    job.then(() => { if (modeQueues.current.get(queueKey) === job) modeQueues.current.delete(queueKey); });
+  };
   const undoSavedItem = async () => {
-    const item = savedItem;
+    const sheet = savedItem;
     keepSavedSheet();
     setSavedItem(null);
+    if (!sheet) return;
+    // Cancelled while still pending: the box is removed once it exists — closing
+    // the sheet alone would leave it stored. A refused scan has nothing to remove.
+    const item = await sheetBox(sheet);
     if (!item) return;
+    // Every mode save for this box lands first; sent after the delete it would
+    // only fail with "Item not found".
+    await settleModeSaves(item);
+    // Lines this sheet changed go back to exactly what they held before its first
+    // save, in the same transaction as the delete: a cancelled scan must leave no
+    // staff override on the order. No single mode could do that — one parcel's
+    // lines can differ (a lithium line beside a phone case) — so the snapshot goes.
+    const putAway = modeAtPutAway.current.get(item.id);
     try {
-      await deleteItem(item.id);
+      await deleteItem(item.id, { restoreLineOverrides: putAway?.linesTouched ? putAway.linesBefore : undefined });
       setItems((prev) => prev.filter((i) => i.id !== item.id));
       setFeed((prev) => prev.filter((i) => i.id !== item.id));
       showToast(`${goodsCode(item)} removed`, "ok");
@@ -1561,6 +2110,26 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       if (reqId === supplierReqId.current) setSupplierLoading(false);
     }
   }, [showToast, applyPendingModes]);
+
+  // Keep the scan path's view of the 1688 orders current (see supplierOrdersRef).
+  useEffect(() => { supplierOrdersRef.current = supplierOrders; }, [supplierOrders]);
+
+  // The Store tab previews a put-away from the 1688 orders the instant a code is
+  // read, so it needs the list even when the 1688 tab has never been opened.
+  // Pulled quietly when the tab opens and every 2 minutes after: a failure costs
+  // only the preview (the server still answers the scan), so nothing is toasted.
+  useEffect(() => {
+    if (!isGtradea || tab !== "Store") return undefined;
+    if (!localStorage.getItem("staff_token")) return undefined;
+    let cancelled = false;
+    const pull = () =>
+      loadSupplierOrders()
+        .then(({ rows }) => { if (!cancelled) setSupplierOrders(applyPendingModes(rows)); })
+        .catch(() => { /* preview only */ });
+    pull();
+    const timer = setInterval(pull, 120000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [isGtradea, tab, applyPendingModes]);
 
   // Staff correction of one row's shipment mode. `mode` is "air" | "land", or
   // null to drop the correction and hand the row back to the classifier.
@@ -3439,10 +4008,17 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         </div>
       )}
 
-      {/* toast */}
+      {/* toast — above every overlay (the "Item stored" sheet is z-140, the
+          copies dialog z-150), or a failure reported while one is open is never
+          seen. While the sheet is open it moves to the TOP: at the bottom it sat
+          on the sheet's Print label button on a phone, and a tap meant for the
+          toast went through it and printed a second label. pointer-events-none
+          so it never swallows a tap either way. */}
       {toast && (
         <div
-          className={`fixed bottom-24 left-1/2 z-[130] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl px-5 py-3 text-sm font-medium text-white shadow-lg shadow-black/15 md:bottom-6 ${
+          className={`pointer-events-none fixed left-1/2 z-[160] flex -translate-x-1/2 items-center gap-2.5 rounded-2xl px-5 py-3 text-sm font-medium text-white shadow-lg shadow-black/15 ${
+            savedItem ? "top-6" : "bottom-24 md:bottom-6"
+          } ${
             toast.type === "error" ? "bg-red-600" : toast.type === "warn" ? "bg-[#B99353]" : "bg-[#412460]"
           }`}
         >
@@ -3543,26 +4119,75 @@ export default function WarehouseApp({ mode = "cellzen" }) {
           onClick={() => setSavedItem(null)}
         >
           <div
-            className="w-full max-w-md rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl"
+            role="dialog"
+            aria-modal="true"
+            // No visible heading any more, so the dialog carries its name here.
+            aria-label={savedItem.pending ? "Storing item" : "Item stored"}
+            aria-busy={savedItem.pending ? "true" : undefined}
+            className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl"
             onClick={(e) => e.stopPropagation()}
             onMouseEnter={keepSavedSheet}
             onTouchStart={keepSavedSheet}
+            onFocusCapture={keepSavedSheet}
           >
+            {/* A spinner while the server is still storing the box, the check
+                mark once it has. */}
             <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-600">
-              <IconCheck className="h-7 w-7" />
+              {savedItem.pending ? (
+                <span className="h-7 w-7 animate-spin rounded-full border-[3px] border-emerald-600/25 border-t-emerald-600" />
+              ) : (
+                <IconCheck className="h-7 w-7" />
+              )}
             </span>
-            <h3 className="text-center text-lg font-bold">Item stored</h3>
             {/* The id that's about to be printed, biggest thing on the sheet —
                 staff confirm it against the gtradea China Operations row at a
-                glance. */}
-            <p className="mt-2 text-center text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/40">
-              {savedItem.itemCode || savedItem.prCode ? "Product ID" : "Goods number"}
+                glance. Uncaptioned: the check mark already says it was stored.
+                While pending it's the 1688 preview's id, or a placeholder until
+                the server mints one. */}
+            <p className="break-all text-center text-xl font-black tracking-tight text-[#412460]">
+              {goodsCode(savedItem) ||
+                (savedItem.pending ? <span className="inline-block h-7 w-40 animate-pulse rounded-lg bg-[#F1EFEA] align-middle" /> : null)}
             </p>
-            <p className="break-all text-center text-xl font-black tracking-tight text-[#412460]">{goodsCode(savedItem)}</p>
+            {/* A GtradeA box the loaded 1688 list doesn't know yet: a placeholder
+                card until the server says what's inside. Cellzen boxes carry no
+                product at all, so they get none. */}
+            {savedItem.pending && isGtradea && !savedItem.products?.length && !savedItem.productName && (
+              <div className="mt-5 flex items-center gap-3 rounded-2xl bg-[#F6F4F0] p-2.5" aria-hidden="true">
+                <span className="h-20 w-20 shrink-0 animate-pulse rounded-xl bg-white" />
+                <div className="flex-1 space-y-2">
+                  <span className="block h-3.5 w-4/5 animate-pulse rounded bg-white" />
+                  <span className="block h-3.5 w-3/5 animate-pulse rounded bg-white" />
+                  <span className="block h-3 w-2/5 animate-pulse rounded bg-white" />
+                </div>
+              </div>
+            )}
+            {/* What's in the box, so the goods in hand can be checked against the
+                order. A reply that couldn't list the parcel still names the
+                product the box was stored with. Keyed by tracking number, not id:
+                a pending sheet turning into the stored box keeps its photos
+                instead of remounting them, while the next box starts fresh. */}
+            <StoredProducts
+              key={savedItem.trackingNumber || savedItem.id}
+              products={
+                savedItem.products?.length
+                  ? savedItem.products
+                  : savedItem.productName
+                    ? [{ itemCode: savedItem.itemCode, name: savedItem.productName, image: "", quantity: null }]
+                    : []
+              }
+            />
             <dl className="mt-5 divide-y divide-[#F1EFEA] text-sm">
               <div className="flex items-center justify-between gap-4 py-3">
                 <dt className="text-[#2D2D2D]/50">Shelf</dt>
                 <dd className="font-semibold">{savedItem.rackId || "—"}</dd>
+              </div>
+              {/* py-2, not py-3: the switch is taller than a line of text, and
+                  this keeps the row the same height as its neighbours. */}
+              <div className="flex items-center justify-between gap-4 py-2">
+                <dt className="shrink-0 text-[#2D2D2D]/50">Mode of shipment</dt>
+                <dd>
+                  <ShipModeToggle value={savedItem.shipmentFrom} onChange={changeSavedItemMode} />
+                </dd>
               </div>
               {savedItem.orderNumber && (
                 <div className="flex items-center justify-between gap-4 py-3">
@@ -3574,27 +4199,35 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 <dt className="shrink-0 text-[#2D2D2D]/50">Tracking number</dt>
                 <dd className="break-all text-right font-semibold">{savedItem.trackingNumber}</dd>
               </div>
-              <div className="flex items-center justify-between gap-4 py-3">
-                <dt className="text-[#2D2D2D]/50">Created by</dt>
-                <dd className="font-semibold">{savedItem.createdByName || "—"}</dd>
-              </div>
-              <div className="flex items-center justify-between gap-4 py-3">
-                <dt className="text-[#2D2D2D]/50">Date</dt>
-                <dd className="font-semibold">{fmtDate(savedItem.createdAt)}</dd>
-              </div>
+              {/* Who stored it and when live in the "Just scanned" table; the
+                  sheet keeps only what's needed to check and label the box. */}
             </dl>
             <div className="mt-6 space-y-2.5">
+              {/* The wait shows on the button itself: a tap on a sheet still being
+                  stored, or one waiting on a mode save, prints once — repeat taps
+                  meanwhile are ignored rather than queued as extra labels. */}
               <button
                 type="button"
                 onClick={printSavedItemNow}
-                className="flex w-full items-center justify-center gap-2 rounded-full bg-[#412460] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-[#B99353] active:scale-[.98]"
+                disabled={printWaiting.has(queueKeyOf(savedItem))}
+                className="flex w-full items-center justify-center gap-2 rounded-full bg-[#412460] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-[#B99353] active:scale-[.98] disabled:cursor-wait disabled:opacity-70"
               >
-                <IconPrinter className="h-4 w-4" /> Print label
+                {printWaiting.has(queueKeyOf(savedItem)) ? (
+                  <>
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    {savedItem.pending ? "Printing once stored…" : "Printing…"}
+                  </>
+                ) : (
+                  <>
+                    <IconPrinter className="h-4 w-4" /> Print label
+                  </>
+                )}
               </button>
               <button
                 type="button"
                 onClick={printSavedItem}
-                className="w-full text-center text-xs font-semibold text-[#2D2D2D]/45 underline decoration-[#2D2D2D]/20 underline-offset-2 transition hover:text-[#412460]"
+                disabled={printWaiting.has(queueKeyOf(savedItem))}
+                className="w-full text-center text-xs font-semibold text-[#2D2D2D]/45 underline decoration-[#2D2D2D]/20 underline-offset-2 transition hover:text-[#412460] disabled:cursor-wait disabled:opacity-50"
               >
                 More than one package? Choose copies
               </button>

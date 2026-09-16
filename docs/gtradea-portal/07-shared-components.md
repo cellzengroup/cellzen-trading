@@ -159,11 +159,17 @@ same file family as `GTRADEA_BRIDGE_TOKEN` (see
 ## Shared confirmation & feedback UI
 
 - **Toast** (`showToast(msg, type)`) — bottom-center, auto-dismisses after
-  2.8s; `type` is `ok` (purple) / `warn` (amber) / `error` (red).
-- **Success sheet** (`savedItem`) — shown after a Store put-away; the only
-  overlay with an auto-dismiss timer (6s), which is cancelled the instant
-  the user touches it (`onMouseEnter`/`onTouchStart` → `keepSavedSheet`) so
-  it can never disappear mid-interaction.
+  2.8s; `type` is `ok` (purple) / `warn` (amber) / `error` (red). Sits above
+  every overlay (`z-[160]`, over the success sheet and the copies dialog) with
+  `pointer-events-none`, so a failure reported while one is open is visible and
+  never blocks a tap.
+- **Success sheet** (`savedItem`) — opens the instant a Store scan is read,
+  as a pending sheet, before the server has stored the box. It is the only
+  overlay with an auto-dismiss timer (6s). The timer starts once the box is
+  stored and is cancelled the instant the user touches the sheet
+  (`onMouseEnter`/`onTouchStart`/`onFocusCapture` → `keepSavedSheet`), so it
+  can never disappear mid-interaction — including while someone is picking
+  By Air / By Land on it.
 - **Confirmation modals** — shelf delete, single-item delete, batch delete,
   mark-as-shipped, and print-copy-count all follow the same shape: a
   `null`-or-payload piece of state opens the modal, Cancel clears it back to

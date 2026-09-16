@@ -28,6 +28,20 @@ export function unwrapItem(row) {
     source: row.source || "cellzen",
     orderNumber: row.order_number || "",
     productName: row.product_name || "",
+    // Each distinct 1688 product in the parcel — name + photo — for the "Item
+    // stored" sheet. Only single-item responses (put-away, mode change, ship)
+    // carry it; GET /items leaves it off to keep its 5000 rows light, so a row
+    // from the list has [] here.
+    products: Array.isArray(row.products)
+      ? row.products.map((p) => ({
+          itemCode: p?.item_code || "",
+          name: p?.product_name || "",
+          image: p?.product_image || "",
+          // Summed over the parcel's lines of this product; null when gtradea
+          // recorded no quantity.
+          quantity: Number.isFinite(p?.quantity) ? p.quantity : null,
+        }))
+      : [],
     boxCode: row.box_code || "",   // the id of the BOX (GTP-000123) — internal only,
     // it exists in this database and not on gtradea, so it is NOT what the label
     // prints; the detail card shows it, and the resolver still matches it so the
@@ -260,6 +274,7 @@ export async function shipItem(id, logisticsName) {
 // Record an item's shipment mode ("By Air" | "By Land") — called when the
 // print dialog's shipment-mode dropdown is confirmed, so /ship later inherits
 // the same value instead of asking again.
+//
 export async function updateItemShipmentMode(id, shipmentMode) {
   const res = await authFetch(`/inventory/warehouse/items/${encodeURIComponent(id)}/shipment-mode`, {
     ...STAFF,
@@ -272,10 +287,52 @@ export async function updateItemShipmentMode(id, shipmentMode) {
   return unwrapItem(json.data);
 }
 
-export async function deleteItem(id) {
+// The "Item stored" sheet's save: the box's mode AND its 1688 lines
+// (applyToOrders), so the sheet's switch moves the Mode column and the
+// BYAIR/BYLAND packing lists along with the label. The server does this only for
+// an in-stock gtradea box, and 409s once the box has shipped.
+//
+// Also returns what those lines held before the write — the only thing that can
+// undo it, since a parcel's lines needn't share one mode. Cancel hands it back
+// through deleteItem's restoreLineOverrides.
+//
+// `restoreLineOverrides` — a snapshot from an earlier call — puts the lines back
+// exactly as they were instead of deriving them from the pick. The sheet sends it
+// when staff switch back to the mode the box was put away with, so a By Land →
+// By Air round trip leaves every line as it found it.
+export async function updateItemShipmentModeWithOrders(id, shipmentMode, { restoreLineOverrides } = {}) {
+  const res = await authFetch(`/inventory/warehouse/items/${encodeURIComponent(id)}/shipment-mode`, {
+    ...STAFF,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(
+      Array.isArray(restoreLineOverrides)
+        ? { shipmentMode, applyToOrders: true, restoreLineOverrides }
+        : { shipmentMode, applyToOrders: true }
+    ),
+  });
+  const json = await readJson(res);
+  if (!res.ok || !json.success) throw new Error(json.message || "Failed to update shipment mode");
+  return {
+    item: unwrapItem(json.data),
+    previousLineOverrides: Array.isArray(json.previousLineOverrides) ? json.previousLineOverrides : [],
+    // Lines a dangerous-goods rule kept By Land although the box was set By Air —
+    // [{ id, item_code, product_name, reason }]. The sheet names them.
+    keptLand: Array.isArray(json.keptLand) ? json.keptLand : [],
+  };
+}
+
+// `restoreLineOverrides` — [{ id, override }] from updateItemShipmentModeWithOrders
+// — puts the box's 1688 lines back as they were, in the same transaction as the
+// delete. Sent only by the sheet's Cancel after it changed the mode.
+export async function deleteItem(id, { restoreLineOverrides } = {}) {
+  const restore = Array.isArray(restoreLineOverrides) && restoreLineOverrides.length > 0;
   const res = await authFetch(`/inventory/warehouse/items/${encodeURIComponent(id)}`, {
     ...STAFF,
     method: "DELETE",
+    ...(restore
+      ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ restoreLineOverrides }) }
+      : {}),
   });
   const json = await readJson(res);
   if (!res.ok || !json.success) throw new Error(json.message || "Failed to delete item");

@@ -107,6 +107,16 @@ the system like this:
    `updateItemShipmentMode(item.id, mode)` (`POST /items/:id/shipment-mode`)
    **before** printing, so the label's "SHIPMENT: BY AIR/LAND" banner always
    matches what's now on record.
+   The Store tab's "Item stored" sheet has a By Air / By Land switch too. It
+   calls the same endpoint with `applyToOrders: true`, which also writes the
+   choice onto the box's 1688 lines (`ship_mode_override`), just as the 1688
+   panel's Mode dropdown would. The print dialog doesn't send the flag, so it
+   still changes the box alone.
+
+   Whichever way a line's mode changes, the box follows the **parcel**:
+   put-away stores it By Land if any of its lines is land, and the 1688 panel's
+   Mode dropdown (`PATCH /supplier-orders/:id/ship-mode`) retags an in-stock
+   box from all of its lines the same way, not just from the line edited.
 3. **Shipped** — `POST /items/:id/ship` ignores whatever the client sends for
    shipment mode entirely and copies `item.shipment_from` (falling back to
    `"By Air"` if somehow unset) into the shipped record. This is enforced
@@ -124,8 +134,36 @@ mode, reprint the label with a different selection.
 
 `POST /api/inventory/warehouse/items/:id/shipment-mode`
 (see [`backend/inventory/routes/warehouse.js`](../../backend/inventory/routes/warehouse.js))
-- Body: `{ shipmentMode: "By Air" | "By Land" }` — 400 on any other value.
+- Body: `{ shipmentMode: "By Air" | "By Land", applyToOrders?: true }` — 400
+  on any other mode.
 - Updates `shipment_from` on the item. Callable any time, shipped or not.
+- With `applyToOrders: true` (the Store sheet's switch):
+  - **409** if the box is no longer in stock — a shipped box's mode records how
+    it travelled. Re-checked inside the write (`WHERE status = 'in_stock'`), so
+    a ship that commits mid-request rolls the whole write back to a 409.
+  - For a gtradea box, every 1688 line whose `china_tracking_no` is the box's
+    tracking number is brought in line with the pick: `ship_mode_override` is
+    **cleared** where the classifier already agrees with the pick and set to
+    `air` / `land` where it doesn't — except that **By Air never overrides a
+    line a dangerous-goods rule puts on land**. Those lines stay as they are and
+    are listed in `keptLand` (`[{ id, item_code, product_name, reason }]`);
+    changing one takes that line's own Mode dropdown in the 1688 panel.
+  - With `restoreLineOverrides: [{ id, override }]` as well, the lines are set
+    exactly to that snapshot instead (only this parcel's lines, only `air` /
+    `land` / `null`). The sheet sends it when staff switch back to the mode the
+    box was put away with, so a round trip leaves the parcel as it was.
+  - The line writes and the box's `shipment_from` commit in one transaction.
+  - `ordersUpdated` is the number of lines written.
+  - `previousLineOverrides` — `[{ id, override }]`, what those lines held before
+    this write — is what a later restore or a cancelled put-away hands back.
+
+`DELETE /api/inventory/warehouse/items/:id`
+- Optional body `{ restoreLineOverrides: [{ id, override }] }`, sent by the
+  Store sheet's Cancel after it changed the mode. Restores those overrides in
+  the same transaction as the delete — only on lines of this box's tracking
+  number, and only with `air` / `land` / `null`.
+- The returned item carries `products` — see the Store panel's backend
+  contract.
 
 `POST /api/inventory/warehouse/items/:id/ship`
 (see [`backend/inventory/routes/warehouse.js`](../../backend/inventory/routes/warehouse.js))
