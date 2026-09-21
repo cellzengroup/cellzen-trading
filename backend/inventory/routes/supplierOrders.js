@@ -152,7 +152,14 @@ async function fetchSupplierOrders(search, { from, to, withQc = false } = {}) {
       const trackings = [...new Set(rows.map((r) => r.china_tracking_no).filter(Boolean))];
       if (trackings.length) {
         const items = await WarehouseItem.findAll({
-          where: { tracking_number: { [Op.in]: trackings } },
+          // Only boxes stored through the GtradeA section count as one of these
+          // orders being received. The Cellzen section accepts any tracking number
+          // and links no order to the box (no order # or GTI on it), and its boxes
+          // are never listed in the GtradeA Ship / Dispatched tabs. Matching one
+          // here marked a line "Received" for a box staff couldn't see, and left it
+          // there after they deleted the dispatched record — so it never went back
+          // to Pending.
+          where: { tracking_number: { [Op.in]: trackings }, source: 'gtradea' },
           // `id` + `shipment_from` are what let the 1688 panel ship a row
           // straight from its own table ("Proceed to Shipment"): the id names
           // the exact box to POST /items/:id/ship, and the mode is what the

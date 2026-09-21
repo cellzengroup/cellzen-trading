@@ -3,6 +3,7 @@ import { useNavigate, Navigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import WarehouseScanner from "./WarehouseScanner";
 import Barcode from "./Barcode";
+import QcSourceSheet from "./QcSourceSheet";
 import {
   loadRacks,
   createRack,
@@ -673,11 +674,12 @@ function QcImages({ tracking, notify, variant = "sheet", onOpen, onAdded, disabl
           type="button"
           disabled={disabled || full}
           onClick={() => {
-            if (isTouchDevice()) { setMenu((m) => !m); return; }
+            if (isTouchDevice()) { setMenu(true); return; }
             // Desktop: no "Take photo" step — straight to the file manager.
             setMenu(false);
             if (gallery.current) gallery.current.click();
           }}
+          aria-haspopup="dialog"
           aria-expanded={menu}
           className={`inline-flex shrink-0 items-center gap-1.5 rounded-full bg-[#412460] font-semibold text-white transition active:scale-[.97] disabled:cursor-not-allowed disabled:bg-[#2D2D2D]/15 disabled:text-[#2D2D2D]/40 ${
             gate ? "px-6 py-3 text-sm" : "px-3.5 py-2 text-xs"
@@ -711,26 +713,17 @@ function QcImages({ tracking, notify, variant = "sheet", onOpen, onAdded, disabl
         )}
       </div>
 
-      {/* The choice the upload button opens: the phone's camera, or its gallery.
-          `capture` is what makes the first one open the camera straight away. */}
-      {menu && !full && (
-        <div className="mt-2.5 grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => camera.current && camera.current.click()}
-            className="flex items-center justify-center gap-2 rounded-2xl bg-[#F6F4F0] px-3 py-2.5 text-xs font-semibold text-[#412460] ring-1 ring-[#ECE9E3] transition active:scale-[.97]"
-          >
-            <IconCamera className="h-4 w-4" /> Take photo
-          </button>
-          <button
-            type="button"
-            onClick={() => gallery.current && gallery.current.click()}
-            className="flex items-center justify-center gap-2 rounded-2xl bg-[#F6F4F0] px-3 py-2.5 text-xs font-semibold text-[#412460] ring-1 ring-[#ECE9E3] transition active:scale-[.97]"
-          >
-            <IconImage className="h-4 w-4" /> Choose from gallery
-          </button>
-        </div>
-      )}
+      {/* The choice the upload button opens, as a sheet sliding up from the bottom:
+          the phone's camera, or its gallery. `capture` on the first input is what
+          makes it open the camera straight away. */}
+      <QcSourceSheet
+        open={menu && !full}
+        onClose={() => setMenu(false)}
+        options={[
+          { label: "Take a photo", icon: <IconCamera className="h-5 w-5" />, onSelect: () => camera.current && camera.current.click() },
+          { label: "Choose from gallery", icon: <IconImage className="h-5 w-5" />, onSelect: () => gallery.current && gallery.current.click() },
+        ]}
+      />
       <input
         ref={camera}
         type="file"
@@ -926,13 +919,31 @@ const productPhotoUrl = (url) => {
 
 // The products inside a box that was just put away — photo + name for each, so
 // whoever is at the shelf can check the goods in hand against the order.
-// Clicking the photo or the name opens the photo on its own in a new tab.
+//
+// On a DESKTOP, clicking the photo or the name opens the photo on its own in a new
+// tab, and hovering the name shows the whole description in a tooltip.
+//
+// On a PHONE (a touch screen: no hover, and the name used to send you off to the
+// photo) the card works the other way round: tapping the PHOTO still opens it, but
+// tapping anywhere else on the card — the name, the ids, the empty space — shows or
+// hides the product's description under it. The description is the product's full
+// 1688 title, which the card clamps to two lines. The chevron on the right is the
+// hint that the card can be tapped, and only touch screens show it.
 //
 // The <img> and both links carry no-referrer: the photos are hotlinked off
 // alicdn, which 403s a Referer from our domain (see SupplierOrdersTable). For
 // the links it's rel="noreferrer" that strips it from the new tab's request.
 function StoredProducts({ products }) {
   const [broken, setBroken] = useState(() => new Set());
+  // Phones only: the products whose description is showing (see above).
+  const [openDesc, setOpenDesc] = useState(() => new Set());
+  const toggleDesc = (idx) =>
+    setOpenDesc((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
   if (!products.length) return null;
   const single = products.length === 1;
   return (
@@ -955,61 +966,86 @@ function StoredProducts({ products }) {
               <IconBox className="h-6 w-6" />
             </span>
           );
+          const descOpen = openDesc.has(idx);
           return (
-            <li key={`${p.itemCode}|${idx}`} className="flex items-center gap-3 rounded-2xl bg-[#F6F4F0] p-2.5">
-              {href ? (
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  referrerPolicy="no-referrer"
-                  title="Open the photo in a new tab"
-                  className="shrink-0 rounded-xl transition hover:opacity-85 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#412460]/40"
-                >
-                  {photo}
-                </a>
-              ) : (
-                <span className="shrink-0">{photo}</span>
-              )}
-              <div className="min-w-0 flex-1">
-                {/* Two lines at rest — 1688 titles run long. Hovering the name (or
-                    tabbing to it) opens a tooltip box with the whole description.
-                    Below the name, not above: above, the sheet's scroll box would
-                    clip a long title on the first product. Capped at the name
-                    column's width so it can't push the sheet sideways on a phone,
-                    and pointer-events-none so it never sits on top of a click. */}
-                <div className="group/pname relative">
-                  {href ? (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      referrerPolicy="no-referrer"
-                      className="line-clamp-2 break-words text-sm font-semibold text-[#2D2D2D] underline-offset-2 transition-colors hover:text-[#412460] hover:underline"
-                    >
-                      {p.name || "Open photo"}
-                    </a>
-                  ) : (
-                    <p className="line-clamp-2 break-words text-sm font-semibold text-[#2D2D2D]">{p.name || "—"}</p>
-                  )}
-                  {p.name && (
-                    <span
-                      role="tooltip"
-                      className="pointer-events-none absolute left-0 top-full z-20 mt-1.5 hidden w-max max-w-full break-words rounded-xl bg-[#2D2D2D] px-3 py-2 text-xs font-medium leading-snug text-white shadow-lg group-focus-within/pname:block group-hover/pname:block"
-                    >
-                      {p.name}
+            <li
+              key={`${p.itemCode}|${idx}`}
+              // Phones: a tap on the card toggles the description — except a tap on
+              // the photo, which opens it. (The name's own link is stopped from
+              // navigating below, so its tap lands here too.) Desktops do nothing here.
+              onClick={(e) => {
+                if (!isTouchDevice() || e.target.closest("[data-product-photo]")) return;
+                toggleDesc(idx);
+              }}
+              aria-expanded={descOpen}
+              className="rounded-2xl bg-[#F6F4F0] p-2.5 pointer-coarse:cursor-pointer"
+            >
+              <div className="flex items-center gap-3">
+                {href ? (
+                  <a
+                    href={href}
+                    data-product-photo
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    referrerPolicy="no-referrer"
+                    title="Open the photo in a new tab"
+                    className="shrink-0 rounded-xl transition hover:opacity-85 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#412460]/40"
+                  >
+                    {photo}
+                  </a>
+                ) : (
+                  <span className="shrink-0">{photo}</span>
+                )}
+                <div className="min-w-0 flex-1">
+                  {/* Two lines at rest — 1688 titles run long. Hovering the name (or
+                      tabbing to it) opens a tooltip box with the whole description.
+                      Below the name, not above: above, the sheet's scroll box would
+                      clip a long title on the first product. Capped at the name
+                      column's width so it can't push the sheet sideways on a phone,
+                      and pointer-events-none so it never sits on top of a click. */}
+                  <div className="group/pname relative">
+                    {href ? (
+                      <a
+                        href={href}
+                        // Phones: the name shows the description instead of going to the photo.
+                        onClick={(e) => { if (isTouchDevice()) e.preventDefault(); }}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        referrerPolicy="no-referrer"
+                        className="line-clamp-2 break-words text-sm font-semibold text-[#2D2D2D] underline-offset-2 transition-colors hover:text-[#412460] hover:underline"
+                      >
+                        {p.name || "Open photo"}
+                      </a>
+                    ) : (
+                      <p className="line-clamp-2 break-words text-sm font-semibold text-[#2D2D2D]">{p.name || "—"}</p>
+                    )}
+                    {p.name && (
+                      <span
+                        role="tooltip"
+                        className="pointer-events-none absolute left-0 top-full z-20 mt-1.5 hidden w-max max-w-full break-words rounded-xl bg-[#2D2D2D] px-3 py-2 text-xs font-medium leading-snug text-white shadow-lg group-focus-within/pname:block group-hover/pname:block"
+                      >
+                        {p.name}
+                      </span>
+                    )}
+                  </div>
+                  {/* Under the name, both on the left: the product id, then how many
+                      of it the parcel holds. */}
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+                    <span className="font-semibold text-[#412460]/80">{p.itemCode || "—"}</span>
+                    <span className="text-[#2D2D2D]/50">
+                      Qty <span className="font-semibold text-[#2D2D2D]/80">{p.quantity ?? "—"}</span>
                     </span>
-                  )}
+                  </div>
                 </div>
-                {/* Under the name, both on the left: the product id, then how many
-                    of it the parcel holds. */}
-                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
-                  <span className="font-semibold text-[#412460]/80">{p.itemCode || "—"}</span>
-                  <span className="text-[#2D2D2D]/50">
-                    Qty <span className="font-semibold text-[#2D2D2D]/80">{p.quantity ?? "—"}</span>
-                  </span>
-                </div>
+                {/* Touch screens only: the hint that the card opens its description. */}
+                <IconChevron className={`hidden h-4 w-4 shrink-0 text-[#2D2D2D]/30 transition-transform pointer-coarse:block ${descOpen ? "rotate-90" : ""}`} />
               </div>
+              {descOpen && (
+                <div className="mt-2 rounded-xl bg-white px-3 py-2.5 ring-1 ring-[#ECE9E3]">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/40">Description</p>
+                  <p className="mt-1 break-words text-xs leading-snug text-[#2D2D2D]/80">{p.name || "No description for this product."}</p>
+                </div>
+              )}
             </li>
           );
         })}
@@ -1331,6 +1367,12 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const pendingDisplaced = useRef(new Map());
   const pendingRefused = useRef(new Set());
   const pendingSeq = useRef(0);
+  // Scans the page could not preview from its 1688 list: their popup is held shut
+  // until the server has confirmed the box and named its product (see storeTracking).
+  // pending id -> the scan's sequence number. And how many of them are in flight, for
+  // the "Checking product…" note that stands in for the popup meanwhile.
+  const pendingHidden = useRef(new Map());
+  const [checkingScans, setCheckingScans] = useState(0);
   // Codes whose put-away is still on the wire, so a double read isn't sent twice.
   const inFlightTrackings = useRef(new Set());
   // Which sheet is on screen (its id, and the item itself) and whether anyone has
@@ -1562,7 +1604,16 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       sheetIdRef.current = item.id;
       if (!sheetTouched.current) armSavedTimer(item.id);
     }
-  }, [upsertRack, armSavedTimer]);
+    // A scan whose popup was held shut (no product to show yet) opens NOW, with its
+    // product in it. Unless another scan has come since: that one's popup stays, and
+    // this box is simply reported as stored.
+    if (pendingHidden.current.has(pendingId)) {
+      const seq = pendingHidden.current.get(pendingId);
+      pendingHidden.current.delete(pendingId);
+      if (seq === pendingSeq.current) showSaved(shown);
+      else showToast(`${goodsCode(item)} stored on ${item.rackId}`, "ok");
+    }
+  }, [upsertRack, armSavedTimer, showSaved, showToast]);
 
   const storeTracking = useCallback(
     async (rackId, scanned) => {
@@ -1586,18 +1637,34 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       // pushes aside is remembered: a code the server refuses — a second barcode on
       // the same parcel, a product EAN — must not take away the box that was being
       // checked and labelled.
+      //
+      // But only when there IS a product to show. A GtradeA scan the page's 1688 list
+      // does not know (the list is still loading, or the order synced a moment ago)
+      // has none, and a popup that opens with no product in it reads as "there is no
+      // product" — then fills in a second later. So that popup is held shut: a small
+      // "Checking product…" note stands in for it while the server confirms the box
+      // and names what is in it, and only THEN does the popup open (adoptStored). If
+      // the server says the box does not exist, the reason shows and no empty popup
+      // ever appeared.
       const pendingId = `pending-${++pendingSeq.current}`;
-      pendingDisplaced.current.set(pendingId, { item: sheetItemRef.current, touched: sheetTouched.current });
-      showSaved({
-        id: pendingId,
-        pending: true,
-        status: "in_stock",
-        rackId,
-        trackingNumber: tracking,
-        shipmentFrom: "By Air",
-        products: [],
-        ...(isGtradea ? previewPutAway(supplierOrdersRef.current, tracking) : null),
-      });
+      const preview = isGtradea ? previewPutAway(supplierOrdersRef.current, tracking) : null;
+      const held = isGtradea && !preview;
+      if (held) {
+        pendingHidden.current.set(pendingId, pendingSeq.current);
+        setCheckingScans((n) => n + 1);
+      } else {
+        pendingDisplaced.current.set(pendingId, { item: sheetItemRef.current, touched: sheetTouched.current });
+        showSaved({
+          id: pendingId,
+          pending: true,
+          status: "in_stock",
+          rackId,
+          trackingNumber: tracking,
+          shipmentFrom: "By Air",
+          products: [],
+          ...preview,
+        });
+      }
       const stored = putAwayItem(rackId, tracking, mode).then((item) => {
         adoptStored(pendingId, item);
         return item;
@@ -1639,6 +1706,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         showToast(e.message || "Failed to store item", e.status === 409 ? "warn" : "error");
       } finally {
         inFlightTrackings.current.delete(tracking);
+        if (held) {
+          pendingHidden.current.delete(pendingId);
+          setCheckingScans((n) => Math.max(0, n - 1));
+        }
       }
     },
     [mode, isGtradea, showToast, showSaved, findItem, adoptStored, armSavedTimer]
@@ -2387,14 +2458,18 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // Straight to the printer, one copy, no dialog — this is the scan → print path
   // staff run all day at the shelf, and the item already carries everything the
   // label needs (item code, order #, tracking) from the put-away response.
+  // Returns whether the print was started: false when there is nothing to print or
+  // the weight typed on the sheet isn't one (already reported), so the caller knows
+  // the sheet still has something to fix and must stay up.
   const printSavedItemNow = () => {
     keepSavedSheet();
-    if (!savedItem) return;
+    if (!savedItem) return false;
     const w = readSheetKg();
-    if (w && !w.ok) return;
+    if (w && !w.ok) return false;
     whenSheetBoxSettled(savedItem, (box, mode) =>
       doPrintLabel({ ...box, shipmentFrom: mode, ...(w && w.kg !== undefined ? { kg: w.kg } : null) }, 1, mode)
     );
+    return true;
   };
   // The "more than one package" case still goes through the copies + mode dialog.
   // `fromSheet` rides on the dialog's target: whether a mode picked there is this
@@ -2505,11 +2580,15 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // ---- the QC photo gate. Print label, "Choose copies" and OK all ask the same
   // question first: has this box a QC photo yet? If not, the "QC Image Upload" popup
   // comes up instead, and a photo uploaded there sends the label to the printer
-  // straight away (for OK, the sheet then closes too). There is no skipping it: the
+  // straight away (for Print label and OK, the sheet then closes too). There is no skipping it: the
   // photo is mandatory. GtradeA only: a Cellzen box has none.
   const runSheetAction = (kind, uploaded) => {
-    if (kind === "print") printSavedItemNow();
-    else if (kind === "copies") printSavedItem();
+    // Print label: once the label is on its way the sheet has done its job, so it
+    // closes and staff are back on the scan panel for the next box — they don't stay
+    // on the product popup. It stays only if nothing was printed (a bad weight).
+    if (kind === "print") {
+      if (printSavedItemNow()) setSavedItem(null);
+    } else if (kind === "copies") printSavedItem();
     else {
       if (uploaded) printSavedItemNow(); // OK, but a photo was just added: print it, then close
       keepSavedSheet();
@@ -5082,6 +5161,19 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 </button>
               </div>
             </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* A scan being confirmed with the server, whose popup is held until it has a
+          product to show (see storeTracking). Above the "Item stored" sheet and the
+          camera, never in the way of a tap. */}
+      {checkingScans > 0 && createPortal(
+        <div role="status" aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-36 z-[145] flex justify-center px-4 md:bottom-16">
+          <div className="flex items-center gap-2.5 rounded-full bg-[#2D2D2D] px-4 py-2.5 text-xs font-semibold text-white shadow-lg">
+            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+            Checking product…
           </div>
         </div>,
         document.body
