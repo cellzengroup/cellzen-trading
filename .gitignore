@@ -49,3 +49,6 @@ backend/uploads/products/*
 
 
 
+
+# Locally-trusted dev HTTPS cert + key (npm run dev:cert) — never commit the key
+.certs/

@@ -186,6 +186,20 @@ const startServer = async () => {
         await sequelize.sync(autoSync ? { alter: true } : {});
         console.log(autoSync ? '📊 Inventory tables synced (alter mode)' : '📊 Inventory tables ensured');
       }
+      // The one column production cannot be left without. supplier_orders.kg (the
+      // parcel weight staff type in) is now part of every 1688 SELECT the model
+      // issues, and production runs no sync() — so a deploy that lands before
+      // migrations/add_supplier_orders_kg.js took the whole 1688 tab and the
+      // warehouse list down with `column "kg" does not exist`. Adding a nullable
+      // column with no default is a catalog-only change, and IF NOT EXISTS makes it
+      // a no-op once it is there, so it is safe to guarantee on every boot. Its own
+      // try/catch: failing to alter (a restricted role, say) must not read as "the
+      // database is down" below — that migration is then the fallback.
+      try {
+        await sequelize.query('ALTER TABLE IF EXISTS supplier_orders ADD COLUMN IF NOT EXISTS kg DECIMAL(10,3)');
+      } catch (kgError) {
+        console.warn('⚠️  Could not ensure supplier_orders.kg — run node backend/migrations/add_supplier_orders_kg.js:', kgError.message);
+      }
     } catch (pgError) {
       console.error('❌ PostgreSQL connection failed:', pgError.message);
       console.log('🔄 Server will continue without PostgreSQL (Inventory features disabled)');

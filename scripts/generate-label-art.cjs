@@ -48,12 +48,17 @@ const NOTES = {
 //           ids under it: a parcel with one row of ids makes a shorter block than
 //           the design's two, and it is centred in the band rather than leaving
 //           all the leftover stock in one gap under the value.
+//   care  - "HANDLE WITH CARE", which slides down the right edge to make room
+//           for the parcel's weight, set on the same line after it
+//           ("HANDLE WITH CARE / 1.45KG" — see drawCareWeight). It only moves on
+//           a label that has a weight; otherwise it sits where the design put it.
 //   logo  - the gtradea mark, and
 //   shelf - the "Shelf No:" caption, both drawn larger than the artboard sets
 //           them (see ART_ZOOM) — they are what someone identifies a box by from
 //           across the room.
 const GROUPS = {
   3: 'logo', 4: 'logo', 5: 'logo',  // the gtradea mark
+  6: 'care',                        // "HANDLE WITH CARE" (rotated)
   8: 'shelf',                       // the "Shelf No:" caption
   12: 'list',                       // the "Order Included Inside" caption
 };

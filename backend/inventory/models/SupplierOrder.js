@@ -57,6 +57,12 @@ const SupplierOrder = sequelize
       // leaving thousands of stale cached verdicts behind. What a human decided
       // is the only part that can't be recomputed, so it's the only part stored.
       ship_mode_override: { type: DataTypes.STRING, allowNull: true },
+      // Weight of this line's goods in KG, typed in by warehouse staff on the 1688
+      // tab as the goods are weighed. gtradea publishes no weight, so this is not
+      // synced — the poller's upsert never lists it, which is what keeps a
+      // re-sync from wiping a figure someone entered. NULL = not weighed yet.
+      // DECIMAL comes back from pg as a string; the routes convert it to a number.
+      kg: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
       order_status: { type: DataTypes.STRING, allowNull: true },
       order_total: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
       // How much was actually PAID for this item's own 1688 order — gtradea's

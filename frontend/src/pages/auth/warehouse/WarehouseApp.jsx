@@ -16,6 +16,8 @@ import {
   exportItemsCsv,
   loadSupplierOrders,
   updateSupplierShipMode,
+  updateSupplierKg,
+  updateParcelKg,
   syncSupplierOrders,
   exportSupplierOrdersXlsx,
   exportSupplierOrdersPdf,
@@ -247,6 +249,21 @@ const supplierAsItem = (o) => ({
   status: "in_stock",
 });
 
+// The key a parcel's weight saves queue under: its CN tracking number, or — for a
+// 1688 line that has none yet, which is its own parcel — the line itself.
+const kgKeyOf = (tracking, id) => {
+  const t = String(tracking || "").trim().toUpperCase();
+  return t ? `t:${t}` : id ? `i:${id}` : "";
+};
+
+// A box the server has just described, with any weight typed on screen that has
+// not finished saving laid over it: the reply predates that save, so its own kg is
+// the old one, and taking it would wipe the field the user just filled.
+const withPendingKg = (item, pending) => {
+  const key = kgKeyOf(item?.trackingNumber);
+  return key && pending.has(key) ? { ...item, kg: pending.get(key) } : item;
+};
+
 // What a put-away of `code` will most likely store, worked out from the 1688
 // orders already loaded in the page — so the "Item stored" sheet can show the
 // product the instant a code is read instead of after the server round trip.
@@ -295,6 +312,8 @@ function previewPutAway(orders, code) {
     itemCode: first.itemCode || "",
     orderNumber: first.orderNumber,
     productName: first.productName,
+    // The parcel's weight, when it has been weighed — every line carries it.
+    kg: lines.find((o) => o.kg != null)?.kg ?? null,
     products,
     // The parcel travels as one box: By Land if ANY line has to, as put-away
     // decides it — not just the first line's mode.
@@ -659,6 +678,104 @@ function ShipModeSelect({ order, onChange, busy }) {
   );
 }
 
+// The weight field — in the 1688 table's KG column and on the "Item stored" sheet.
+// It is the weight of the PARCEL (one CN tracking number, however many 1688 lines
+// travel in it); gtradea publishes none, so it is an input rather than a readout,
+// typed in by whoever put the box on the scale.
+//
+// Saved when the field loses focus or Enter is pressed; Escape puts the old figure
+// back. `onCommit(text, prevKg)` says whether the text was usable — false makes
+// the field restore the stored figure instead of showing a value that never saved.
+//
+// The sheet passes a few extras, because a field there is easy to leave without a
+// blur (a phone keyboard that never blurs on a button tap, the next scan replacing
+// the sheet under it):
+//   flushOnUnmount — save what is typed when the field goes away.
+//   handleRef      — { read, discard } for the sheet's buttons: read() saves what
+//                    is typed and returns { ok, kg } — Print puts THAT on the
+//                    label; discard() stops the unmount save (Cancel) and returns
+//                    the figure the parcel held before this field first changed
+//                    it, or null if it never did.
+function KgInput({ kg, label, onCommit, handleRef = null, flushOnUnmount = false, disabled = false, large = false }) {
+  const stored = kg == null ? "" : String(kg);
+  const [draft, setDraft] = useState(stored);
+  const [editing, setEditing] = useState(false);
+  // The commit below is also run from the handle and on unmount, where the render
+  // closure is long gone — so it works from refs only.
+  const draftRef = useRef(stored);
+  const sentRef = useRef(stored);      // the text the parcel is known to hold / was last handed to onCommit
+  const baselineRef = useRef(null);    // what it held before this field first changed it
+  const dropRef = useRef(false);
+  const cancelled = useRef(false);
+  const latest = useRef({});
+  latest.current = { kg, onCommit, disabled };
+  const show = (text) => { draftRef.current = text; setDraft(text); };
+  // Follow the stored value while nobody is typing — a poll, or the server's
+  // rounded reply after a save — but never overwrite a half-typed number.
+  useEffect(() => {
+    if (editing) return;
+    sentRef.current = stored;
+    draftRef.current = stored;
+    setDraft(stored);
+  }, [stored, editing]);
+  const commit = () => {
+    const text = draftRef.current.trim();
+    if (text === sentRef.current) return true;
+    const before = sentRef.current;
+    const { kg: prev, onCommit: save } = latest.current;
+    if (save(text, prev) === false) { show(before); return false; }
+    if (baselineRef.current === null) baselineRef.current = before;
+    sentRef.current = text;
+    return true;
+  };
+  useEffect(() => {
+    if (!handleRef) return undefined;
+    const handle = {
+      read: () => {
+        // Not usable (see `disabled`): no figure of its own, so the caller keeps the box's.
+        if (latest.current.disabled) return { ok: true };
+        if (!commit()) return { ok: false };
+        const text = draftRef.current.trim();
+        return { ok: true, kg: text === "" ? null : Number(text) };
+      },
+      discard: () => { dropRef.current = true; return baselineRef.current; },
+    };
+    handleRef.current = handle;
+    return () => { if (handleRef.current === handle) handleRef.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handleRef]);
+  useEffect(() => () => { if (flushOnUnmount && !dropRef.current) commit(); },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []);
+  return (
+    <div className="flex items-center gap-1">
+      <input
+        type="text"
+        inputMode="decimal"
+        value={draft}
+        disabled={disabled}
+        placeholder={disabled ? "…" : "—"}
+        onFocus={() => setEditing(true)}
+        onChange={(e) => show(e.target.value)}
+        onBlur={() => {
+          setEditing(false);
+          // Escape blurs the field to leave it, and that blur would otherwise save
+          // the very text being thrown away.
+          if (cancelled.current) { cancelled.current = false; show(sentRef.current); return; }
+          commit();
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          else if (e.key === "Escape") { cancelled.current = true; e.currentTarget.blur(); }
+        }}
+        aria-label={label}
+        className={`${large ? "w-24 py-2 text-sm" : "w-16 py-1 text-xs"} rounded-lg bg-white px-2 text-right font-semibold tabular-nums text-[#2D2D2D]/80 ring-1 ring-[#E6E2DB] transition placeholder:font-normal placeholder:text-[#2D2D2D]/25 focus:outline-none focus:ring-2 focus:ring-[#412460]/40 disabled:opacity-50`}
+      />
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-[#2D2D2D]/35">kg</span>
+    </div>
+  );
+}
+
 function SectionTitle({ children }) {
   return (
     <h2 className="flex items-center gap-2 text-sm font-bold tracking-tight text-[#2D2D2D]">
@@ -782,6 +899,8 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // reverts to. `modeFailures` holds, per queue key, why the latest save was
   // refused, so a print that waited on it doesn't go out with the old mode.
   const modeQueues = useRef(new Map());
+  // The weight field on the sheet, for its buttons (see KgInput's handleRef).
+  const sheetKgHandle = useRef(null);
   const modePick = useRef(new Map());
   const modeSaved = useRef(new Map());
   const modeFailures = useRef(new Map());
@@ -958,9 +1077,34 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const activeShelfRef = useRef("");
   useEffect(() => { activeShelfRef.current = activeShelf; }, [activeShelf]);
   const [feed, setFeed] = useState([]);
-  const [manualRackSelect, setManualRackSelect] = useState("");
+  // The Shelf number field of the manual form. It is the SAME shelf the camera /
+  // barcode scanner puts boxes on, not a second one: scanning a shelf label fills
+  // this field, and a valid shelf typed or picked here becomes the shelf a scan
+  // uses (see setShelf). Whichever was set last wins, and it stays until the next
+  // change — so a shelf entered by hand no longer sends the camera back to "scan a
+  // shelf label first", and a scanned one is already in the form.
   const [manualRackText, setManualRackText] = useState("");
   const [manualTracking, setManualTracking] = useState("");
+
+  // Make `id` (or nothing) the shelf boxes are put away on. Only the ref is read
+  // by the scanner callback, so it is written here rather than waiting on the
+  // effect above — a box scanned in the same tick as the shelf must see it.
+  const setShelf = useCallback((id) => {
+    const shelf = String(id || "").trim().toUpperCase();
+    activeShelfRef.current = shelf;
+    setActiveShelf(shelf);
+    setManualRackText(shelf);
+  }, []);
+  // Typing into the Shelf number field. Only a complete, well-formed shelf counts
+  // as the active one; a half-typed code clears it rather than leaving the scanner
+  // putting boxes on the shelf that was there before the edit started.
+  const editShelfText = useCallback((value) => {
+    setManualRackText(value);
+    const shelf = value.trim().toUpperCase();
+    const valid = isShelf(shelf) ? shelf : "";
+    activeShelfRef.current = valid;
+    setActiveShelf(valid);
+  }, []);
 
   // Put a box away on `rackId`. `scanned` is whatever came off the scanner or the
   // manual form: normally the courier's TRACKING number, which is what the server
@@ -988,7 +1132,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     if (pick) modePick.current.set(item.id, pick);
     pendingAdopted.current.set(pendingId, item);
     pendingIdOf.current.set(item.id, pendingId);
-    const shown = pick ? { ...item, shipmentFrom: pick } : item;
+    const shown = withPendingKg(pick ? { ...item, shipmentFrom: pick } : item, kgPendingRef.current);
     setItems((prev) => [shown, ...prev]);
     setFeed((prev) => [shown, ...prev].slice(0, 8));
     upsertRack({ id: item.rackId, note: "", createdAt: item.createdAt });
@@ -1085,8 +1229,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       if (!t) return;
       if (isShelf(t)) {
         const id = t.toUpperCase();
-        activeShelfRef.current = id;
-        setActiveShelf(id);
+        setShelf(id);
         showToast(`Shelf set: ${id}`, "ok");
         // Nothing waits on the shelf existing server-side: POST /items creates it
         // on the first box put away there anyway. Only a shelf this page has never
@@ -1105,11 +1248,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       }
       await storeTracking(activeShelfRef.current, t);
     },
-    [showToast, storeTracking, upsertRack, shelfExample, racks]
+    [showToast, storeTracking, upsertRack, shelfExample, racks, setShelf]
   );
 
   const handleManualSave = async () => {
-    const rackId = (manualRackText.trim() || manualRackSelect).trim().toUpperCase();
+    const rackId = manualRackText.trim().toUpperCase();
     const tracking = manualTracking.trim();
     if (!rackId) return showToast("Enter or choose a shelf first.", "error");
     if (!isShelf(rackId)) return showToast(`Shelf must look like ${shelfExample} (letters-digits-digits).`, "error");
@@ -1124,12 +1267,13 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       <div>
         <label className={LABEL}>Choose existing shelf</label>
         <select
-          value={manualRackSelect}
+          // Follows the Shelf number field below, so a scanned shelf shows here
+          // too — blank when the code isn't (yet) one of the known shelves.
+          value={racks.some((r) => r.id === activeShelf) ? activeShelf : ""}
           onChange={(e) => {
-            setManualRackSelect(e.target.value);
-            // Auto-fill the Shelf Number field with the chosen shelf so it's
-            // visible (and editable) instead of left blank.
-            if (e.target.value) setManualRackText(e.target.value);
+            // Fills the Shelf number field with the chosen shelf so it's visible
+            // (and editable) instead of left blank.
+            if (e.target.value) setShelf(e.target.value);
           }}
           className={`${FIELD} mt-1.5`}
         >
@@ -1144,7 +1288,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         <input
           type="text"
           value={manualRackText}
-          onChange={(e) => setManualRackText(e.target.value)}
+          onChange={(e) => editShelfText(e.target.value)}
           placeholder={`e.g. ${shelfExample}`}
           className={`${FIELD} mt-1.5`}
         />
@@ -1451,6 +1595,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   <dd className="min-w-0 break-all font-semibold">{item.itemCodes.join(", ")}</dd>
                 </div>
               ) : null}
+              {/* The parcel's weight, once it has been on the scale — the figure the
+                  label prints beside "HANDLE WITH CARE". */}
+              {item.kg > 0 ? (
+                <div className="flex gap-2">
+                  <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Weight</dt>
+                  <dd className="min-w-0 font-semibold">{item.kg} KG</dd>
+                </div>
+              ) : null}
               <div className="flex gap-2">
                 <dt className="w-16 shrink-0 font-semibold text-[#2D2D2D]/45">Shelf</dt>
                 <dd className="min-w-0 break-all font-semibold">{item.rackId || "—"}</dd>
@@ -1726,6 +1878,20 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   };
   // The mode the server holds for a box once saves have settled: the last
   // confirmed sheet save if there was one, otherwise the box's own.
+  // Resolves once no weight save is left on this parcel's queue (see kgQueuesRef).
+  const settleKgSaves = async (key) => {
+    let tail;
+    do {
+      tail = kgQueuesRef.current.get(key);
+      await tail;
+    } while (tail !== kgQueuesRef.current.get(key));
+  };
+  // What is in the sheet's weight field — saved first, so what the label prints is
+  // what the 1688 table will show. null when the sheet has no such field (Cellzen
+  // boxes), or it is not usable yet (a scan still being stored with no 1688 line to
+  // preview): the box's own weight prints then. { ok: false } for text that is not
+  // a weight, which has already been reported.
+  const readSheetKg = () => sheetKgHandle.current?.read() ?? null;
   const savedModeOf = (box) =>
     modeSaved.current.get(box.id) || (box.shipmentFrom === "By Land" ? "By Land" : "By Air");
   // Boxes (by queue key) whose print is waiting — on the put-away, a mode save or
@@ -1747,15 +1913,24 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     if (printWaitRef.current.has(key)) return;
     markPrintWaiting(key, true);
     modeFailures.current.delete(key);
+    kgFailuresRef.current.delete(kgKeyOf(sheet.trackingNumber));
     try {
       // The label needs the ids only the server mints, so a pending sheet waits
       // for its box, and a refused scan does nothing.
       const box = await sheetBox(sheet);
       if (!box) return;
       await settleModeSaves(box);
+      // ... and the weight typed on the sheet, which the label prints.
+      const kgKey = kgKeyOf(box.trackingNumber);
+      await settleKgSaves(kgKey);
       const failed = modeFailures.current.get(key);
       if (failed) {
         showToast(`${goodsCode(box)}: not printed — the mode change wasn't saved (${failed})`, "error");
+        return;
+      }
+      const kgFailed = kgFailuresRef.current.get(kgKey);
+      if (kgFailed) {
+        showToast(`${goodsCode(box)}: not printed — the weight wasn't saved (${kgFailed})`, "error");
         return;
       }
       await fn(box, savedModeOf(box));
@@ -1769,7 +1944,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const printSavedItemNow = () => {
     keepSavedSheet();
     if (!savedItem) return;
-    whenSheetBoxSettled(savedItem, (box, mode) => doPrintLabel({ ...box, shipmentFrom: mode }, 1, mode));
+    const w = readSheetKg();
+    if (w && !w.ok) return;
+    whenSheetBoxSettled(savedItem, (box, mode) =>
+      doPrintLabel({ ...box, shipmentFrom: mode, ...(w && w.kg !== undefined ? { kg: w.kg } : null) }, 1, mode)
+    );
   };
   // The "more than one package" case still goes through the copies + mode dialog.
   // `fromSheet` rides on the dialog's target: whether a mode picked there is this
@@ -1778,7 +1957,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const printSavedItem = () => {
     keepSavedSheet();
     if (!savedItem) return;
-    whenSheetBoxSettled(savedItem, (box, mode) => handlePrintLabel({ ...box, shipmentFrom: mode, fromSheet: true }));
+    const w = readSheetKg();
+    if (w && !w.ok) return;
+    whenSheetBoxSettled(savedItem, (box, mode) =>
+      handlePrintLabel({ ...box, shipmentFrom: mode, fromSheet: true, ...(w && w.kg !== undefined ? { kg: w.kg } : null) })
+    );
   };
   // The sheet's By Air / By Land switch.
   const changeSavedItemMode = (nextMode) => {
@@ -1853,7 +2036,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
         if (modePick.current.get(id) !== nextMode) return; // superseded while in flight
         // The reply's product lookup is best-effort server-side; an empty one must
         // not wipe the photos the put-away already brought.
-        const merged = updated.products.length ? updated : { ...updated, products: stored.products };
+        const merged = withPendingKg(
+          updated.products.length ? updated : { ...updated, products: stored.products },
+          kgPendingRef.current
+        );
         setItems((prev) => prev.map((i) => (i.id === id ? merged : i)));
         setFeed((prev) => prev.map((i) => (i.id === id ? merged : i)));
         setSavedItem((prev) => (prev && prev.id === id ? merged : prev));
@@ -1873,6 +2059,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const undoSavedItem = async () => {
     const sheet = savedItem;
     keepSavedSheet();
+    // The weight typed on this sheet is part of what is being cancelled: stop the
+    // field saving on its way out, and note what the parcel held before it touched
+    // it (null if it never did) so it can be put back once the box is gone.
+    const kgBefore = sheetKgHandle.current?.discard() ?? null;
     setSavedItem(null);
     if (!sheet) return;
     // Cancelled while still pending: the box is removed once it exists — closing
@@ -1892,6 +2082,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       setItems((prev) => prev.filter((i) => i.id !== item.id));
       setFeed((prev) => prev.filter((i) => i.id !== item.id));
       showToast(`${goodsCode(item)} removed`, "ok");
+      if (kgBefore !== null) saveKg({ tracking: item.trackingNumber, prev: item.kg }, kgBefore);
     } catch (e) {
       showToast(e.message || "Unable to remove item", "error");
     }
@@ -2083,15 +2274,38 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const modeSavingRef = useRef(new Map());
   const [modeBusy, setModeBusy] = useState(() => new Set());
 
+  // Weight (KG) saves, keyed by parcel (see kgKeyOf) — the 1688 table and the
+  // "Item stored" sheet write the same figure, so they share ONE queue per parcel:
+  //   kgPendingRef  - the weight being saved (null = clearing it). Same reason as
+  //                   the modes above: a poll must not paint the old weight back
+  //                   over the one just typed.
+  //   kgSavedRef    - the last weight the server confirmed, which a refused save
+  //                   puts back.
+  //   kgQueuesRef   - the tail of the parcel's saves; they run one after another,
+  //                   so the server always ends on the LAST edit, and a print waits
+  //                   on it.
+  //   kgFailuresRef - why the latest save was refused, so a print that waited on
+  //                   it does not go out with a weight that never saved.
+  const kgPendingRef = useRef(new Map());
+  const kgSavedRef = useRef(new Map());
+  const kgQueuesRef = useRef(new Map());
+  const kgFailuresRef = useRef(new Map());
+
   const applyPendingModes = useCallback((rows) => {
     const pending = modeSavingRef.current;
-    if (!pending.size) return rows;
+    const pendingKg = kgPendingRef.current;
+    if (!pending.size && !pendingKg.size) return rows;
     return rows.map((r) => {
-      if (!pending.has(r.id)) return r;
-      const mode = pending.get(r.id);
-      // A null pending value is "clearing the override" — the auto answer is
-      // the server's to compute, so leave the row alone until the reply lands.
-      return mode ? { ...r, shipMode: mode, shipModeOverride: mode, shipModeSource: "staff" } : r;
+      let out = r;
+      if (pending.has(r.id)) {
+        const mode = pending.get(r.id);
+        // A null pending value is "clearing the override" — the auto answer is
+        // the server's to compute, so leave the row alone until the reply lands.
+        if (mode) out = { ...out, shipMode: mode, shipModeOverride: mode, shipModeSource: "staff" };
+      }
+      const kgKey = kgKeyOf(r.cnTracking, r.id);
+      if (pendingKg.has(kgKey)) out = { ...out, kg: pendingKg.get(kgKey) };
+      return out;
     });
   }, []);
 
@@ -2162,6 +2376,70 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       setModeBusy((prev) => { const n = new Set(prev); n.delete(id); return n; });
     }
   }, [showToast, loadSupplier, loadData]);
+
+  // Put a weight on everything on screen that shows this parcel: the boxes (lists,
+  // feed, the open sheet) and every 1688 line that travels in it.
+  const paintKg = useCallback((tracking, id, kg) => {
+    const t = String(tracking || "").trim().toUpperCase();
+    const onBox = (i) => (t && String(i.trackingNumber || "").toUpperCase() === t ? { ...i, kg } : i);
+    setItems((prev) => prev.map(onBox));
+    setFeed((prev) => prev.map(onBox));
+    setSavedItem((prev) => (prev ? onBox(prev) : prev));
+    setSupplierOrders((prev) =>
+      prev.map((o) => ((t ? String(o.cnTracking || "").toUpperCase() === t : o.id === id) ? { ...o, kg } : o))
+    );
+  }, []);
+
+  // Save the weight of a PARCEL. `target` is { tracking, id, prev }: the CN tracking
+  // number (the sheet has only that), the 1688 line's id for a line that has none
+  // yet, and the weight on screen before this edit. `text` is what was typed: blank
+  // clears it, anything else must be a non-negative number. Returns false for text
+  // that isn't (after saying why), so the field can put the old figure back;
+  // otherwise true, with the save carried on in the background — optimistic like
+  // the mode switch, and put back by the server's refusal.
+  const saveKg = useCallback(({ tracking, id, prev }, text) => {
+    const t = String(text ?? "").trim();
+    const kg = t === "" ? null : Number(t);
+    if (kg !== null && (!Number.isFinite(kg) || kg < 0)) {
+      showToast("KG must be a number, like 1.45", "error");
+      return false;
+    }
+    const key = kgKeyOf(tracking, id);
+    if (!key) return false;
+    // A run of edits falls back to what the page held before the first of them.
+    if (!kgQueuesRef.current.has(key)) kgSavedRef.current.set(key, prev ?? null);
+    kgPendingRef.current.set(key, kg);
+    kgFailuresRef.current.delete(key);
+    paintKg(tracking, id, kg);
+    const job = (kgQueuesRef.current.get(key) || Promise.resolve()).then(async () => {
+      // A newer edit is queued behind this one; it will send the final figure.
+      if (kgPendingRef.current.get(key) !== kg) return;
+      try {
+        const saved = await (tracking ? updateParcelKg(tracking, kg) : updateSupplierKg(id, kg));
+        kgSavedRef.current.set(key, saved);
+        if (kgPendingRef.current.get(key) === kg) {
+          kgPendingRef.current.delete(key);
+          paintKg(tracking, id, saved); // the server's own (rounded) figure
+        }
+      } catch (e) {
+        if (kgPendingRef.current.get(key) !== kg) return; // a newer edit supersedes the failure
+        kgPendingRef.current.delete(key);
+        kgFailuresRef.current.set(key, e.message || "save failed");
+        paintKg(tracking, id, kgSavedRef.current.get(key) ?? null);
+        showToast(`KG not saved — ${e.message || "please try again"}`, "error");
+      }
+    });
+    kgQueuesRef.current.set(key, job);
+    // Forget a finished queue — unless more was queued behind it meanwhile.
+    job.then(() => { if (kgQueuesRef.current.get(key) === job) kgQueuesRef.current.delete(key); });
+    return true;
+  }, [showToast, paintKg]);
+
+  // A row of the 1688 table: the weight goes to the row's whole parcel.
+  const setSupplierKg = useCallback(
+    (order, text) => saveKg({ tracking: order.cnTracking, id: order.id, prev: order.kg }, text),
+    [saveKg]
+  );
 
   // The sync runs server-side and takes ~30s, so "is a sync happening" is the
   // SERVER's answer (carried on every list response), not local state. Local
@@ -3200,6 +3478,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                       onToggleSelect={toggleSupplierSel}
                       onToggleAll={(checked) => toggleAllSupplier(supplierSelectedShippable, checked)}
                       onSetMode={setSupplierMode}
+                      onSetKg={setSupplierKg}
                       modeBusy={modeBusy}
                     />
                   ) : (
@@ -3234,6 +3513,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                     onToggleSelect={toggleSupplierSel}
                     onToggleAll={(checked) => toggleAllSupplier(supplierRestShippable, checked)}
                     onSetMode={setSupplierMode}
+                    onSetKg={setSupplierKg}
                     modeBusy={modeBusy}
                   />
                 </section>
@@ -3248,6 +3528,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onToggleSelect={toggleSupplierSel}
                 onToggleAll={(checked) => toggleAllSupplier(supplierShipRows, checked)}
                 onSetMode={setSupplierMode}
+                onSetKg={setSupplierKg}
                 modeBusy={modeBusy}
               />
             )}
@@ -4189,6 +4470,30 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   <ShipModeToggle value={savedItem.shipmentFrom} onChange={changeSavedItemMode} />
                 </dd>
               </div>
+              {/* The parcel's weight, when it has been on the scale: typed here it
+                  is saved to the box's 1688 lines (the KG column of the 1688 table)
+                  and printed on the label beside "HANDLE WITH CARE". Keyed by
+                  tracking number so a scan that replaces the sheet starts a fresh
+                  field — after saving what was typed. Off while a scan is still
+                  being stored with no 1688 line to preview: only the server knows
+                  what the tracking number really is by then. */}
+              {isGtradea && (
+                <div className="flex items-center justify-between gap-4 py-2">
+                  <dt className="shrink-0 text-[#2D2D2D]/50">Weight</dt>
+                  <dd>
+                    <KgInput
+                      key={savedItem.trackingNumber || savedItem.id}
+                      kg={savedItem.kg ?? null}
+                      label={`KG for ${savedItem.trackingNumber || "this box"}`}
+                      disabled={!!savedItem.pending && !savedItem.orderNumber}
+                      large
+                      flushOnUnmount
+                      handleRef={sheetKgHandle}
+                      onCommit={(text, prev) => saveKg({ tracking: savedItem.trackingNumber, prev }, text)}
+                    />
+                  </dd>
+                </div>
+              )}
               {savedItem.orderNumber && (
                 <div className="flex items-center justify-between gap-4 py-3">
                   <dt className="shrink-0 text-[#2D2D2D]/50">Order number</dt>
@@ -4975,7 +5280,7 @@ function WarehousePill({ order }) {
 // `empty` overrides the no-rows message. Shipment mode splits these rows across
 // two of these tables, and the "All goods" one empties for a reason neither
 // default covers: everything visible is already in the shipment above it.
-function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, modeBusy }) {
+function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, onSetKg, modeBusy }) {
   // Track images that failed to load and hide them via STATE, not by mutating the
   // DOM node — an imperative style change would persist across re-renders and could
   // permanently hide a later-valid image for the same row key.
@@ -5084,6 +5389,12 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
                   <ShipModeSelect order={o} onChange={onSetMode} busy={modeBusy?.has(o.id)} />
                 </dd>
               </div>
+              <div className="flex items-center justify-between gap-3">
+                <dt className="text-[#2D2D2D]/45">KG</dt>
+                <dd>
+                  <KgInput kg={o.kg} label={`KG for ${o.orderNumber || o.cnTracking || "this order"}`} onCommit={(text) => onSetKg(o, text)} />
+                </dd>
+              </div>
             </dl>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <WarehousePill order={o} />
@@ -5094,7 +5405,7 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
 
       {/* Desktop: table */}
       <div className="-mx-1 hidden overflow-x-auto md:block">
-        <table className="w-full min-w-[1080px] text-left text-sm">
+        <table className="w-full min-w-[1160px] text-left text-sm">
           <thead>
             <tr className="text-[10px] uppercase tracking-[0.12em] text-[#2D2D2D]/40 [&>th]:px-3 [&>th]:pb-3 [&>th]:font-semibold">
               {selectable && (
@@ -5109,6 +5420,8 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
               {/* Sits next to Product because that's what it's derived from —
                   staff read the description and the mode as one thing. */}
               <th>Mode</th>
+              {/* Typed in by staff as the goods are weighed — gtradea has no weight. */}
+              <th>KG</th>
               <th className="text-center">Qty</th>
               <th>CN Tracking</th>
               <th>Warehouse</th>
@@ -5137,6 +5450,7 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
                   </div>
                 </td>
                 <td><ShipModeSelect order={o} onChange={onSetMode} busy={modeBusy?.has(o.id)} /></td>
+                <td><KgInput kg={o.kg} label={`KG for ${o.orderNumber || o.cnTracking || "this order"}`} onCommit={(text) => onSetKg(o, text)} /></td>
                 <td className="text-center text-[#2D2D2D]/70">{o.quantity ?? "—"}</td>
                 <td className="max-w-[190px] truncate font-semibold text-[#2D2D2D]/80" title={o.cnTracking}>{o.cnTracking || "—"}</td>
                 <td><WarehousePill order={o} /></td>

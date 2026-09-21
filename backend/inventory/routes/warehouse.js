@@ -163,7 +163,7 @@ function parcelLines(tracking) {
     where: { china_tracking_no: tracking },
     attributes: [
       'id', 'china_tracking_no', 'job_code', 'item_code', 'order_number',
-      'product_name', 'product_image', 'quantity', 'ship_mode_override',
+      'product_name', 'product_image', 'quantity', 'ship_mode_override', 'kg',
     ],
     order: [['item_code', 'ASC NULLS LAST'], ['order_number', 'ASC'], ['id', 'ASC']],
   });
@@ -308,7 +308,7 @@ async function attachParcelProducts(rows, { details = false, orders: preloaded =
   const orders = preloaded || await SupplierOrder.findAll({
     where: { china_tracking_no: { [Op.in]: trackings } },
     attributes: [
-      'china_tracking_no', 'job_code', 'item_code', 'order_number', 'product_name',
+      'china_tracking_no', 'job_code', 'item_code', 'order_number', 'product_name', 'kg',
       ...(details ? ['product_image', 'quantity'] : []),
     ],
     // One tracking can carry several items (two variants in one parcel), and
@@ -328,9 +328,15 @@ async function attachParcelProducts(rows, { details = false, orders: preloaded =
   const ordersByTracking = {};
   const linesByTracking = {};
   const productsByTracking = {};
+  const kgByTracking = {};
   for (const o of orders) {
     const t = o.china_tracking_no;
     if (!first[t]) first[t] = o;
+    // The parcel's weight. Every line of a parcel carries the same figure (it is
+    // written to all of them at once), so the first one that has a weight is the
+    // box's — which also covers a line synced in after the box was weighed.
+    // DECIMAL arrives from pg as a string ("1.450"); the label wants a number.
+    if (kgByTracking[t] == null && o.kg != null && Number.isFinite(Number(o.kg))) kgByTracking[t] = Number(o.kg);
     linesByTracking[t] = (linesByTracking[t] || 0) + 1;
     // Every line, duplicates and all — see product_ids above. A line gtradea
     // hasn't published an id for goes in as null so the position is kept and the
@@ -389,6 +395,9 @@ async function attachParcelProducts(rows, { details = false, orders: preloaded =
     set('product_ids', lineIds);
     set('order_numbers', orderNos);
     set('product_count', count);
+    // Not a warehouse_items column: the weight lives on the parcel's 1688 lines
+    // (see PATCH /supplier-orders/kg), so it is read across on every response.
+    set('kg', kgByTracking[r.tracking_number] ?? null);
     if (details) {
       // A parcel whose 1688 lines are gone still names the product the box was
       // stored with — just without a photo, which only the lines carry.

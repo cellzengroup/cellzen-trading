@@ -495,14 +495,16 @@ function applyZoom(ctx, group) {
 // Fixed artwork, painted in the design's order. Fills collapse to pure black or
 // pure white: the stock is monochrome thermal, and the glass icon is knocked
 // OUT of the fragile panel, so its white has to survive as white.
-function drawLabelArt(ctx, { scale, dx, dy }, listDy = 0) {
+function drawLabelArt(ctx, { scale, dx, dy }, listDy = 0, careDy = 0) {
   for (const el of GTRADEA_LABEL_ART) {
     ctx.save();
     ctx.translate(dx, dy);
     ctx.scale(scale, scale);
-    // The "Order Included Inside" caption is the one piece of artwork that moves:
-    // it heads the list below it, so it travels with it (see listLayout).
+    // The "Order Included Inside" caption moves with the list below it (see
+    // listLayout), and "HANDLE WITH CARE" slides down to make room for the weight
+    // set after it (see careLayout). Everything else stays where it was drawn.
     if (el.group === "list" && listDy) ctx.translate(0, listDy);
+    if (el.group === "care" && careDy) ctx.translate(0, careDy);
     applyZoom(ctx, el.group);
     const f = String(el.fill || "").toLowerCase();
     ctx.fillStyle = f === "white" || f === "#ffffff" || f === "#fff" ? "#FFFFFF" : "#000000";
@@ -740,6 +742,83 @@ function drawIncludedList(ctx, t, layout) {
   ctx.restore();
 }
 
+// ------------------------------------------------ "HANDLE WITH CARE / 1.45KG"
+// The parcel's weight, set on the SAME line as the design's vertical "HANDLE WITH
+// CARE" and reading on from it — "HANDLE WITH CARE / 1.45KG" — turned the same way
+// (up the label), on the same baseline, at the same cap height.
+//
+// The design's text is a fixed vector path that ends 142 units under the fragile
+// panel, and the weight needs more than that. The stock below it is free down to
+// the shipment-mode panel, so the words slide DOWN just far enough to fit the
+// weight in above them (`dy`, applied to the artwork tagged "care") — a label
+// without a weight is not moved at all. A weight too long for even that (a
+// four-figure one) shrinks its own type before it crowds either neighbour.
+const GT_CARE = {
+  baseX: 762,       // the text's baseline: rotated, its glyph tops face left
+  top: 634,         // the design's text spans y 634 (the end of "CARE") ...
+  bottom: 992,      // ... to y 992 (the foot of its "H", where it starts reading)
+  ink: 27,          // cap height, i.e. 762 - 735
+  stockTop: 516,    // the fragile panel ends at 502; keep 14 units clear
+  stockBottom: 1061, // the shipment-mode panel starts at 1075; likewise
+  gap: 12,          // between the words, the slash and the figure
+  minScale: 0.5,    // the smallest the figure will shrink to before it is left as is
+};
+
+// 1.45 -> "1.45KG", 2 -> "2KG", 0.125 -> "0.125KG". Nothing (so no weight is
+// drawn) for a missing or non-positive figure: "0KG" would read as "weighed,
+// weightless" on a box that simply hasn't been on the scale.
+function formatKg(kg) {
+  const n = kg == null || kg === "" ? NaN : Number(kg);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return `${Math.round(n * 1000) / 1000}KG`;
+}
+
+function careLayout(ctx, kg) {
+  const value = formatKg(kg);
+  if (!value) return null;
+  // Type size from the design's own cap height, so the slash and figure match the
+  // words they follow. Measured, not guessed: the em size means something
+  // different in every typeface.
+  const px = (100 * GT_CARE.ink) / inkHeight(ctx, "H", 100, "400");
+  ctx.font = `400 ${px}px ${FONT_STACK}`;
+  const slashW = ctx.measureText("/").width;
+  ctx.font = `700 ${px}px ${FONT_STACK}`;
+  let valueW = ctx.measureText(value).width;
+  let valuePx = px;
+
+  const length = GT_CARE.bottom - GT_CARE.top; // the design's text
+  const room = GT_CARE.stockBottom - GT_CARE.stockTop - length - 2 * GT_CARE.gap - slashW;
+  if (valueW > room) {
+    const s = Math.max(GT_CARE.minScale, room / valueW);
+    valuePx = px * s;
+    valueW *= s;
+  }
+  const total = length + GT_CARE.gap + slashW + GT_CARE.gap + valueW;
+  // How far the words must move down for `total` to end no higher than stockTop.
+  const dy = Math.max(0, total - (GT_CARE.bottom - GT_CARE.stockTop));
+  return { value, px, valuePx, slashW, dy };
+}
+
+function drawCareWeight(ctx, t, care) {
+  if (!care) return;
+  ctx.save();
+  ctx.translate(t.dx, t.dy);
+  ctx.scale(t.scale, t.scale);
+  // Origin on the baseline, just past the end of "CARE"; turned a quarter to the
+  // left so the text runs up the label the way the design's does.
+  ctx.translate(GT_CARE.baseX, GT_CARE.top + care.dy - GT_CARE.gap);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#000000";
+  ctx.font = `400 ${care.px}px ${FONT_STACK}`;
+  ctx.fillText("/", 0, 0);
+  // The figure is the point of the line, so it is set heavier than the words.
+  ctx.font = `700 ${care.valuePx}px ${FONT_STACK}`;
+  ctx.fillText(care.value, care.slashW + GT_CARE.gap, 0);
+  ctx.restore();
+}
+
 async function renderGtradeaLabel(item, shipmentMode = null) {
   await loadLabelFonts();
 
@@ -754,7 +833,8 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   // Measured before the artwork is painted: the list decides where its own
   // caption sits, and the caption is part of that artwork.
   const list = listLayout(ctx, item);
-  drawLabelArt(ctx, t, list ? list.dy : 0);
+  const care = careLayout(ctx, item.kg);
+  drawLabelArt(ctx, t, list ? list.dy : 0, care ? care.dy : 0);
   // The GOODS id — gtradea's own "Product ID" (GTI-100119), the id the China
   // Operations table lists this parcel under. It has to be the id on the
   // sticker: staff read the label and then look the box up in the portal, and
@@ -781,6 +861,7 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   drawField(ctx, GT_FIELDS.tracking, item.trackingNumber || "-", t);
   drawField(ctx, GT_FIELDS.stamp, formatLabelStamp(item.createdAt), t);
   drawField(ctx, GT_FIELDS.mode, mode === "land" ? "VIA LAND" : "VIA AIR", t);
+  drawCareWeight(ctx, t, care);
 
   return { png: canvas.toDataURL("image/png"), mono: packMono(ctx, CANVAS_W, CANVAS_H) };
 }

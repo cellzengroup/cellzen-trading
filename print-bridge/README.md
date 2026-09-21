@@ -10,7 +10,7 @@ Deli 720C thermal printer on **80 × 120 mm** stock, no browser print dialog.
   prints it verbatim.
 - **Rack/shelf labels** stay a simple native Code-128 barcode.
 
-The website runs in the cloud (Render) and a web page can't touch a USB printer.
+The website runs in the cloud (Railway) and a web page can't touch a USB printer.
 So this little program runs on the **warehouse PC that has the printer plugged
 in**. The site's Print button quietly POSTs here, and this bridge sends a native
 TSPL job straight to the Deli 720C.
@@ -88,19 +88,19 @@ the phone sends the job to your server, and this agent picks it up and prints it
 here. The label still comes out of the Deli 720C at the warehouse.
 
 ```
- Phone / any device ──HTTPS──► your site (Render) ──► print_jobs queue (Postgres)
+ Phone / any device ──HTTPS──► your site (Railway) ──► print_jobs queue (Postgres)
                                                               ▲
                                     this agent ───poll every ~2s───┘  ──► Deli 720C
 ```
 
 ### One-time server setup
-1. **Deploy** the latest backend to Render (it adds the print-queue endpoints).
-2. On Render → your service → **Environment**, add a secret:
+1. **Deploy** the latest backend to Railway (it adds the print-queue endpoints).
+2. On Railway → your backend service → **Variables**, add a secret:
    ```
    PRINT_AGENT_TOKEN = <a long random string>
    ```
    (Generate one with `node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"`.)
-3. **Create the table + columns** — run once each (Render Shell, or locally
+3. **Create the table + columns** — run once each (Railway shell, or locally
    against the prod DB):
    ```
    node backend/migrations/add_print_jobs_table.js
@@ -177,13 +177,17 @@ printer", so a label can't come out of an office laser or Print-to-PDF.
   error line; confirm `/selftest` works locally first.
 
 ### Cloud queue issues
+- **First stop: <http://127.0.0.1:9110/health>** on the PC with the printer. The
+  `cloud` block says what the last poll got — `ok`, `refused` (server said no, with
+  its reason), `bad-token`, `unreachable`, or `idle` (this PC has no printer). The
+  bridge runs hidden, so this is where a dead queue shows up.
 - **Startup shows `Cloud queue : OFF`** — `apiBaseUrl` or `agentToken` is blank in `config.json`.
 - **`invalid agentToken`** in the window — the agent's `agentToken` doesn't match
-  `PRINT_AGENT_TOKEN` on Render. Make them identical, restart.
+  `PRINT_AGENT_TOKEN` on Railway. Make them identical, restart.
 - **Phone says "Sent ✓" but nothing prints** — the agent isn't running on the
   warehouse PC, or its printer is offline. Check this window; confirm `/selftest`
   works locally. Jobs stuck >2 min are automatically retried.
-- **`Print agent is not configured` (503)** — `PRINT_AGENT_TOKEN` isn't set on Render.
+- **`Print agent is not configured` (503)** — `PRINT_AGENT_TOKEN` isn't set on Railway.
 
 ## Endpoints (for reference)
 

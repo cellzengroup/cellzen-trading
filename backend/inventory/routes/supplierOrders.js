@@ -71,6 +71,14 @@ const normalizeShipMode = (v) => {
   return SHIP_MODES.includes(s) ? s : null;
 };
 
+// supplier_orders.kg is DECIMAL(10,3), which pg hands back as a string ("2.500").
+// The panel wants a number, and NULL (not weighed yet) must stay null rather than
+// become 0 — a zero would read as "weighed, weightless".
+const kgOut = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+// Largest weight the column can hold and a sane single line could ever carry
+// (DECIMAL(10,3) tops out just under 10,000,000). Anything past this is a typo.
+const MAX_KG = 100000;
+
 // A YYYY-MM-DD query param -> the instant that bounds that calendar day in UTC,
 // or null if it isn't a real date (a typo must not silently drop every row).
 // UTC on purpose: gtradea stamps ordered_at in UTC and the 1688 panel renders
@@ -187,6 +195,7 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
         supplier_url: r.supplier_url,
         source_product_id: r.source_product_id,
         quantity: r.quantity,
+        kg: kgOut(r.kg),
         shipping_mode: r.shipping_mode,
         // Effective mode the box should travel in, and enough of the working to
         // explain it in the panel's tooltip: what the classifier decided, which
@@ -303,6 +312,69 @@ router.patch('/:id/ship-mode', authenticate, requireStaffOrAdmin, async (req, re
   } catch (error) {
     console.error('Update 1688 order ship mode error:', error);
     res.status(500).json({ success: false, message: 'Unable to update shipment mode' });
+  }
+});
+
+// The weight is a property of the PARCEL, not of a line: one CN tracking number
+// is one physical box, however many 1688 lines the supplier bagged into it, and a
+// scale gives one figure for the box. So a weight is written to EVERY line that
+// travels under that tracking number (both routes below), and read back as the
+// box's weight. A line with no tracking number yet is its own parcel.
+//
+// Body: { kg: number | null }. null (or an empty string) clears it back to "not
+// weighed yet"; like ship-mode, the key is read with hasOwnProperty so that
+// clearing is possible at all. Returns { kg } (a number, or an { error }).
+function parseKgBody(body) {
+  if (!hasKey(body || {}, 'kg')) return { error: 'kg is required (a number, or null to clear)' };
+  const raw = typeof body.kg === 'string' ? body.kg.trim() : body.kg;
+  if (raw === null || raw === '') return { kg: null };
+  // Number('') and Number(true) are 0 and 1 — only a number or a numeric string
+  // is a weight.
+  const n = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN;
+  if (!Number.isFinite(n) || n < 0 || n > MAX_KG) return { error: `kg must be a number between 0 and ${MAX_KG}` };
+  return { kg: Math.round(n * 1000) / 1000 }; // the column keeps three decimals
+}
+
+// PATCH /kg — set the weight of a parcel by its CN tracking number. This is what
+// the warehouse's "Item stored" sheet calls: it knows the box's tracking number,
+// not the id of any one of the 1688 lines inside it. Body: { tracking, kg }.
+router.patch('/kg', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const tracking = String(req.body?.tracking || '').trim().toUpperCase();
+    if (!tracking) return res.status(400).json({ success: false, message: 'tracking is required' });
+    const { kg, error } = parseKgBody(req.body);
+    if (error) return res.status(400).json({ success: false, message: error });
+
+    const [updated] = await withConnectionRetry(() => SupplierOrder.update({ kg }, { where: { china_tracking_no: tracking } }));
+    if (!updated) return res.status(404).json({ success: false, message: 'No 1688 order carries that tracking number' });
+    res.json({ success: true, data: { tracking, kg, updated } });
+  } catch (error) {
+    console.error('Update 1688 parcel kg error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update KG' });
+  }
+});
+
+// PATCH /:id/kg — the same, from a row of the 1688 table: the line's whole
+// parcel takes the weight. Body: { kg: number | null }.
+router.patch('/:id/kg', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    const { kg, error } = parseKgBody(req.body);
+    if (error) return res.status(400).json({ success: false, message: error });
+
+    const order = await withConnectionRetry(() => SupplierOrder.findByPk(req.params.id));
+    if (!order) return res.status(404).json({ success: false, message: '1688 order not found' });
+
+    const tracking = order.china_tracking_no || null;
+    const [updated] = await withConnectionRetry(() => SupplierOrder.update(
+      { kg },
+      { where: tracking ? { china_tracking_no: tracking } : { id: order.id } }
+    ));
+    res.json({ success: true, data: { id: order.id, tracking, kg, updated } });
+  } catch (error) {
+    console.error('Update 1688 order kg error:', error);
+    res.status(500).json({ success: false, message: 'Unable to update KG' });
   }
 });
 

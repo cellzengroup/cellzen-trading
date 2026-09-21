@@ -28,6 +28,10 @@ export function unwrapItem(row) {
     source: row.source || "cellzen",
     orderNumber: row.order_number || "",
     productName: row.product_name || "",
+    // The parcel's weight in KG — one figure for the box, kept on its 1688 lines
+    // and read across by the server. null until someone has weighed it; this is
+    // what the label prints beside "HANDLE WITH CARE".
+    kg: row.kg == null || !Number.isFinite(Number(row.kg)) ? null : Number(row.kg),
     // Each distinct 1688 product in the parcel — name + photo — for the "Item
     // stored" sheet. Only single-item responses (put-away, mode change, ship)
     // carry it; GET /items leaves it off to keep its 5000 rows light, so a row
@@ -395,6 +399,8 @@ export function unwrapSupplierOrder(row) {
     productImage: row.product_image || "",
     supplierUrl: row.supplier_url || "",
     quantity: row.quantity ?? null,
+    // Weight in KG as typed in by staff on the 1688 tab; null until weighed.
+    kg: row.kg ?? null,
     shippingMode: row.shipping_mode || "",
     // How this box has to travel, worked out from the product title by the
     // backend's dangerous-goods classifier and correctable from the Mode
@@ -463,6 +469,29 @@ export async function updateSupplierShipMode(id, mode) {
     warehouseItemsUpdated: d.warehouse_items_updated || 0,
   };
 }
+
+// Record the weight of a PARCEL. `kg` is a number, or null / "" to clear it back
+// to "not weighed yet". Resolves to the value the server actually stored (rounded
+// to three decimals), which is what the field should show.
+//
+// A weight belongs to the box, not to one line in it: every 1688 line under the
+// same CN tracking number takes it, so the 1688 table and the box's label can
+// never disagree. Keyed by tracking number where there is one (the "Item stored"
+// sheet has only that); a line with no tracking yet is saved by its own id.
+async function patchKg(path, body) {
+  const res = await authFetch(`/inventory/supplier-orders/${path}`, {
+    ...STAFF,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await readJson(res);
+  if (!res.ok || !json.success) throw new Error(json.message || `Failed to save KG (HTTP ${res.status})`);
+  return json.data?.kg ?? null;
+}
+const kgBody = (kg) => (kg === "" || kg == null ? null : kg);
+export const updateParcelKg = (tracking, kg) => patchKg("kg", { tracking, kg: kgBody(kg) });
+export const updateSupplierKg = (id, kg) => patchKg(`${encodeURIComponent(id)}/kg`, { kg: kgBody(kg) });
 
 // Trigger an immediate server-side pull from gtradea. Returns the sync summary.
 // `force` marks a user-clicked "Sync now": it bypasses the server's failure

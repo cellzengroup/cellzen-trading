@@ -357,7 +357,12 @@ const server = http.createServer(async (req, res) => {
   // `ok` stays true whatever the printer is doing — it identifies this as a
   // Cellzen bridge (see probeExistingBridge). `online` is the printer answer.
   if (req.method === "GET" && url === "/health")
-    return json(res, 200, { ok: true, printer: PRINTER, online: await printerUsable(10000) });
+    return json(res, 200, {
+      ok: true,
+      printer: PRINTER,
+      online: await printerUsable(10000),
+      cloud: cloudEnabled() ? cloud : { status: "off", detail: "apiBaseUrl / agentToken not set in config.json" },
+    });
 
   if (req.method === "GET" && url === "/printers") {
     const printers = await listPrinters();
@@ -431,6 +436,23 @@ function cloudEnabled() {
   return Boolean(API_BASES.length && cfg.agentToken);
 }
 
+// Outcome of the latest cloud-queue poll, served on /health. The bridge normally
+// runs hidden (start-hidden.vbs), so a console line is never seen — this is what
+// makes a queue that has silently stopped claiming jobs diagnosable. Logged to
+// the console too, but only when it changes, so a dead queue isn't a line per poll.
+const cloud = { status: "starting", detail: "", lastPollAt: null, lastOkAt: null };
+
+function setCloud(status, detail = "") {
+  const changed = cloud.status !== status || cloud.detail !== detail;
+  cloud.status = status;
+  cloud.detail = detail;
+  cloud.lastPollAt = new Date().toISOString();
+  if (status === "ok") cloud.lastOkAt = cloud.lastPollAt;
+  if (changed && status !== "idle") {
+    console.log(status === "ok" ? "  Cloud queue: reachable — phone prints will come through." : `  Cloud queue: ${status} — ${detail}`);
+  }
+}
+
 // `redirect: "error"` matters here: fetch() follows redirects by default, but a
 // 301/302 on a POST is replayed as a bodyless GET — so an apex -> www redirect
 // would report success while sending no result at all. Failing instead means
@@ -468,14 +490,24 @@ async function pollOnce() {
   // PC that can't print must not claim at all: it stays quiet and the job waits
   // for the PC that has the cable. Cached briefly so this doesn't spawn a
   // PowerShell query every couple of seconds.
-  if (!(await printerUsable(5000))) return;
-  const res = await claimPending();
-  if (res.status === 401) {
-    console.error("  Cloud queue: invalid agentToken (must match PRINT_AGENT_TOKEN on the server)");
+  if (!(await printerUsable(5000))) {
+    setCloud("idle", "printer not connected on this PC, so it is not claiming jobs");
     return;
   }
-  if (!res.ok) return;
+  const res = await claimPending();
   const json = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    setCloud("bad-token", "agentToken in config.json does not match PRINT_AGENT_TOKEN on the server");
+    return;
+  }
+  if (!res.ok) {
+    // 503 "Print agent is not configured" = the server has no PRINT_AGENT_TOKEN
+    // set at all, so every poll is refused and phone jobs just sit in the queue.
+    const hint = res.status === 503 ? " (set PRINT_AGENT_TOKEN in the server's environment and redeploy)" : "";
+    setCloud("refused", `server answered HTTP ${res.status}: ${(json && json.message) || "no message"}${hint}`);
+    return;
+  }
+  setCloud("ok");
   for (const job of (json && json.data) || []) {
     try {
       if (job.bitmap_data) {
@@ -498,7 +530,15 @@ async function pollOnce() {
 
 async function startCloudPoller() {
   for (;;) {
-    try { await pollOnce(); } catch { /* network hiccup — retry next tick */ }
+    try {
+      await pollOnce();
+    } catch (e) {
+      // Network hiccup — retry next tick, but say so on /health. node's fetch
+      // reports just "fetch failed"; the useful part (ENOTFOUND, ECONNRESET,
+      // a redirect refused by redirect:"error") is on .cause.
+      const why = (e && e.cause && (e.cause.code || e.cause.message)) || (e && e.message) || String(e);
+      setCloud("unreachable", `could not reach ${basesInPreferredOrder().join(" / ")}: ${why}`);
+    }
     await new Promise((r) => setTimeout(r, cfg.pollMs || 2500));
   }
 }
