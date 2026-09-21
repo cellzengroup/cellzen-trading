@@ -30,6 +30,10 @@ import {
 } from "../../../utils/warehouseApi";
 import { downloadItemLabel, downloadRackLabel, printItemLabel } from "../../../utils/warehouseLabels";
 import { readPackingListIds } from "../../../utils/packingListImport";
+import {
+  QC_MAX_IMAGES, useQcImages, addQcImage, retryQcImage, removeQcImage, refreshQcImages, qcCountFor,
+  seedQcImages, prefetchQcImages, qcHasPhoto,
+} from "../../../utils/qcImages";
 
 // A scanned code is a SHELF label when it matches a location-code shape:
 // letters - digits - digits, where the letters may carry a leading number of
@@ -249,6 +253,12 @@ const supplierAsItem = (o) => ({
   status: "in_stock",
 });
 
+// The lists say which QC photos each parcel has (ids only): hand that to the photo
+// store so a parcel's popup already has its photos when it is tapped.
+const seedQc = (rows, trackingOf) => {
+  for (const r of rows) if (r && r.qcImageIds) seedQcImages(trackingOf(r), r.qcImageIds);
+};
+
 // The key a parcel's weight saves queue under: its CN tracking number, or — for a
 // 1688 line that has none yet, which is its own parcel — the line itself.
 const kgKeyOf = (tracking, id) => {
@@ -454,6 +464,7 @@ const IconTrash = (p) => (<svg {...svgBase} {...p}><path d="M3 6h18" /><path d="
 const IconPlus = (p) => (<svg {...svgBase} {...p}><path d="M12 5v14" /><path d="M5 12h14" /></svg>);
 const IconSearch = (p) => (<svg {...svgBase} strokeWidth="2" {...p}><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>);
 const IconCamera = (p) => (<svg {...svgBase} {...p}><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg>);
+const IconImage = (p) => (<svg {...svgBase} {...p}><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></svg>);
 const IconKeyboard = (p) => (<svg {...svgBase} {...p}><rect x="2" y="6" width="20" height="12" rx="2" /><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" /></svg>);
 const IconClose = (p) => (<svg {...svgBase} strokeWidth="2.2" {...p}><path d="M18 6 6 18M6 6l12 12" /></svg>);
 const IconReport = (p) => (<svg {...svgBase} {...p}><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6" /><path d="M9 17v-4" /><path d="M12 17v-6" /><path d="M15 17v-2" /></svg>);
@@ -513,6 +524,387 @@ function ShipModeToggle({ value, onChange }) {
         </button>
       ))}
     </div>
+  );
+}
+
+/* ------------------------------ QC images ------------------------------ */
+// Does this device have a camera-and-finger kind of screen (a phone, a tablet)? Then
+// "Upload image" offers Take photo / Choose from gallery. A desktop has no camera to
+// open and no gallery: there it goes straight to the file manager. Asked when the
+// button is pressed, so a window dragged between screens is judged by what it is now.
+const isTouchDevice = () =>
+  typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+
+// A goods number that opens the QC photos saved for it. Dotted underline and a
+// small picture icon say it can be tapped; the tap never reaches the card or row
+// the number sits in (those open their own detail). `tracking` lets it start
+// fetching the photo files the moment a finger or the pointer is on it — before the
+// tap has even landed — so they are there when the popup opens. `icon={false}`
+// leaves the picture icon off (the 1688 panel shows just the number).
+function GoodsNo({ code, onOpen, className = "", tracking, icon = true }) {
+  if (!code) return <span className={className}>—</span>;
+  if (!onOpen) return <span className={`break-all ${className}`}>{code}</span>;
+  const warm = () => { if (tracking) prefetchQcImages(tracking); };
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onOpen(); }}
+      onPointerDown={warm}
+      onMouseEnter={warm}
+      title="View QC images"
+      className={`inline-flex max-w-full items-center gap-1.5 text-left underline decoration-[#412460]/35 decoration-dotted underline-offset-4 transition active:opacity-60 ${className}`}
+    >
+      <span className="break-all">{code}</span>
+      {icon && <IconImage className="h-3.5 w-3.5 shrink-0 opacity-60" />}
+    </button>
+  );
+}
+
+// The QC photos of one parcel: up to TWO, added from the camera or the gallery,
+// shrunk to 50% JPEG quality on the way (utils/qcImages.js) and saved against the
+// parcel's tracking number. Three shapes:
+//   - "sheet" (the "Item stored" popup): just an Upload image button on the left
+//     and, once photos are added, up to two small thumbnails on the right — no box
+//     around it, no heading. Tapping a thumbnail opens the popup with the photos.
+//   - "viewer": the same button with the photos below it, inside the photo popup.
+//     Tapping a photo enlarges it in place; nothing opens in a new tab.
+//   - "gate" (the "QC Image Upload" popup shown before a label prints without any
+//     photo): only the button, one photo at a time — `onAdded` is what carries on.
+//
+// A photo is on screen the moment it is chosen (see addQcImage): a small spinner
+// while it is sent, a red "Retry" if it could not be saved. `onAdded` gets
+// { key, done } straight away — it does not wait for the upload.
+//
+// Removing is a two-tap: the first tap on a photo's ✕ arms it ("Remove?"), the
+// second removes — a mis-tap on a phone should not throw a photo away.
+function QcImages({ tracking, notify, variant = "sheet", onOpen, onAdded, disabled = false, label = "Upload image" }) {
+  const { images, status, error, refresh } = useQcImages(tracking);
+  const [menu, setMenu] = useState(false);
+  const [armed, setArmed] = useState(null);
+  const [zoom, setZoom] = useState(null); // viewer: the photo enlarged in place
+  const camera = useRef(null);
+  const gallery = useRef(null);
+  const viewer = variant === "viewer";
+  const gate = variant === "gate";
+  const full = images.length >= QC_MAX_IMAGES;
+
+  useEffect(() => {
+    if (!armed) return undefined;
+    const t = setTimeout(() => setArmed(null), 3000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  // Synchronous on purpose: each photo is added (and shown) before this returns.
+  const take = (fileList) => {
+    const files = [...(fileList || [])];
+    if (!files.length) return;
+    setMenu(false);
+    // As many as the box has room for; the rest are left out, and it says so.
+    const room = Math.max(0, QC_MAX_IMAGES - images.length);
+    if (files.length > room) notify(`Only ${QC_MAX_IMAGES} QC images per box`, "warn");
+    for (const file of files.slice(0, room)) {
+      let added;
+      try {
+        added = addQcImage(tracking, file);
+      } catch (e) {
+        notify(e.message || "Couldn't use that photo", "error");
+        continue;
+      }
+      if (onAdded) onAdded(added);
+      // Reported here, not left to the caller: by the time it fails the popup that
+      // asked for the photo may be gone.
+      added.done.catch((e) => notify(`QC photo not saved — ${e.message || "please try again"}. Open the goods number to add it again.`, "error"));
+    }
+  };
+
+  const remove = async (img) => {
+    if (armed !== img.key) { setArmed(img.key); return; }
+    setArmed(null);
+    try {
+      await removeQcImage(tracking, img.key);
+    } catch (e) {
+      notify(e.message || "Couldn't remove the photo", "error");
+    }
+  };
+  const retry = (img) => {
+    retryQcImage(tracking, img.key).catch((e) => notify(`QC photo not saved — ${e.message || "please try again"}`, "error"));
+  };
+
+  // `small` is the thumbnail's: a ✕ pinned to its corner, which once armed turns the
+  // whole thumbnail into a red "Remove?" so there is something big enough to tap.
+  const removeButton = (img, small) =>
+    armed === img.key ? (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); remove(img); }}
+        aria-label="Tap again to remove this photo"
+        className={
+          small
+            ? "absolute inset-0 flex items-center justify-center rounded-xl bg-red-600/90 text-[10px] font-bold text-white"
+            : "absolute right-1.5 top-1.5 rounded-full bg-red-600 px-2.5 py-1 text-[10px] font-semibold text-white shadow"
+        }
+      >
+        Remove?
+      </button>
+    ) : (
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); remove(img); }}
+        aria-label="Remove this photo"
+        className={
+          small
+            ? "absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-[#2D2D2D] text-white shadow ring-2 ring-white"
+            : "absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white shadow"
+        }
+      >
+        <IconClose className="h-3 w-3" />
+      </button>
+    );
+
+  const spinner = (
+    <span className="h-5 w-5 animate-spin rounded-full border-2 border-[#412460]/20 border-t-[#412460]" />
+  );
+
+  return (
+    <div>
+      {/* Upload image on the left; on the sheet the photos (small) on the right. */}
+      <div className={gate ? "flex justify-center" : "flex items-center justify-between gap-3"}>
+        <button
+          type="button"
+          disabled={disabled || full}
+          onClick={() => {
+            if (isTouchDevice()) { setMenu((m) => !m); return; }
+            // Desktop: no "Take photo" step — straight to the file manager.
+            setMenu(false);
+            if (gallery.current) gallery.current.click();
+          }}
+          aria-expanded={menu}
+          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full bg-[#412460] font-semibold text-white transition active:scale-[.97] disabled:cursor-not-allowed disabled:bg-[#2D2D2D]/15 disabled:text-[#2D2D2D]/40 ${
+            gate ? "px-6 py-3 text-sm" : "px-3.5 py-2 text-xs"
+          }`}
+        >
+          <IconUpload className="h-3.5 w-3.5" />
+          {label}
+        </button>
+        {variant === "sheet" && (
+          <div className="flex items-center gap-2.5">
+            {images.map((img, i) => (
+              <div key={img.key} className="relative h-14 w-14 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => (img.status === "failed" ? retry(img) : onOpen && onOpen(i))}
+                  aria-label={img.status === "failed" ? `Retry QC image ${i + 1}` : `Open QC image ${i + 1}`}
+                  className="block h-full w-full overflow-hidden rounded-xl ring-1 ring-[#ECE9E3]"
+                >
+                  <img src={img.url} alt={`QC image ${i + 1}`} decoding="async" className="h-full w-full object-cover" />
+                </button>
+                {img.status === "saving" && (
+                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-white/50">{spinner}</span>
+                )}
+                {img.status === "failed" && (
+                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl bg-red-600/80 text-[10px] font-bold text-white">Retry</span>
+                )}
+                {removeButton(img, true)}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* The choice the upload button opens: the phone's camera, or its gallery.
+          `capture` is what makes the first one open the camera straight away. */}
+      {menu && !full && (
+        <div className="mt-2.5 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => camera.current && camera.current.click()}
+            className="flex items-center justify-center gap-2 rounded-2xl bg-[#F6F4F0] px-3 py-2.5 text-xs font-semibold text-[#412460] ring-1 ring-[#ECE9E3] transition active:scale-[.97]"
+          >
+            <IconCamera className="h-4 w-4" /> Take photo
+          </button>
+          <button
+            type="button"
+            onClick={() => gallery.current && gallery.current.click()}
+            className="flex items-center justify-center gap-2 rounded-2xl bg-[#F6F4F0] px-3 py-2.5 text-xs font-semibold text-[#412460] ring-1 ring-[#ECE9E3] transition active:scale-[.97]"
+          >
+            <IconImage className="h-4 w-4" /> Choose from gallery
+          </button>
+        </div>
+      )}
+      <input
+        ref={camera}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={(e) => { take(e.target.files); e.target.value = ""; }}
+        aria-label="Take a QC photo"
+      />
+      <input
+        ref={gallery}
+        type="file"
+        accept="image/*"
+        multiple={!gate}
+        className="hidden"
+        onChange={(e) => { take(e.target.files); e.target.value = ""; }}
+        aria-label="Choose QC photos from the gallery"
+      />
+
+      {status === "error" && !images.length && !gate && (
+        <p className="mt-3 rounded-2xl bg-red-50 px-3 py-2.5 text-xs text-red-700 ring-1 ring-red-100">
+          {error || "Couldn't load the QC images."}{" "}
+          <button type="button" onClick={refresh} className="font-semibold underline">Retry</button>
+        </p>
+      )}
+
+      {/* Viewer only: the photos under the button — side by side where there is room,
+          one enlarged in place when tapped. Never a new tab. */}
+      {viewer && !(status === "error" && !images.length) && (
+        images.length === 0 ? (
+          <p className="mt-4 rounded-2xl bg-[#F6F4F0] px-4 py-8 text-center text-xs text-[#2D2D2D]/45">
+            {status === "ready" ? "No QC images saved for this box yet — use Upload image." : "Loading photos…"}
+          </p>
+        ) : (
+          <div className={`mt-4 grid gap-4 ${zoom ? "" : "sm:grid-cols-2"}`}>
+            {images.map((img, i) => (zoom && img.key !== zoom ? null : (
+              <figure
+                key={img.key}
+                data-qc-index={i}
+                onClick={() => setZoom(zoom === img.key ? null : img.key)}
+                className={`relative min-h-[8rem] overflow-hidden rounded-2xl bg-[#EFEDE8] ring-1 ring-[#ECE9E3] ${zoom ? "cursor-zoom-out" : "cursor-zoom-in"}`}
+              >
+                <img
+                  src={img.url}
+                  alt={`QC image ${i + 1}`}
+                  decoding="async"
+                  fetchPriority="high"
+                  className={`w-full object-contain ${zoom ? "max-h-[72vh]" : "max-h-[60vh]"}`}
+                />
+                {img.status === "saving" && (
+                  <span className="pointer-events-none absolute inset-x-0 top-0 flex justify-center bg-white/70 py-1.5 text-[11px] font-semibold text-[#412460]">Saving…</span>
+                )}
+                {img.status === "failed" && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); retry(img); }}
+                    className="absolute inset-x-0 top-0 bg-red-600/90 py-1.5 text-center text-[11px] font-bold text-white"
+                  >
+                    Not saved — tap to retry
+                  </button>
+                )}
+                {removeButton(img, false)}
+                <figcaption className="px-3 py-2 text-[11px] text-[#2D2D2D]/50">
+                  Photo {i + 1}{img.createdByName ? ` · ${img.createdByName}` : ""} · {zoom ? "tap to shrink" : "tap to enlarge"}
+                </figcaption>
+              </figure>
+            )))}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+// The saved QC photos of a box in a POPUP — what opens when its goods number (or a
+// 1688 card / order number) is tapped. It opens at once: its photos are already in
+// the store (seeded from the list that showed the number), and the files were
+// fetched when the finger touched down. Uploading and removing work here too, so a
+// photo can be added later, not only while the "Item stored" sheet is up.
+function QcViewer({ target, onClose, notify }) {
+  useEffect(() => { prefetchQcImages(target.tracking); refreshQcImages(target.tracking); }, [target.tracking]);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  // Land on the photo that was tapped, once the photos are on screen.
+  const body = useRef(null);
+  const { images } = useQcImages(target.tracking);
+  useEffect(() => {
+    if (!target.index || !body.current) return;
+    const el = body.current.querySelector(`[data-qc-index="${target.index}"]`);
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+  }, [target.index, images.length]);
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[160] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-6"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`QC images for ${target.goodsNo}`}
+        className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-t-3xl bg-[#F6F4F0] text-[#2D2D2D] shadow-2xl sm:rounded-3xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 px-5 pb-3 pt-5">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45">QC images</p>
+            <p className="break-all text-lg font-black tracking-tight text-[#412460]">{target.goodsNo}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#2D2D2D]/8 text-[#2D2D2D] transition hover:bg-[#2D2D2D]/15"
+          >
+            <IconClose className="h-5 w-5" />
+          </button>
+        </div>
+        <div ref={body} className="flex-1 overflow-y-auto px-5 pb-6">
+          <QcImages tracking={target.tracking} notify={notify} variant="viewer" />
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// "QC Image Upload" — what comes up when a label is about to print (or the sheet be
+// closed) and the box has no QC photo yet. One button: Upload an image. The photo is
+// MANDATORY — there is no way past this except a photo: a photo added here is what
+// carries the action on (the label prints straight away, the photo is sent behind
+// it), and the ✕ only backs out of the action altogether (nothing prints, nothing
+// closes). Every path that would let a GtradeA box through without a photo — Print,
+// Choose copies, OK, tapping outside the sheet, its auto-close — comes through here.
+function QcGate({ target, onClose, onUploaded, notify }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[150] flex items-end justify-center bg-black/50 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="QC image upload"
+        className="relative w-full max-w-md rounded-t-3xl bg-white p-6 pb-8 shadow-2xl sm:rounded-3xl sm:pb-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-[#2D2D2D]/8 text-[#2D2D2D] transition hover:bg-[#2D2D2D]/15"
+        >
+          <IconClose className="h-4 w-4" />
+        </button>
+        <p className="pr-10 text-base font-bold">QC Image Upload</p>
+        <p className="mt-1 pr-10 text-xs text-[#2D2D2D]/55">
+          {target.goodsNo ? `${target.goodsNo} has no QC photo yet.` : "This box has no QC photo yet."}{" "}
+          A QC photo is required.{" "}
+          {target.kind === "copies" ? "Upload one, then choose the copies." : "Upload one and the label prints."}
+        </p>
+        <div className="mt-6">
+          <QcImages tracking={target.tracking} notify={notify} variant="gate" label="Upload an image" onAdded={onUploaded} />
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -678,6 +1070,17 @@ function ShipModeSelect({ order, onChange, busy }) {
   );
 }
 
+// What the weight field will hold: digits and one decimal point, nothing else —
+// letters and symbols are dropped as they are typed or pasted. A comma becomes a
+// point (a phone's decimal keypad gives one in many locales), and only three
+// decimals are kept, because that is all the column stores.
+const cleanKg = (text) => {
+  let t = String(text).replace(/,/g, ".").replace(/[^0-9.]/g, "");
+  const dot = t.indexOf(".");
+  if (dot !== -1) t = t.slice(0, dot + 1) + t.slice(dot + 1).replace(/\./g, "").slice(0, 3);
+  return t.slice(0, 10);
+};
+
 // The weight field — in the 1688 table's KG column and on the "Item stored" sheet.
 // It is the weight of the PARCEL (one CN tracking number, however many 1688 lines
 // travel in it); gtradea publishes none, so it is an input rather than a readout,
@@ -748,31 +1151,28 @@ function KgInput({ kg, label, onCommit, handleRef = null, flushOnUnmount = false
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []);
   return (
-    <div className="flex items-center gap-1">
-      <input
-        type="text"
-        inputMode="decimal"
-        value={draft}
-        disabled={disabled}
-        placeholder={disabled ? "…" : "—"}
-        onFocus={() => setEditing(true)}
-        onChange={(e) => show(e.target.value)}
-        onBlur={() => {
-          setEditing(false);
-          // Escape blurs the field to leave it, and that blur would otherwise save
-          // the very text being thrown away.
-          if (cancelled.current) { cancelled.current = false; show(sentRef.current); return; }
-          commit();
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") e.currentTarget.blur();
-          else if (e.key === "Escape") { cancelled.current = true; e.currentTarget.blur(); }
-        }}
-        aria-label={label}
-        className={`${large ? "w-24 py-2 text-sm" : "w-16 py-1 text-xs"} rounded-lg bg-white px-2 text-right font-semibold tabular-nums text-[#2D2D2D]/80 ring-1 ring-[#E6E2DB] transition placeholder:font-normal placeholder:text-[#2D2D2D]/25 focus:outline-none focus:ring-2 focus:ring-[#412460]/40 disabled:opacity-50`}
-      />
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-[#2D2D2D]/35">kg</span>
-    </div>
+    <input
+      type="text"
+      inputMode="decimal"
+      value={draft}
+      disabled={disabled}
+      placeholder={disabled ? "…" : "—"}
+      onFocus={() => setEditing(true)}
+      onChange={(e) => show(cleanKg(e.target.value))}
+      onBlur={() => {
+        setEditing(false);
+        // Escape blurs the field to leave it, and that blur would otherwise save
+        // the very text being thrown away.
+        if (cancelled.current) { cancelled.current = false; show(sentRef.current); return; }
+        commit();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        else if (e.key === "Escape") { cancelled.current = true; e.currentTarget.blur(); }
+      }}
+      aria-label={label}
+      className={`${large ? "w-20 py-2 text-sm" : "w-14 py-1 text-xs"} rounded-lg bg-white px-2 text-right font-semibold tabular-nums text-[#2D2D2D]/80 ring-1 ring-[#E6E2DB] transition placeholder:font-normal placeholder:text-[#2D2D2D]/25 focus:outline-none focus:ring-2 focus:ring-[#412460]/40 disabled:opacity-50`}
+    />
   );
 }
 
@@ -901,6 +1301,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const modeQueues = useRef(new Map());
   // The weight field on the sheet, for its buttons (see KgInput's handleRef).
   const sheetKgHandle = useRef(null);
+  // QC photos added while a sheet was showing, by tracking number -> their ids, so
+  // Cancel can take back what the cancelled scan added. And the photo viewer, which
+  // opens from any goods number: { tracking, goodsNo, index } or null.
+  const sheetQcAdded = useRef(new Map());
+  const [qcViewer, setQcViewer] = useState(null);
+  // The "QC Image Upload" popup shown before a label prints without any photo:
+  // { kind: "print" | "copies" | "ok", tracking, goodsNo } or null.
+  const [qcGate, setQcGate] = useState(null);
   const modePick = useRef(new Map());
   const modeSaved = useRef(new Map());
   const modeFailures = useRef(new Map());
@@ -938,11 +1346,22 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     sheetIdRef.current = savedItem ? savedItem.id : null;
     sheetItemRef.current = savedItem;
   }, [savedItem]);
+  useEffect(() => {
+    const current = String(savedItem?.trackingNumber || "").trim().toUpperCase();
+    for (const key of [...sheetQcAdded.current.keys()]) if (key !== current) sheetQcAdded.current.delete(key);
+  }, [savedItem?.trackingNumber]);
   const savedTimer = useRef(null);
   const armSavedTimer = useCallback((id) => {
     if (savedTimer.current) clearTimeout(savedTimer.current);
-    savedTimer.current = setTimeout(() => setSavedItem((prev) => (prev && prev.id === id ? null : prev)), 6000);
-  }, []);
+    savedTimer.current = setTimeout(
+      () => setSavedItem((prev) => {
+        if (!prev || prev.id !== id) return prev;
+        // A GtradeA box needs its QC photo: a sheet that has none does not close itself.
+        return isGtradea && !qcHasPhoto(prev.trackingNumber) ? prev : null;
+      }),
+      6000
+    );
+  }, [isGtradea]);
   const showSaved = useCallback((item) => {
     if (!item.pending) {
       modeAtPutAway.current.set(item.id, {
@@ -988,6 +1407,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       const [r, it] = await Promise.all([loadRacks(), loadItems(mode)]);
       setRacks(r);
       setItems(it);
+      seedQc(it, (x) => x.trackingNumber);
     } catch (e) {
       setError(e.message || "Failed to load warehouse data");
     } finally {
@@ -1132,6 +1552,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     if (pick) modePick.current.set(item.id, pick);
     pendingAdopted.current.set(pendingId, item);
     pendingIdOf.current.set(item.id, pendingId);
+    seedQc([item], (x) => x.trackingNumber);
     const shown = withPendingKg(pick ? { ...item, shipmentFrom: pick } : item, kgPendingRef.current);
     setItems((prev) => [shown, ...prev]);
     setFeed((prev) => [shown, ...prev].slice(0, 8));
@@ -1574,7 +1995,9 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             <div className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#2D2D2D]/45">
               {item.itemCode || item.prCode ? "Product ID" : "Item"}
             </div>
-            <div className="mt-0.5 break-all text-2xl font-black tracking-tight">{goodsCode(item)}</div>
+            <div className="mt-0.5 text-2xl font-black tracking-tight">
+              {isGtradea ? <GoodsNo code={goodsCode(item)} onOpen={() => openQc(item)} tracking={item.trackingNumber} /> : <span className="break-all">{goodsCode(item)}</span>}
+            </div>
             <dl className="mt-3 space-y-1.5 text-xs">
               {/* This box's own id. Not printed on the label and not known to
                   gtradea — kept on screen because it is the one id that names
@@ -1854,6 +2277,29 @@ export default function WarehouseApp({ mode = "cellzen" }) {
 
   // "Item stored" sheet actions. Any interaction stops the sheet's auto-dismiss
   // so it doesn't disappear mid-tap.
+  // Open the saved QC photos of a 1688 order's parcel (from its card, goods number or
+  // order number). Keyed by CN tracking number, so every line of the parcel shows the same photos.
+  const openQc1688 = (o) => {
+    if (!o.cnTracking) { showToast("This order has no CN tracking number yet, so it has no QC photos", "warn"); return; }
+    prefetchQcImages(o.cnTracking);
+    setQcViewer({ tracking: o.cnTracking, goodsNo: o.itemCode || o.jobCode || o.orderNumber || "", index: 0 });
+  };
+  // Open the saved QC photos of a box (from its goods number).
+  const openQc = (item, index = 0) => {
+    const tracking = item?.trackingNumber;
+    if (!tracking) { showToast("This box has no tracking number to look photos up by", "warn"); return; }
+    setQcViewer({ tracking, goodsNo: goodsCode(item), index });
+  };
+  // A photo added while the sheet is up belongs to that scan (see sheetQcAdded). Noted
+  // by the photo's KEY: it is on screen before the server has given it an id.
+  const noteSheetQc = (tracking, added) => {
+    const key = String(tracking || "").trim().toUpperCase();
+    sheetQcAdded.current.set(key, [...(sheetQcAdded.current.get(key) || []), added.key]);
+  };
+  // Whether the sheet's tracking number is one to save things against: a scan still
+  // being stored with no 1688 line to preview may be a goods id, not a tracking
+  // number — only the server's reply says which. The weight and the QC photos wait.
+  const trackingReady = !!savedItem && !(savedItem.pending && !savedItem.orderNumber);
   const keepSavedSheet = () => {
     sheetTouched.current = true;
     if (savedTimer.current) clearTimeout(savedTimer.current);
@@ -2056,6 +2502,51 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     // Forget a finished queue — unless more was queued behind it meanwhile.
     job.then(() => { if (modeQueues.current.get(queueKey) === job) modeQueues.current.delete(queueKey); });
   };
+  // ---- the QC photo gate. Print label, "Choose copies" and OK all ask the same
+  // question first: has this box a QC photo yet? If not, the "QC Image Upload" popup
+  // comes up instead, and a photo uploaded there sends the label to the printer
+  // straight away (for OK, the sheet then closes too). There is no skipping it: the
+  // photo is mandatory. GtradeA only: a Cellzen box has none.
+  const runSheetAction = (kind, uploaded) => {
+    if (kind === "print") printSavedItemNow();
+    else if (kind === "copies") printSavedItem();
+    else {
+      if (uploaded) printSavedItemNow(); // OK, but a photo was just added: print it, then close
+      keepSavedSheet();
+      setSavedItem(null);
+    }
+  };
+  // Async callbacks (the upload finishing) must run the LATEST version of the above,
+  // not the one from the render they were made in.
+  const runSheetActionRef = useRef(runSheetAction);
+  runSheetActionRef.current = runSheetAction;
+  const sheetIs = (tracking) =>
+    String(sheetItemRef.current?.trackingNumber || "").toUpperCase() === String(tracking || "").toUpperCase();
+  const gateThen = async (kind) => {
+    keepSavedSheet();
+    const sheet = savedItem;
+    if (!sheet) return;
+    if (isGtradea && trackingReady) {
+      const have = await qcCountFor(sheet.trackingNumber);
+      // A scan may have replaced the sheet while the photos were read: that press was for the old one.
+      if (!sheetIs(sheet.trackingNumber)) return;
+      if (have === 0) {
+        setQcGate({ kind, tracking: sheet.trackingNumber, goodsNo: goodsCode(sheet) });
+        return;
+      }
+    }
+    runSheetActionRef.current(kind, false);
+  };
+  const finishQcGate = (gate, saved) => {
+    setQcGate(null);
+    if (!sheetIs(gate.tracking)) {
+      showToast(`Photo saved for ${gate.goodsNo} — that box is no longer on screen, so nothing was printed`, "warn");
+      return;
+    }
+    noteSheetQc(gate.tracking, saved);
+    runSheetActionRef.current(gate.kind, true); // straight away — the photo is still being sent behind it
+  };
+
   const undoSavedItem = async () => {
     const sheet = savedItem;
     keepSavedSheet();
@@ -2063,6 +2554,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     // field saving on its way out, and note what the parcel held before it touched
     // it (null if it never did) so it can be put back once the box is gone.
     const kgBefore = sheetKgHandle.current?.discard() ?? null;
+    // ... and so are the QC photos it added: they describe a scan that is being undone.
+    const qcKey = String(sheet?.trackingNumber || "").trim().toUpperCase();
+    const qcAdded = sheetQcAdded.current.get(qcKey) || [];
+    sheetQcAdded.current.delete(qcKey);
     setSavedItem(null);
     if (!sheet) return;
     // Cancelled while still pending: the box is removed once it exists — closing
@@ -2083,6 +2578,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       setFeed((prev) => prev.filter((i) => i.id !== item.id));
       showToast(`${goodsCode(item)} removed`, "ok");
       if (kgBefore !== null) saveKg({ tracking: item.trackingNumber, prev: item.kg }, kgBefore);
+      for (const id of qcAdded) removeQcImage(item.trackingNumber, id).catch(() => { /* best effort */ });
     } catch (e) {
       showToast(e.message || "Unable to remove item", "error");
     }
@@ -2316,6 +2812,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       const { rows, lastSync } = await loadSupplierOrders();
       if (reqId !== supplierReqId.current) return; // a newer request superseded this one
       setSupplierOrders(applyPendingModes(rows));
+      seedQc(rows, (o) => o.cnTracking);
       setSupplierSync(lastSync);
       supplierLoadedOnce.current = true;
     } catch (e) {
@@ -2338,7 +2835,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     let cancelled = false;
     const pull = () =>
       loadSupplierOrders()
-        .then(({ rows }) => { if (!cancelled) setSupplierOrders(applyPendingModes(rows)); })
+        .then(({ rows }) => { if (!cancelled) { setSupplierOrders(applyPendingModes(rows)); seedQc(rows, (o) => o.cnTracking); } })
         .catch(() => { /* preview only */ });
     pull();
     const timer = setInterval(pull, 120000);
@@ -2969,6 +3466,12 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
+                            {/* The goods number leads the card on a GtradeA box; tapping it opens the box's QC photos. */}
+                            {isGtradea && goodsCode(it) && (
+                              <div className="mb-1.5 text-sm font-bold text-[#412460]">
+                                <GoodsNo code={goodsCode(it)} onOpen={() => openQc(it)} tracking={it.trackingNumber} />
+                              </div>
+                            )}
                             <span className="inline-block rounded-md bg-[#F4F2EE] px-2 py-0.5 text-xs font-semibold text-[#412460]">{it.rackId}</span>
                             <p className="mt-2 break-all text-xs font-medium text-[#2D2D2D]/80">{it.trackingNumber}</p>
                           </div>
@@ -3103,6 +3606,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onShip={requestShip}
                 onPrint={handlePrintLabel}
                 onPrintGroup={handlePrintGroup}
+                onOpenQc={openQc}
                 onDownload={handleDownloadLabel}
                 emptyAll={items.every((i) => i.status !== "in_stock")}
                 emptyText="Nothing in stock to ship — scan 1688 goods in the Store tab."
@@ -3238,6 +3742,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onView={openDetail}
                 onPrint={handlePrintLabel}
                 onPrintGroup={handlePrintGroup}
+                onOpenQc={openQc}
                 onDownload={handleDownloadLabel}
                 onDelete={(it) => setItemDeleteTarget(it)}
                 emptyAll={items.every((i) => i.status !== "shipped")}
@@ -3479,6 +3984,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                       onToggleAll={(checked) => toggleAllSupplier(supplierSelectedShippable, checked)}
                       onSetMode={setSupplierMode}
                       onSetKg={setSupplierKg}
+                      onOpenQc={openQc1688}
                       modeBusy={modeBusy}
                     />
                   ) : (
@@ -3514,6 +4020,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                     onToggleAll={(checked) => toggleAllSupplier(supplierRestShippable, checked)}
                     onSetMode={setSupplierMode}
                     onSetKg={setSupplierKg}
+                      onOpenQc={openQc1688}
                     modeBusy={modeBusy}
                   />
                 </section>
@@ -3529,6 +4036,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onToggleAll={(checked) => toggleAllSupplier(supplierShipRows, checked)}
                 onSetMode={setSupplierMode}
                 onSetKg={setSupplierKg}
+                      onOpenQc={openQc1688}
                 modeBusy={modeBusy}
               />
             )}
@@ -4397,7 +4905,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       {savedItem && createPortal(
         <div
           className="fixed inset-0 z-[140] flex items-end justify-center bg-black/40 p-0 backdrop-blur-sm sm:items-center sm:p-4"
-          onClick={() => setSavedItem(null)}
+          onClick={() => gateThen("ok")}
         >
           <div
             role="dialog"
@@ -4411,24 +4919,30 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             onTouchStart={keepSavedSheet}
             onFocusCapture={keepSavedSheet}
           >
-            {/* A spinner while the server is still storing the box, the check
-                mark once it has. */}
-            <span className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-600">
-              {savedItem.pending ? (
-                <span className="h-7 w-7 animate-spin rounded-full border-[3px] border-emerald-600/25 border-t-emerald-600" />
-              ) : (
-                <IconCheck className="h-7 w-7" />
-              )}
-            </span>
             {/* The id that's about to be printed, biggest thing on the sheet —
                 staff confirm it against the gtradea China Operations row at a
-                glance. Uncaptioned: the check mark already says it was stored.
-                While pending it's the 1688 preview's id, or a placeholder until
-                the server mints one. */}
-            <p className="break-all text-center text-xl font-black tracking-tight text-[#412460]">
-              {goodsCode(savedItem) ||
-                (savedItem.pending ? <span className="inline-block h-7 w-40 animate-pulse rounded-lg bg-[#F1EFEA] align-middle" /> : null)}
-            </p>
+                glance — with the tick on its right: a spinner while the server is
+                still storing the box, the check mark once it has. On a GtradeA box
+                the id is a link to the QC photos saved for it. While pending it's
+                the 1688 preview's id, or a placeholder until the server mints one. */}
+            <div className="flex items-center justify-between gap-3">
+              <p className="min-w-0 text-xl font-black tracking-tight text-[#412460]">
+                {goodsCode(savedItem) ? (
+                  isGtradea && trackingReady
+                    ? <GoodsNo code={goodsCode(savedItem)} onOpen={() => openQc(savedItem)} tracking={savedItem.trackingNumber} />
+                    : <span className="break-all">{goodsCode(savedItem)}</span>
+                ) : (
+                  savedItem.pending ? <span className="inline-block h-7 w-40 animate-pulse rounded-lg bg-[#F1EFEA] align-middle" /> : null
+                )}
+              </p>
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-emerald-500/12 text-emerald-600">
+                {savedItem.pending ? (
+                  <span className="h-6 w-6 animate-spin rounded-full border-[3px] border-emerald-600/25 border-t-emerald-600" />
+                ) : (
+                  <IconCheck className="h-6 w-6" />
+                )}
+              </span>
+            </div>
             {/* A GtradeA box the loaded 1688 list doesn't know yet: a placeholder
                 card until the server says what's inside. Cellzen boxes carry no
                 product at all, so they get none. */}
@@ -4457,6 +4971,21 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                     : []
               }
             />
+            {/* QC Image: up to two photos of the goods, from the camera or the
+                gallery. Off while a scan is still being stored with no 1688 line
+                to preview (the tracking number is not known to be one yet). */}
+            {isGtradea && (
+              <div className="mt-4">
+                <QcImages
+                  key={savedItem.trackingNumber || savedItem.id}
+                  tracking={savedItem.trackingNumber}
+                  notify={showToast}
+                  disabled={!trackingReady}
+                  onOpen={(i) => openQc(savedItem, i)}
+                  onAdded={(saved) => noteSheetQc(savedItem.trackingNumber, saved)}
+                />
+              </div>
+            )}
             <dl className="mt-5 divide-y divide-[#F1EFEA] text-sm">
               <div className="flex items-center justify-between gap-4 py-3">
                 <dt className="text-[#2D2D2D]/50">Shelf</dt>
@@ -4485,7 +5014,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                       key={savedItem.trackingNumber || savedItem.id}
                       kg={savedItem.kg ?? null}
                       label={`KG for ${savedItem.trackingNumber || "this box"}`}
-                      disabled={!!savedItem.pending && !savedItem.orderNumber}
+                      disabled={!trackingReady}
                       large
                       flushOnUnmount
                       handleRef={sheetKgHandle}
@@ -4513,7 +5042,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                   meanwhile are ignored rather than queued as extra labels. */}
               <button
                 type="button"
-                onClick={printSavedItemNow}
+                onClick={() => gateThen("print")}
                 disabled={printWaiting.has(queueKeyOf(savedItem))}
                 className="flex w-full items-center justify-center gap-2 rounded-full bg-[#412460] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-[#B99353] active:scale-[.98] disabled:cursor-wait disabled:opacity-70"
               >
@@ -4530,7 +5059,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               </button>
               <button
                 type="button"
-                onClick={printSavedItem}
+                onClick={() => gateThen("copies")}
                 disabled={printWaiting.has(queueKeyOf(savedItem))}
                 className="w-full text-center text-xs font-semibold text-[#2D2D2D]/45 underline decoration-[#2D2D2D]/20 underline-offset-2 transition hover:text-[#412460] disabled:cursor-wait disabled:opacity-50"
               >
@@ -4546,7 +5075,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { keepSavedSheet(); setSavedItem(null); }}
+                  onClick={() => gateThen("ok")}
                   className="rounded-full bg-[#2D2D2D] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#412460] active:scale-[.98]"
                 >
                   OK
@@ -4556,6 +5085,21 @@ export default function WarehouseApp({ mode = "cellzen" }) {
           </div>
         </div>,
         document.body
+      )}
+
+      {/* The saved QC photos of a box — opens from any goods number. Above the
+          "Item stored" sheet (z-140), so it can be opened from there too. */}
+      {qcViewer && <QcViewer target={qcViewer} onClose={() => setQcViewer(null)} notify={showToast} />}
+
+      {/* "QC Image Upload" — before a label prints (or the sheet closes) on a box with
+          no QC photo. Above the sheet (z-140), below the photo viewer (z-160). */}
+      {qcGate && (
+        <QcGate
+          target={qcGate}
+          notify={showToast}
+          onClose={() => setQcGate(null)}
+          onUploaded={(saved) => finishQcGate(qcGate, saved)}
+        />
       )}
 
       {/* Mobile slide-in menu — landing-page style, rendered via portal so it
@@ -4833,7 +5377,7 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
 // GtradeA shipment table — the gtradea PR id, shelf, the linked 1688 order #, CN
 // tracking, product, status + Print/Download/Ship. Mirrors ItemsTable with the
 // 1688 columns.
-function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
+function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
   // One row per 1688 ORDER NUMBER, expanding to one row per PRODUCT in it.
   //
   // An order is what staff work from — gtradea publishes it, the supplier ships
@@ -4978,7 +5522,10 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                 <dl className="mt-3 space-y-1.5 text-xs">
                   <div className="flex justify-between gap-3">
                     <dt className="text-[#2D2D2D]/45">Product ID</dt>
-                    <dd className={`font-semibold ${codes.length > 1 ? "text-[#2D2D2D]/45" : "text-[#412460]"}`}>{codeLabel || "—"}</dd>
+                    <dd className={`font-semibold ${codes.length > 1 ? "text-[#2D2D2D]/45" : "text-[#412460]"}`}>
+                      {/* One product: its id opens the box's QC photos. Several: each has its own card below. */}
+                      {codes.length === 1 && onOpenQc ? <GoodsNo code={codeLabel} onOpen={() => onOpenQc(head)} tracking={head.trackingNumber} /> : (codeLabel || "—")}
+                    </dd>
                   </div>
                   {isGroup ? (
                     <>
@@ -5059,7 +5606,9 @@ function GtradeaItemsTable({ rows, onView, emptyAll = false, emptyText, onShip, 
                         <div className="min-w-0 flex-1 text-xs">
                           {/* This PRODUCT's own id, leading the card — a parcel
                               holding two of them gets a card each. */}
-                          <div className="break-all font-bold text-[#412460]">{productId || "—"}</div>
+                          <div className="font-bold text-[#412460]">
+                            <GoodsNo code={productId} onOpen={onOpenQc ? () => onOpenQc(it) : undefined} tracking={it.trackingNumber} />
+                          </div>
                           <div className="mt-1 break-all font-medium text-[#2D2D2D]/80">{it.trackingNumber || "—"}</div>
                           <div className="mt-1 text-[#2D2D2D]/45">
                             Shelf <span className="font-semibold text-[#412460]">{it.rackId || "—"}</span>
@@ -5280,7 +5829,7 @@ function WarehousePill({ order }) {
 // `empty` overrides the no-rows message. Shipment mode splits these rows across
 // two of these tables, and the "All goods" one empties for a reason neither
 // default covers: everything visible is already in the shipment above it.
-function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, onSetKg, modeBusy }) {
+function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, onSetKg, onOpenQc, modeBusy }) {
   // Track images that failed to load and hide them via STATE, not by mutating the
   // DOM node — an imperative style change would persist across re-renders and could
   // permanently hide a later-valid image for the same row key.
@@ -5352,13 +5901,26 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
       {/* Mobile: cards */}
       <ul className="space-y-2.5 md:hidden">
         {rows.map((o) => (
-          <li key={o.id} className="rounded-2xl bg-white p-4 ring-1 ring-[#ECE9E3]">
+          <li
+            key={o.id}
+            onClick={(e) => {
+              // The card opens the QC photos — but not when the tap was on one of its own controls.
+              if (e.target.closest("input, select, button, a, label")) return;
+              onOpenQc(o);
+            }}
+            onTouchStart={() => { if (o.cnTracking) prefetchQcImages(o.cnTracking); }}
+            className="cursor-pointer rounded-2xl bg-white p-4 ring-1 ring-[#ECE9E3] transition active:scale-[.99]"
+          >
             <div className="flex items-start justify-between gap-3">
               {selectable && <span className="pt-0.5">{shipCheck(o)}</span>}
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#2D2D2D]/40">
                   {fmtDay(o.orderedAt)}
-                  {(o.itemCode || o.jobCode) && <span className="rounded bg-[#412460]/8 px-1.5 py-0.5 tracking-normal text-[#412460]">{o.itemCode || o.jobCode}</span>}
+                  {(o.itemCode || o.jobCode) && (
+                    <span className="rounded bg-[#412460]/8 px-1.5 py-0.5 tracking-normal text-[#412460]">
+                      <GoodsNo code={o.itemCode || o.jobCode} onOpen={() => onOpenQc(o)} tracking={o.cnTracking} icon={false} />
+                    </span>
+                  )}
                 </div>
                 <div className="mt-0.5 break-all text-sm font-bold text-[#412460]">{o.orderNumber || "—"}</div>
                 <p className="mt-1 break-words text-xs text-[#2D2D2D]/70">{o.productName || "—"}</p>
@@ -5432,8 +5994,12 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
               <tr key={o.id} className="transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3">
                 {selectable && <td className="w-8">{shipCheck(o)}</td>}
                 <td className="whitespace-nowrap text-xs text-[#2D2D2D]/55">{fmtDay(o.orderedAt)}</td>
-                <td className="whitespace-nowrap font-bold text-[#412460]">{o.itemCode || o.jobCode || "—"}</td>
-                <td className="whitespace-nowrap font-bold text-[#412460]">{o.orderNumber || "—"}</td>
+                <td className="whitespace-nowrap font-bold text-[#412460]">
+                  <GoodsNo code={o.itemCode || o.jobCode} onOpen={() => onOpenQc(o)} tracking={o.cnTracking} icon={false} />
+                </td>
+                <td className="whitespace-nowrap font-bold text-[#412460]">
+                  <GoodsNo code={o.orderNumber} onOpen={() => onOpenQc(o)} tracking={o.cnTracking} icon={false} />
+                </td>
                 <td className="max-w-[300px]">
                   <div className="flex items-center gap-2">
                     {canShowImg(o.productImage) ? (

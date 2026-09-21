@@ -1,7 +1,8 @@
 const express = require('express');
 const crypto = require('crypto');
 const { Op } = require('sequelize');
-const { Rack, WarehouseItem, PrintJob, SupplierOrder, sequelize } = require('../models');
+const multer = require('multer');
+const { Rack, WarehouseItem, PrintJob, SupplierOrder, WarehouseQcImage, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { withConnectionRetry } = require('../dbRetry');
 const { effectiveOrderMode, toShipmentFrom, classifyShipmentModes } = require('../services/shipmentMode');
@@ -329,6 +330,25 @@ async function attachParcelProducts(rows, { details = false, orders: preloaded =
   const linesByTracking = {};
   const productsByTracking = {};
   const kgByTracking = {};
+  // The ids of each parcel's QC photos (never the photos), so a box's photos can be
+  // opened the instant its goods number is tapped. Left off entirely if the lookup
+  // fails — "unknown" is not the same as "none", and the client must not read it as
+  // the latter — and never allowed to fail the list itself.
+  let qcByTracking = null;
+  if (WarehouseQcImage) {
+    try {
+      const qc = await WarehouseQcImage.findAll({
+        where: { tracking_number: { [Op.in]: trackings } },
+        attributes: ['id', 'tracking_number', 'createdAt'],
+        order: [['createdAt', 'ASC'], ['id', 'ASC']],
+        raw: true,
+      });
+      qcByTracking = {};
+      for (const q of qc) (qcByTracking[q.tracking_number] ||= []).push(q.id);
+    } catch (e) {
+      console.error('QC image ids lookup failed (the list is served without them):', e?.message || e);
+    }
+  }
   for (const o of orders) {
     const t = o.china_tracking_no;
     if (!first[t]) first[t] = o;
@@ -398,6 +418,7 @@ async function attachParcelProducts(rows, { details = false, orders: preloaded =
     // Not a warehouse_items column: the weight lives on the parcel's 1688 lines
     // (see PATCH /supplier-orders/kg), so it is read across on every response.
     set('kg', kgByTracking[r.tracking_number] ?? null);
+    if (qcByTracking) set('qc_image_ids', qcByTracking[r.tracking_number] || []);
     if (details) {
       // A parcel whose 1688 lines are gone still names the product the box was
       // stored with — just without a photo, which only the lines carry.
@@ -1107,6 +1128,127 @@ router.get('/print-jobs/:id', authenticate, requireStaffOrAdmin, async (req, res
   } catch (error) {
     console.error('Get print job error:', error);
     res.status(500).json({ success: false, message: 'Unable to load job' });
+  }
+});
+
+// ============================================================ QC IMAGES
+//
+// Photos of a parcel's goods, taken at the shelf as it is put away — at most
+// QC_MAX_IMAGES per parcel, keyed by its CN tracking number (see the model). The
+// phone shrinks each photo to ~50% JPEG quality before sending (utils/qcImages.js
+// on the client); this route only checks that what arrived really is a small JPEG
+// and keeps it in the table (see the model for why it is not in Supabase Storage).
+const QC_MAX_IMAGES = 2;
+const QC_MAX_BYTES = 4 * 1024 * 1024; // a 1600px photo at q50 is ~100-300 KB — this is a runaway guard
+const qcUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: QC_MAX_BYTES, files: 1 } });
+const qcKey = (v) => String(v || '').trim().toUpperCase();
+const looksLikeJpeg = (b) => Buffer.isBuffer(b) && b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+const qcDbGuard = (res) => {
+  if (!WarehouseQcImage) {
+    res.status(503).json({ success: false, message: 'QC images are not configured' });
+    return true;
+  }
+  return false;
+};
+// The bytes are never part of a list or an upload reply: the app fetches each photo
+// from GET /qc-images/:id/file by its id.
+const qcView = (r) => ({ id: r.id, createdAt: r.createdAt, createdByName: r.created_by_name || null });
+
+// GET /qc-images?tracking= — the parcel's photos, oldest first (so a photo keeps its place).
+router.get('/qc-images', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (qcDbGuard(res)) return;
+    const tracking = qcKey(req.query.tracking);
+    if (!tracking) return res.status(400).json({ success: false, message: 'tracking is required' });
+    const rows = await withConnectionRetry(() => WarehouseQcImage.findAll({
+      where: { tracking_number: tracking },
+      attributes: ['id', 'createdAt', 'created_by_name'], // never `data`: that is the photo itself
+      order: [['createdAt', 'ASC'], ['id', 'ASC']],
+      limit: QC_MAX_IMAGES,
+    }));
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: rows.map(qcView) });
+  } catch (error) {
+    console.error('List QC images error:', error?.message || error);
+    res.status(500).json({ success: false, message: 'Unable to load QC images' });
+  }
+});
+
+// GET /qc-images/:id/file — the photo itself. Deliberately NOT behind the login
+// header: an <img src> or an "open in a new tab" link cannot send one. What guards
+// it is the id — a random UUID nothing lists publicly — which is the same footing
+// the product photos' public storage URLs were on. A photo never changes once
+// saved, so the browser may keep it for good.
+router.get('/qc-images/:id/file', async (req, res) => {
+  try {
+    if (qcDbGuard(res)) return;
+    if (!UUID_RE.test(String(req.params.id))) return res.status(404).end();
+    const row = await withConnectionRetry(() => WarehouseQcImage.findByPk(req.params.id, { attributes: ['id', 'data', 'mime'] }));
+    if (!row || !row.data) return res.status(404).end();
+    res.set({
+      'Content-Type': row.mime || 'image/jpeg',
+      'Content-Disposition': 'inline',
+      'X-Content-Type-Options': 'nosniff',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    });
+    res.send(row.data);
+  } catch (error) {
+    console.error('Serve QC image error:', error?.message || error);
+    res.status(500).end();
+  }
+});
+
+// POST /qc-images — multipart: `tracking` + one `image` file. 409 once the parcel
+// already has QC_MAX_IMAGES; the count is checked again after the insert, so two
+// phones uploading at the same instant still cannot leave it with three.
+router.post('/qc-images', authenticate, requireStaffOrAdmin, (req, res, next) => {
+  qcUpload.single('image')(req, res, (err) => {
+    if (!err) return next();
+    const tooBig = err.code === 'LIMIT_FILE_SIZE';
+    res.status(tooBig ? 413 : 400).json({ success: false, message: tooBig ? 'That photo is too large' : 'Could not read the upload' });
+  });
+}, async (req, res) => {
+  try {
+    if (qcDbGuard(res)) return;
+    const tracking = qcKey(req.body?.tracking);
+    if (!tracking) return res.status(400).json({ success: false, message: 'tracking is required' });
+    if (!req.file || !looksLikeJpeg(req.file.buffer)) {
+      return res.status(400).json({ success: false, message: 'Send the photo as a JPEG image' });
+    }
+    const count = () => withConnectionRetry(() => WarehouseQcImage.count({ where: { tracking_number: tracking } }));
+    const full = { success: false, message: `Only ${QC_MAX_IMAGES} QC images per box — remove one first` };
+    if ((await count()) >= QC_MAX_IMAGES) return res.status(409).json(full);
+
+    const row = await withConnectionRetry(() => WarehouseQcImage.create({
+      tracking_number: tracking,
+      data: req.file.buffer,
+      mime: 'image/jpeg',
+      created_by_name: req.user?.name || null,
+    }));
+    if ((await count()) > QC_MAX_IMAGES) {
+      // Lost a race with another upload: this one is the extra. Take it back out.
+      await row.destroy();
+      return res.status(409).json(full);
+    }
+    res.status(201).json({ success: true, data: qcView(row) });
+  } catch (error) {
+    console.error('Upload QC image error:', error?.message || error);
+    res.status(500).json({ success: false, message: 'Unable to save the photo' });
+  }
+});
+
+// DELETE /qc-images/:id — remove a photo.
+router.delete('/qc-images/:id', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (qcDbGuard(res)) return;
+    if (!UUID_RE.test(req.params.id)) return res.status(404).json({ success: false, message: 'Photo not found' });
+    const row = await withConnectionRetry(() => WarehouseQcImage.findByPk(req.params.id, { attributes: ['id'] }));
+    if (!row) return res.status(404).json({ success: false, message: 'Photo not found' });
+    await withConnectionRetry(() => row.destroy());
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete QC image error:', error?.message || error);
+    res.status(500).json({ success: false, message: 'Unable to remove the photo' });
   }
 });
 

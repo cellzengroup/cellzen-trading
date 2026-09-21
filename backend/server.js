@@ -200,6 +200,14 @@ const startServer = async () => {
       } catch (kgError) {
         console.warn('⚠️  Could not ensure supplier_orders.kg — run node backend/migrations/add_supplier_orders_kg.js:', kgError.message);
       }
+      // Same for the QC photo table: a brand-new table, so CREATE TABLE IF NOT EXISTS
+      // is all it takes and it cannot touch anything that is already there.
+      try {
+        const { WarehouseQcImage } = require('./inventory/models');
+        if (WarehouseQcImage) await WarehouseQcImage.sync();
+      } catch (qcError) {
+        console.warn('⚠️  Could not ensure warehouse_qc_images — run node backend/migrations/add_warehouse_qc_images_table.js:', qcError.message);
+      }
     } catch (pgError) {
       console.error('❌ PostgreSQL connection failed:', pgError.message);
       console.log('🔄 Server will continue without PostgreSQL (Inventory features disabled)');

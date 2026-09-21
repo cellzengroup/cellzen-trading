@@ -6,7 +6,7 @@
 // staff identity (used for the audit trail). Data itself is shared across all
 // staff — the backend never scopes reads by user.
 
-import { authFetch } from "./apiBase";
+import { authFetch, getCachedBase } from "./apiBase";
 
 const STAFF = { tokenKind: "staff" };
 
@@ -32,6 +32,10 @@ export function unwrapItem(row) {
     // and read across by the server. null until someone has weighed it; this is
     // what the label prints beside "HANDLE WITH CARE".
     kg: row.kg == null || !Number.isFinite(Number(row.kg)) ? null : Number(row.kg),
+    // The ids of the parcel's QC photos (see qcImages.js), so they open the instant
+    // the goods number is tapped. null = the server did not say (an older reply, a
+    // cached row) — NOT "no photos": only an array is taken as the truth.
+    qcImageIds: Array.isArray(row.qc_image_ids) ? row.qc_image_ids : null,
     // Each distinct 1688 product in the parcel — name + photo — for the "Item
     // stored" sheet. Only single-item responses (put-away, mode change, ship)
     // carry it; GET /items leaves it off to keep its 5000 rows light, so a row
@@ -401,6 +405,8 @@ export function unwrapSupplierOrder(row) {
     quantity: row.quantity ?? null,
     // Weight in KG as typed in by staff on the 1688 tab; null until weighed.
     kg: row.kg ?? null,
+    // The parcel's QC photo ids (see unwrapItem) — array = the truth, null = unknown.
+    qcImageIds: Array.isArray(row.qc_image_ids) ? row.qc_image_ids : null,
     shippingMode: row.shipping_mode || "",
     // How this box has to travel, worked out from the product title by the
     // backend's dangerous-goods classifier and correctable from the Mode
@@ -492,6 +498,51 @@ async function patchKg(path, body) {
 const kgBody = (kg) => (kg === "" || kg == null ? null : kg);
 export const updateParcelKg = (tracking, kg) => patchKg("kg", { tracking, kg: kgBody(kg) });
 export const updateSupplierKg = (id, kg) => patchKg(`${encodeURIComponent(id)}/kg`, { kg: kgBody(kg) });
+
+// ------------------------------------------------ QC images (photos of the goods)
+// Up to two photos per parcel, taken at the shelf and found again by the parcel's
+// goods number. Keyed by CN tracking number, like its weight. The photos are kept
+// by the backend (in its database) and fetched by id from a route an <img> can
+// reach without the login header — so `url` is built here from the id, against
+// whichever API base is answering.
+export const qcImageUrl = (id) => `${getCachedBase()}/inventory/warehouse/qc-images/${encodeURIComponent(id)}/file`;
+const unwrapQcImage = (r) => ({
+  id: r.id,
+  url: qcImageUrl(r.id),
+  createdAt: r.createdAt || null,
+  createdByName: r.createdByName || "",
+});
+
+export async function loadQcImages(tracking) {
+  const res = await authFetch(`/inventory/warehouse/qc-images?tracking=${encodeURIComponent(tracking)}`, { ...STAFF, cache: "no-store" });
+  const json = await readJson(res);
+  if (!res.ok || !json.success) throw new Error(json.message || `Failed to load QC images (HTTP ${res.status})`);
+  return (json.data || []).map(unwrapQcImage);
+}
+
+// `blob` is the already-shrunk JPEG (see utils/qcImages.js). Sent as multipart, so
+// no Content-Type here - the browser has to set it, boundary and all.
+export async function uploadQcImage(tracking, blob) {
+  const form = new FormData();
+  form.append("tracking", tracking);
+  form.append("image", blob, "qc.jpg");
+  const res = await authFetch("/inventory/warehouse/qc-images", { ...STAFF, method: "POST", body: form });
+  const json = await readJson(res);
+  if (!res.ok || !json.success) {
+    const err = new Error(json.message || `Failed to save the photo (HTTP ${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return unwrapQcImage(json.data);
+}
+
+export async function deleteQcImage(id) {
+  const res = await authFetch(`/inventory/warehouse/qc-images/${encodeURIComponent(id)}`, { ...STAFF, method: "DELETE" });
+  const json = await readJson(res);
+  // Already gone counts as removed: the goal is that it is not there.
+  if (res.status === 404) return;
+  if (!res.ok || !json.success) throw new Error(json.message || `Failed to remove the photo (HTTP ${res.status})`);
+}
 
 // Trigger an immediate server-side pull from gtradea. Returns the sync summary.
 // `force` marks a user-clicked "Sync now": it bypasses the server's failure

@@ -7,7 +7,7 @@ const PDFDocument = require('pdfkit');
 const nlp = require('compromise');
 const { imageSize } = require('image-size');
 const { Op } = require('sequelize');
-const { SupplierOrder, WarehouseItem, sequelize } = require('../models');
+const { SupplierOrder, WarehouseItem, WarehouseQcImage, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { withConnectionRetry } = require('../dbRetry');
 const { downloadImage } = require('../../config/supabase');
@@ -96,7 +96,7 @@ const dayBound = (v, end) => {
 // can never disagree on which rows a given search matches. `from`/`to` bound
 // the ORDER date (ordered_at) and are used by the export only — the on-screen
 // list has no date filter of its own.
-async function fetchSupplierOrders(search, { from, to } = {}) {
+async function fetchSupplierOrders(search, { from, to, withQc = false } = {}) {
   const where = {};
   if (search) {
     const s = `%${escapeLike(String(search).trim())}%`;
@@ -169,6 +169,32 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
       }
     }
 
+    // Which QC photos each parcel has — their ids only, never the photos — so the 1688
+    // panel can open a row's photos at once, without first asking the server what
+    // they are. One indexed query for the whole page, and only for the on-screen
+    // list (`withQc`): the exports have no use for it. A failure here must not cost
+    // anyone the 1688 list, so it just leaves the field off ("unknown").
+    let qcIds = null;
+    if (withQc && WarehouseQcImage) {
+      const trackings = [...new Set(rows.map((r) => r.china_tracking_no).filter(Boolean))];
+      if (trackings.length) {
+        try {
+          const qc = await WarehouseQcImage.findAll({
+            where: { tracking_number: { [Op.in]: trackings } },
+            attributes: ['id', 'tracking_number', 'createdAt'],
+            order: [['createdAt', 'ASC'], ['id', 'ASC']],
+            raw: true,
+          });
+          qcIds = {};
+          for (const q of qc) (qcIds[q.tracking_number] ||= []).push(q.id);
+        } catch (e) {
+          console.error('QC image ids lookup failed (the 1688 list is served without them):', e?.message || e);
+        }
+      } else {
+        qcIds = {};
+      }
+    }
+
     // By Air / By Land per row, from the product title (see
     // services/shipmentMode.js). Batched so the classifier is trained once for
     // the whole page rather than once per row, and computed on READ rather than
@@ -196,6 +222,7 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
         source_product_id: r.source_product_id,
         quantity: r.quantity,
         kg: kgOut(r.kg),
+        ...(qcIds ? { qc_image_ids: key ? (qcIds[key] || []) : [] } : null),
         shipping_mode: r.shipping_mode,
         // Effective mode the box should travel in, and enough of the working to
         // explain it in the panel's tooltip: what the classifier decided, which
@@ -223,7 +250,7 @@ async function fetchSupplierOrders(search, { from, to } = {}) {
 router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (dbGuard(res)) return;
-    const data = await fetchSupplierOrders(req.query.search);
+    const data = await fetchSupplierOrders(req.query.search, { withQc: true });
     res.set('Cache-Control', 'no-store');
     res.json({ success: true, count: data.length, data, lastSync: gtradeaSync.getStatus() });
   } catch (error) {

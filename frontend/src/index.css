@@ -6,6 +6,29 @@ html, body, #root {
   background-color: #2A1740;
 }
 
+/* ── Hand cursor on anything clickable ──
+   Tailwind v4's preflight gives <button> the default arrow cursor (v3 gave it the
+   hand), so without this no button in the app shows a hand on hover. It is in the
+   base layer on purpose: an explicit utility on an element (cursor-wait,
+   cursor-default, disabled:cursor-not-allowed ...) still wins over it. A disabled
+   control gets the "not allowed" cursor rather than a hand that promises a click. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  select:not(:disabled),
+  input:is([type="checkbox"], [type="radio"], [type="file"], [type="button"], [type="submit"], [type="reset"]):not(:disabled),
+  label[for],
+  a[href] {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"],
+  input:is([type="checkbox"], [type="radio"], [type="file"], [type="button"], [type="submit"], [type="reset"]):disabled {
+    cursor: not-allowed;
+  }
+}
+
 /* ── Remove number-input spin buttons everywhere ── */
 input[type=number]::-webkit-outer-spin-button,
 input[type=number]::-webkit-inner-spin-button {
