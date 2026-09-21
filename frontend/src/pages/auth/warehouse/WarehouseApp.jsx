@@ -1398,8 +1398,9 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     savedTimer.current = setTimeout(
       () => setSavedItem((prev) => {
         if (!prev || prev.id !== id) return prev;
-        // A GtradeA box needs its QC photo: a sheet that has none does not close itself.
-        return isGtradea && !qcHasPhoto(prev.trackingNumber) ? prev : null;
+        // On a phone or tablet a GtradeA box needs its QC photo: a sheet that has none
+        // does not close itself. At a desktop the photo is optional, so it does.
+        return isGtradea && isTouchDevice() && !qcHasPhoto(prev.trackingNumber) ? prev : null;
       }),
       6000
     );
@@ -2581,7 +2582,9 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // question first: has this box a QC photo yet? If not, the "QC Image Upload" popup
   // comes up instead, and a photo uploaded there sends the label to the printer
   // straight away (for Print label and OK, the sheet then closes too). There is no skipping it: the
-  // photo is mandatory. GtradeA only: a Cellzen box has none.
+  // photo is mandatory. GtradeA only: a Cellzen box has none. And only on a phone or
+  // tablet, where the camera is in hand at the shelf: at a desktop the photo is optional,
+  // so none of these actions asks for it (the Upload image button is still on the sheet).
   const runSheetAction = (kind, uploaded) => {
     // Print label: once the label is on its way the sheet has done its job, so it
     // closes and staff are back on the scan panel for the next box — they don't stay
@@ -2605,7 +2608,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     keepSavedSheet();
     const sheet = savedItem;
     if (!sheet) return;
-    if (isGtradea && trackingReady) {
+    if (isGtradea && trackingReady && isTouchDevice()) {
       const have = await qcCountFor(sheet.trackingNumber);
       // A scan may have replaced the sheet while the photos were read: that press was for the old one.
       if (!sheetIs(sheet.trackingNumber)) return;
