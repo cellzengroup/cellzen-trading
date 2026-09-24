@@ -6,7 +6,8 @@ import { useCurrency } from "../../../contexts/CurrencyContext.jsx";
 // Notifications). Staff see and manage only their own data within each.
 const NAV_LINKS = [
   { title: "Home", path: "/staff-dashboard", icon: "home" },
-  { title: "Invoices", path: "/staff-invoices", icon: "invoices" },
+  { title: "PI Generator", path: "/staff-invoices", icon: "invoices" },
+  { title: "Billing Invoice", path: "/staff-billing-invoices", icon: "billing" },
   { title: "Packing List", path: "/staff-packing", icon: "packing" },
   { title: "Management", path: "/staff-managements", icon: "management" },
   { title: "Tools", path: "/staff-tools", icon: "tools" },
@@ -16,7 +17,7 @@ const NAV_LINKS = [
 
 function NavIcon({ icon }) {
   const iconProps = {
-    className: "h-6 w-6",
+    className: "h-5 w-5",
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "currentColor",
@@ -54,6 +55,16 @@ function NavIcon({ icon }) {
         <path d="M3 8v8l9 5 9-5V8" />
         <path d="M3 8l9 5 9-5" />
         <path d="M12 13v8" />
+      </svg>
+    );
+  }
+
+  if (icon === "billing") {
+    return (
+      <svg {...iconProps}>
+        <rect x="2" y="6" width="20" height="12" rx="2" />
+        <circle cx="12" cy="12" r="3" />
+        <path d="M6 10h.01M18 14h.01" />
       </svg>
     );
   }
@@ -161,7 +172,7 @@ export default function StaffPortal({ activePage, children }) {
     <section className="admin-portal-scrollbar min-h-screen w-full bg-white p-3 text-[#2D2D2D] sm:p-4 lg:p-5">
       <div
         className="grid h-[calc(100vh-2.5rem)] w-full overflow-hidden rounded-[2rem] bg-white transition-all duration-300"
-        style={{ gridTemplateColumns: `${sidebarCollapsed ? "88px" : "260px"} minmax(0, 1fr)` }}
+        style={{ gridTemplateColumns: `${sidebarCollapsed ? "88px" : "185px"} minmax(0, 1fr)` }}
       >
         <aside className="flex h-full flex-col overflow-hidden bg-white p-4">
           <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "justify-between"} gap-3`}>
@@ -189,7 +200,7 @@ export default function StaffPortal({ activePage, children }) {
                 <Link
                   key={item.title}
                   to={item.path}
-                  className={`flex items-center gap-3 text-sm font-semibold transition-colors ${
+                  className={`flex items-center gap-3 text-xs font-medium transition-colors ${
                     active
                       ? "bg-[#412460] text-white"
                       : "text-[#2D2D2D]/55 hover:bg-[#412460]/8 hover:text-[#412460]"

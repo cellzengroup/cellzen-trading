@@ -4,7 +4,8 @@ import AdminPageShell from "../AdminPageShell";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { generateInvoiceExcel } from "../../../../utils/generateCellzenInvoice.js";
 import { generateInvoicePDF } from "../../../../utils/generateCellzenInvoicePDF.js";
-import { loadInvoices, deleteInvoice as deleteInvoiceRemote, readLocalDrafts } from "../../../../utils/invoiceSync.js";
+import { generateBillingInvoicePDF } from "../../../../utils/generateBillingInvoicePDF.js";
+import { loadInvoices, deleteInvoice as deleteInvoiceRemote, readLocalDraftsForType } from "../../../../utils/invoiceSync.js";
 import { authJson } from "../../../../utils/apiBase.js";
 
 // Convert an amount between currencies. Prefers the explicit `rates` map (the
@@ -66,9 +67,12 @@ function mapDrafts(drafts, currency, rates) {
   });
 }
 
-export default function AdminInvoices() {
+export default function AdminInvoices({ documentType = "PI" }) {
   const navigate = useNavigate();
   const { currency, currencySymbols, exchangeRates } = useCurrency();
+  const isBilling = documentType === "Billing";
+  const docLabel = isBilling ? "Billing Invoice" : "PI";
+  const listPath = isBilling ? "/admin-billing-invoices" : "/admin-invoices";
 
   // Simple display function for already-converted amounts
   const displayCurrency = (amount) => {
@@ -81,7 +85,7 @@ export default function AdminInvoices() {
   // Seed from the localStorage cache synchronously so a freshly-saved invoice
   // shows up the instant the user lands on this page — no waiting for the
   // backend round-trip.
-  const [invoices, setInvoices] = useState(() => mapDrafts(readLocalDrafts(), currency, exchangeRates));
+  const [invoices, setInvoices] = useState(() => mapDrafts(readLocalDraftsForType(documentType), currency, exchangeRates));
   const [deleteModal, setDeleteModal] = useState({ show: false, invoiceId: null });
   // Download modal also tracks the chosen target currency. Defaults to the
   // dashboard's display currency but the user can switch per download.
@@ -105,14 +109,14 @@ export default function AdminInvoices() {
   useEffect(() => {
     let alive = true;
     setSyncing(true);
-    loadInvoices().then((result) => {
+    loadInvoices(documentType).then((result) => {
       if (!alive) return;
       setSyncSource(result.source);
       setInvoices(mapDrafts(result.invoices || [], currency, exchangeRates));
       setSyncing(false);
     });
     return () => { alive = false; };
-  }, [currency, exchangeRates]);
+  }, [currency, exchangeRates, documentType]);
 
 
   const filteredInvoices = useMemo(() => {
@@ -157,15 +161,18 @@ export default function AdminInvoices() {
   const handleEdit = (invoice) => {
     // Store the invoice data in sessionStorage for editing
     sessionStorage.setItem("edit_invoice_data", JSON.stringify(invoice.rawData));
-    navigate("/admin-invoices/edit");
+    navigate(`${listPath}/edit`);
   };
 
   // Download functions — the invoice's monetary values are converted from
   // its original currency into the target the user picked in the modal.
+  // Billing Invoice uses its own PDF template (bank/QR payment block);
+  // PI keeps the existing Proforma Invoice layout.
   const downloadAsPDF = async (invoice, targetCurrency) => {
     const target = targetCurrency || downloadModal.currency || currency;
     setDownloadModal({ show: false, invoice: null, currency: target });
-    await generateInvoicePDF(invoice, target, exchangeRates);
+    const gen = isBilling ? generateBillingInvoicePDF : generateInvoicePDF;
+    await gen(invoice, target, exchangeRates);
   };
 
   const downloadAsExcel = async (invoice, targetCurrency) => {
@@ -254,7 +261,8 @@ export default function AdminInvoices() {
     try {
       // Generate the PDF in the currency the admin selected, as base64.
       const target = emailForm.currency || invoice.rawData?.originalCurrency || currency;
-      const { base64, filename } = await generateInvoicePDF(invoice, target, exchangeRates, { output: "base64" });
+      const gen = isBilling ? generateBillingInvoicePDF : generateInvoicePDF;
+      const { base64, filename } = await gen(invoice, target, exchangeRates, { output: "base64" });
 
       // The server sends the email in the background and responds immediately,
       // so this should return in well under a second. Abort if it somehow
@@ -304,59 +312,63 @@ export default function AdminInvoices() {
   };
 
   return (
-    <AdminPageShell activePage="Invoices" title="Invoices" eyebrow="Create and manage customer invoices">
+    <AdminPageShell
+      activePage={isBilling ? "Billing Invoice" : "PI Generator"}
+      title={isBilling ? "Billing Invoice" : "PI Generator"}
+      eyebrow={isBilling ? "Create and manage billing invoices" : "Create and manage proforma invoices"}
+    >
       {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
-          <div className="flex items-start justify-between gap-4">
+      <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-2xl border border-[#E1E3EE] bg-white p-4">
+          <div className="flex items-start justify-between gap-2">
             <div>
-              <h2 className="text-lg font-semibold text-[#412460]">Total Invoices</h2>
-              <p className="mt-3 text-sm leading-relaxed text-[#2D2D2D]/55">All invoice amounts combined</p>
+              <h2 className="text-sm font-semibold text-[#412460]">Total {docLabel}</h2>
+              <p className="mt-1 text-xs leading-snug text-[#2D2D2D]/55">All invoice amounts combined</p>
             </div>
-            <span className="bg-[#2A1740] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#B99353]">
+            <span className="whitespace-nowrap bg-[#2A1740] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-[#B99353]">
               {stats.count} items
             </span>
           </div>
-          <p className="mt-6 text-2xl font-bold text-[#2D2D2D]">{displayCurrency(stats.total)}</p>
+          <p className="mt-3 text-lg font-bold text-[#2D2D2D]">{displayCurrency(stats.total)}</p>
         </div>
 
-        <div className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
-          <div className="flex items-start justify-between gap-4">
+        <div className="rounded-2xl border border-[#E1E3EE] bg-white p-4">
+          <div className="flex items-start justify-between gap-2">
             <div>
-              <h2 className="text-lg font-semibold text-[#412460]">Paid</h2>
-              <p className="mt-3 text-sm leading-relaxed text-[#2D2D2D]/55">Successfully received payments</p>
+              <h2 className="text-sm font-semibold text-[#412460]">Paid</h2>
+              <p className="mt-1 text-xs leading-snug text-[#2D2D2D]/55">Successfully received payments</p>
             </div>
-            <span className="bg-[#2A1740] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#B99353]">
+            <span className="whitespace-nowrap bg-[#2A1740] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-[#B99353]">
               Received
             </span>
           </div>
-          <p className="mt-6 text-2xl font-bold text-[#1C9B55]">{displayCurrency(stats.paid)}</p>
+          <p className="mt-3 text-lg font-bold text-[#1C9B55]">{displayCurrency(stats.paid)}</p>
         </div>
 
-        <div className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
-          <div className="flex items-start justify-between gap-4">
+        <div className="rounded-2xl border border-[#E1E3EE] bg-white p-4">
+          <div className="flex items-start justify-between gap-2">
             <div>
-              <h2 className="text-lg font-semibold text-[#412460]">Pending</h2>
-              <p className="mt-3 text-sm leading-relaxed text-[#2D2D2D]/55">Awaiting customer payment</p>
+              <h2 className="text-sm font-semibold text-[#412460]">Pending</h2>
+              <p className="mt-1 text-xs leading-snug text-[#2D2D2D]/55">Awaiting customer payment</p>
             </div>
-            <span className="bg-[#2A1740] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#B99353]">
+            <span className="whitespace-nowrap bg-[#2A1740] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-[#B99353]">
               Open
             </span>
           </div>
-          <p className="mt-6 text-2xl font-bold text-[#B99353]">{displayCurrency(stats.pending)}</p>
+          <p className="mt-3 text-lg font-bold text-[#B99353]">{displayCurrency(stats.pending)}</p>
         </div>
 
-        <div className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
-          <div className="flex items-start justify-between gap-4">
+        <div className="rounded-2xl border border-[#E1E3EE] bg-white p-4">
+          <div className="flex items-start justify-between gap-2">
             <div>
-              <h2 className="text-lg font-semibold text-[#412460]">Overdue</h2>
-              <p className="mt-3 text-sm leading-relaxed text-[#2D2D2D]/55">Past due date, action needed</p>
+              <h2 className="text-sm font-semibold text-[#412460]">Overdue</h2>
+              <p className="mt-1 text-xs leading-snug text-[#2D2D2D]/55">Past due date, action needed</p>
             </div>
-            <span className="bg-[#2A1740] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#B99353]">
+            <span className="whitespace-nowrap bg-[#2A1740] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.1em] text-[#B99353]">
               Alert
             </span>
           </div>
-          <p className="mt-6 text-2xl font-bold text-[#E05353]">{displayCurrency(stats.overdue)}</p>
+          <p className="mt-3 text-lg font-bold text-[#E05353]">{displayCurrency(stats.overdue)}</p>
         </div>
       </div>
 
@@ -365,7 +377,7 @@ export default function AdminInvoices() {
         {/* Header with Search and Filters */}
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-[#412460]">All Invoices</h2>
+            <h2 className="text-lg font-semibold text-[#412460]">All {docLabel}</h2>
             <p className="mt-1 text-sm leading-relaxed text-[#2D2D2D]/55">Manage and track customer invoices</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
@@ -398,10 +410,10 @@ export default function AdminInvoices() {
 
             {/* Create Invoice Button */}
             <button
-              onClick={() => navigate("/admin-invoices/create")}
+              onClick={() => navigate(`${listPath}/create`)}
               className="bg-[#412460] px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-[#B99353]"
             >
-              + Create Invoice
+              + Create {docLabel}
             </button>
           </div>
         </div>

@@ -8,6 +8,15 @@ const router = express.Router();
 
 const EMAIL_RX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// The two document types the invoice tool generates:
+//   PI:      CZN-MM-NNNN            e.g. CZN-06-0007
+//   Billing: CZN<MODE>-MMDD-NNNN    e.g. CZNLND-0923-0001 (MODE = shipment
+//            mode's 3-letter code — see MODE_CODE)
+// Each type keeps its own running NNNN counter (scoped by document_type, not
+// by the invoice_number string), so PI and Billing numbers never collide.
+const normalizeDocType = (v) => (v === 'Billing' ? 'Billing' : 'PI');
+const MODE_CODE = { road: 'LND', air: 'AIR', sea: 'SEA', rail: 'RAL' };
+
 const requireAdmin = (req, res, next) => {
   const role = String(req.user?.role || '').toLowerCase();
   if (role !== 'admin' && role !== 'superadmin' && req.user?.accountType !== 'Admin') {
@@ -44,13 +53,17 @@ const calculateInvoiceAmount = (invoiceData) => {
 };
 
 // GET / - List ALL invoices (admin only). Used by the admin invoices page so
-// every admin sees the same data on every device.
+// every admin sees the same data on every device. ?documentType=PI|Billing
+// scopes the list to one of the two invoice tools (PI Generator / Billing
+// Invoice) — omit it to get everything.
 router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
   try {
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
     }
-    const where = isStaff(req) ? { created_by_user_id: req.user.id } : undefined;
+    const where = {};
+    if (isStaff(req)) where.created_by_user_id = req.user.id;
+    if (req.query.documentType) where.document_type = normalizeDocType(req.query.documentType);
     const invoices = await Invoice.findAll({
       where,
       order: [['updatedAt', 'DESC']],
@@ -67,10 +80,15 @@ router.get('/', authenticate, requireStaffOrAdmin, async (req, res) => {
   }
 });
 
-// GET /next-number - Compute the next invoice number. Format: CZN-MM-NNNN.
+// GET /next-number - Compute the next invoice number for one invoice tool:
+//   ?documentType=PI      -> CZN-MM-NNNN            (default)
+//   ?documentType=Billing -> CZN<MODE>-YYMMNNNN      (?mode=road|air|sea|rail,
+//                            defaults to GEN when omitted/unrecognized)
 //
-// The sequence (NNNN) is a SINGLE GLOBAL running counter across all months —
-// the month segment (MM) is just a label for the current month. Consequences:
+// NNNN is a SINGLE GLOBAL running counter PER document_type (mode is just a
+// label baked into a Billing number, not a separate counter) — taken from the
+// trailing 4 digits of every existing invoice_number of that type, regardless
+// of month/mode. Consequences:
 //   • A new month does NOT reset the counter — e.g. CZN-05-0010 → CZN-06-0011.
 //   • Deleting the latest invoice frees its number for reuse, because the next
 //     number is always (highest existing sequence + 1).
@@ -81,27 +99,32 @@ router.get('/next-number', authenticate, requireStaffOrAdmin, async (req, res) =
     if (!Invoice) {
       return res.status(503).json({ success: false, message: 'Invoice database is not configured' });
     }
+    const docType = normalizeDocType(req.query.documentType);
     const now = new Date();
     const month = String(now.getMonth() + 1).padStart(2, '0');
-    const prefix = `CZN-${month}-`;
+    const day = String(now.getDate()).padStart(2, '0');
 
-    // Scan ALL CZN invoices (every month) — the counter is global, not per-month.
     const rows = await Invoice.findAll({
-      where: { invoice_number: { [Op.like]: 'CZN-%' } },
+      where: { document_type: docType },
       attributes: ['invoice_number'],
     });
 
+    // The running counter is always the invoice_number's trailing 4 digits,
+    // for both formats (…-NNNN and …-YYMMNNNN both end in a 4-digit NNNN).
     let maxSeq = 0;
     for (const row of rows) {
-      // Sequence is the trailing segment of CZN-MM-NNNN, regardless of month.
-      const parts = String(row.invoice_number || '').split('-');
-      const n = parseInt(parts[parts.length - 1], 10);
+      const n = parseInt(String(row.invoice_number || '').slice(-4), 10);
       if (!isNaN(n) && n > maxSeq) maxSeq = n;
     }
 
-    const next = String(maxSeq + 1).padStart(4, '0');
+    const seq = maxSeq + 1;
+    const seqStr = String(seq).padStart(4, '0');
+    const invoiceNumber = docType === 'Billing'
+      ? `CZN${MODE_CODE[String(req.query.mode || '').toLowerCase()] || 'GEN'}-${month}${day}-${seqStr}`
+      : `CZN-${month}-${seqStr}`;
+
     res.set('Cache-Control', 'no-store');
-    res.json({ success: true, data: { invoiceNumber: `${prefix}${next}`, sequence: maxSeq + 1, month } });
+    res.json({ success: true, data: { invoiceNumber, sequence: seq, month } });
   } catch (error) {
     console.error('Next invoice number error:', error);
     res.status(500).json({ success: false, message: 'Unable to compute next invoice number' });
@@ -133,6 +156,7 @@ router.post('/', authenticate, requireStaffOrAdmin, async (req, res) => {
     const amount = calculateInvoiceAmount(invoice);
     const payload = {
       invoice_number: invoice.invoiceNumber,
+      document_type: normalizeDocType(invoice.documentType),
       customer_name: invoice.customerName || invoice.customer || null,
       customer_email: invoice.customerEmail || null,
       amount,
@@ -197,6 +221,7 @@ router.post('/share', authenticate, requireStaffOrAdmin, async (req, res) => {
     const amount = calculateInvoiceAmount(invoice);
     const invoicePayload = {
       invoice_number: invoiceNumber,
+      document_type: normalizeDocType(invoice.documentType),
       shared_user_id: sharedUserId,
       shared_user_type: sharedUserType || null,
       customer_name: invoice.customerName || null,

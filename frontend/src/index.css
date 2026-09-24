@@ -2,6 +2,10 @@
 
 @source "../../tailwind.config.js";
 
+/* A short screen — a phone on its side, a small browser window. `short:` compacts
+   layouts that would otherwise leave almost no room for their scrolling part. */
+@custom-variant short (@media (max-height: 520px));
+
 html, body, #root {
   background-color: #2A1740;
 }
@@ -27,6 +31,36 @@ html, body, #root {
   input:is([type="checkbox"], [type="radio"], [type="file"], [type="button"], [type="submit"], [type="reset"]):disabled {
     cursor: not-allowed;
   }
+}
+
+/* ── The warehouse "Item stored" popup ──
+   .sheet-panel: the FULL height of the screen (on a screen 40rem wide or more, the
+   full height less the 1rem margin the backdrop leaves round it). The vh line is the
+   fallback for a browser without dvh; dvh follows a phone's address bar and on-screen
+   keyboard, so the buttons are never pushed off the bottom.
+   .scroll-shadows: a soft shadow on the top / bottom edge of a scrolling area, shown
+   only while there is more to scroll in that direction (the "local" backgrounds cover
+   the "scroll" shadows once the end is reached). No script involved. */
+.sheet-panel {
+  height: 100vh;
+  height: 100dvh;
+}
+@media (min-width: 40rem) {
+  .sheet-panel {
+    height: calc(100vh - 2rem);
+    height: calc(100dvh - 2rem);
+  }
+}
+.scroll-shadows {
+  background:
+    linear-gradient(#fff 30%, rgb(255 255 255 / 0)) center top,
+    linear-gradient(rgb(255 255 255 / 0), #fff 70%) center bottom,
+    radial-gradient(farthest-side at 50% 0, rgb(45 45 45 / 0.16), rgb(45 45 45 / 0)) center top,
+    radial-gradient(farthest-side at 50% 100%, rgb(45 45 45 / 0.16), rgb(45 45 45 / 0)) center bottom;
+  background-color: #fff;
+  background-repeat: no-repeat;
+  background-size: 100% 28px, 100% 28px, 100% 10px, 100% 10px;
+  background-attachment: local, local, scroll, scroll;
 }
 
 /* ── Remove number-input spin buttons everywhere ── */

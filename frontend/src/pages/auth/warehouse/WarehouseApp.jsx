@@ -2011,12 +2011,26 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     setPrintShipMode(item.shipmentFrom === "By Land" ? "By Land" : "By Air");
     setPrintQtyTarget(item);
   };
+  // A merged group's Print on a PHONE: ask for the quantity first, as a single
+  // box's Print does, so the button carries no number. The quantity is how many
+  // labels of EACH parcel, defaulting to 1 — a group of 6 parcels prints 6, one per
+  // parcel, unless it is changed here. The target is { group: [parcels] }.
+  const askPrintGroup = (group) => {
+    const parcels = distinctParcels(group);
+    if (!parcels.length) return;
+    setPrintQty("1");
+    setPrintQtyTarget({ group: parcels });
+  };
   const confirmPrintQty = async () => {
     const item = printQtyTarget;
     const copies = Math.max(1, Math.min(parseInt(printQty, 10) || 1, 20));
     const shipMode = printShipMode;
     setPrintQtyTarget(null);
     if (!item) return;
+    if (item.group) {
+      await handlePrintGroup(item.group, copies);
+      return;
+    }
     // Opened from the "Item stored" sheet — decided when the dialog opened, since
     // a scan may have put another box on the sheet by now: a mode picked here goes
     // through the sheet's own save, so the box and its 1688 lines move together
@@ -2035,24 +2049,27 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   const handleDownloadLabel = (item) =>
     downloadItemLabel(item).catch((e) => showToast(e.message || "Download failed", "error"));
 
-  // Print one label per package in a merged group (all boxes of one 1688
-  // order share a goods number) — each label keeps that box's OWN tracking
-  // number and shipment mode. Always exactly 1 copy per box: the "how many
-  // copies" prompt only makes sense for repeating a single label, not for a
-  // batch of already-distinct boxes.
-  const handlePrintGroup = async (group) => {
-    if (!group?.length) return;
+  // Print one label per PARCEL in a merged group (all boxes of one 1688 order share
+  // a goods number) — each label keeps that parcel's OWN tracking number and
+  // shipment mode. `copies` is how many of EACH parcel's label (1 unless a phone's
+  // quantity prompt asked for more — see askPrintGroup); the desktop's group icon
+  // prints straight away with 1. Two records for the same tracking number are one
+  // parcel (see distinctParcels), so they get one label between them.
+  const handlePrintGroup = async (group, copies = 1) => {
+    const parcels = distinctParcels(group);
+    if (!parcels.length) return;
     let ok = 0;
     let failed = 0;
-    for (const item of group) {
+    for (const item of parcels) {
       try {
-        await printItemLabel(item, 1, item.shipmentFrom === "By Land" ? "By Land" : "By Air");
+        await printItemLabel(item, copies, item.shipmentFrom === "By Land" ? "By Land" : "By Air");
         ok += 1;
       } catch {
         failed += 1;
       }
     }
-    if (ok && !failed) showToast(`Printed ${ok} label${ok > 1 ? "s" : ""} ✓`, "ok");
+    const labels = ok * copies;
+    if (ok && !failed) showToast(`Printed ${labels} label${labels > 1 ? "s" : ""} ✓`, "ok");
     else if (ok && failed) showToast(`${ok} printed · ${failed} failed`, "warn");
     else showToast("Print failed", "error");
   };
@@ -3688,6 +3705,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onShip={requestShip}
                 onPrint={handlePrintLabel}
                 onPrintGroup={handlePrintGroup}
+                onPrintGroupAsk={askPrintGroup}
                 onOpenQc={openQc}
                 onDownload={handleDownloadLabel}
                 emptyAll={items.every((i) => i.status !== "in_stock")}
@@ -3824,6 +3842,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onView={openDetail}
                 onPrint={handlePrintLabel}
                 onPrintGroup={handlePrintGroup}
+                onPrintGroupAsk={askPrintGroup}
                 onOpenQc={openQc}
                 onDownload={handleDownloadLabel}
                 onDelete={(it) => setItemDeleteTarget(it)}
@@ -4826,7 +4845,14 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             </span>
             <h3 className="text-base font-bold">How many labels?</h3>
             <p className="mt-1 text-xs text-[#2D2D2D]/55">
-              Printing <span className="font-semibold text-[#412460]">{goodsCode(printQtyTarget)}</span> — one label per package.
+              {printQtyTarget.group ? (
+                <>
+                  Printing <span className="font-semibold text-[#412460]">{printQtyTarget.group.length} {printQtyTarget.group.length === 1 ? "parcel" : "parcels"}</span> — this many labels of each one
+                  {" "}(<span className="font-semibold text-[#412460]">{printQtyTarget.group.length * Math.max(1, Math.min(parseInt(printQty, 10) || 1, 20))} in all</span>).
+                </>
+              ) : (
+                <>Printing <span className="font-semibold text-[#412460]">{goodsCode(printQtyTarget)}</span> — one label per package.</>
+              )}
             </p>
             <div className="mt-4 flex items-center gap-2">
               <button
@@ -4855,18 +4881,21 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 +
               </button>
             </div>
-            <div className="mt-4">
-              <label className={LABEL}>Shipment mode</label>
-              <select
-                value={printShipMode}
-                onChange={(e) => setPrintShipMode(e.target.value)}
-                className={`${FIELD} mt-1.5`}
-              >
-                <option value="By Air">By Air</option>
-                <option value="By Land">By Land</option>
-              </select>
-              <p className="mt-1.5 text-[11px] text-[#2D2D2D]/40">This item ships the same way when marked shipped.</p>
-            </div>
+            {/* A group keeps each parcel's own mode, so there is no single one to pick. */}
+            {!printQtyTarget.group && (
+              <div className="mt-4">
+                <label className={LABEL}>Shipment mode</label>
+                <select
+                  value={printShipMode}
+                  onChange={(e) => setPrintShipMode(e.target.value)}
+                  className={`${FIELD} mt-1.5`}
+                >
+                  <option value="By Air">By Air</option>
+                  <option value="By Land">By Land</option>
+                </select>
+                <p className="mt-1.5 text-[11px] text-[#2D2D2D]/40">This item ships the same way when marked shipped.</p>
+              </div>
+            )}
             <div className="mt-6 flex justify-end gap-2">
               <button type="button" onClick={() => setPrintQtyTarget(null)} className={BTN_GHOST}>
                 Cancel
@@ -4995,7 +5024,12 @@ export default function WarehouseApp({ mode = "cellzen" }) {
             // No visible heading any more, so the dialog carries its name here.
             aria-label={savedItem.pending ? "Storing item" : "Item stored"}
             aria-busy={savedItem.pending ? "true" : undefined}
-            className="max-h-[92vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl"
+            // Three parts in a column: the id header and the buttons stay put, and only
+            // the middle scrolls (a box with many products used to scroll the id and
+            // the buttons out of sight). .sheet-panel makes it the full height of the
+            // screen (index.css): edge to edge on a phone, with a small margin on a
+            // larger screen.
+            className="sheet-panel flex w-full max-w-md flex-col overflow-hidden rounded-none bg-white shadow-2xl sm:rounded-3xl"
             onClick={(e) => e.stopPropagation()}
             onMouseEnter={keepSavedSheet}
             onTouchStart={keepSavedSheet}
@@ -5007,7 +5041,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 still storing the box, the check mark once it has. On a GtradeA box
                 the id is a link to the QC photos saved for it. While pending it's
                 the 1688 preview's id, or a placeholder until the server mints one. */}
-            <div className="flex items-center justify-between gap-3">
+            <div className="flex shrink-0 items-center justify-between gap-3 px-6 pb-2 pt-6 short:pb-1 short:pt-3">
               <p className="min-w-0 text-xl font-black tracking-tight text-[#412460]">
                 {goodsCode(savedItem) ? (
                   isGtradea && trackingReady
@@ -5025,6 +5059,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 )}
               </span>
             </div>
+            {/* The scrolling middle: products, QC photos and the details. The soft
+                shadow at its top / bottom edge (.scroll-shadows) shows there is more
+                to scroll to, and only while there is. */}
+            <div className="scroll-shadows min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-4">
             {/* A GtradeA box the loaded 1688 list doesn't know yet: a placeholder
                 card until the server says what's inside. Cellzen boxes carry no
                 product at all, so they get none. */}
@@ -5118,7 +5156,12 @@ export default function WarehouseApp({ mode = "cellzen" }) {
               {/* Who stored it and when live in the "Just scanned" table; the
                   sheet keeps only what's needed to check and label the box. */}
             </dl>
-            <div className="mt-6 space-y-2.5">
+            </div>
+            {/* The buttons: always in view, whatever the scroll. On a phone the bottom
+                padding clears the home indicator. On a short screen (a phone on its
+                side) Print label, Cancel and OK share one row and the "copies" link
+                sits under them, so the scrolling middle keeps a usable height. */}
+            <div className="flex shrink-0 flex-col gap-2.5 px-6 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-3 short:grid short:grid-cols-[2fr_1fr_1fr] short:gap-2 short:pb-3 short:pt-2">
               {/* The wait shows on the button itself: a tap on a sheet still being
                   stored, or one waiting on a mode save, prints once — repeat taps
                   meanwhile are ignored rather than queued as extra labels. */}
@@ -5126,7 +5169,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 type="button"
                 onClick={() => gateThen("print")}
                 disabled={printWaiting.has(queueKeyOf(savedItem))}
-                className="flex w-full items-center justify-center gap-2 rounded-full bg-[#412460] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-[#B99353] active:scale-[.98] disabled:cursor-wait disabled:opacity-70"
+                className="flex w-full items-center justify-center gap-2 rounded-full bg-[#412460] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-[#B99353] active:scale-[.98] disabled:cursor-wait disabled:opacity-70 short:px-3 short:py-2.5"
               >
                 {printWaiting.has(queueKeyOf(savedItem)) ? (
                   <>
@@ -5143,22 +5186,22 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 type="button"
                 onClick={() => gateThen("copies")}
                 disabled={printWaiting.has(queueKeyOf(savedItem))}
-                className="w-full text-center text-xs font-semibold text-[#2D2D2D]/45 underline decoration-[#2D2D2D]/20 underline-offset-2 transition hover:text-[#412460] disabled:cursor-wait disabled:opacity-50"
+                className="w-full text-center text-xs font-semibold text-[#2D2D2D]/45 underline decoration-[#2D2D2D]/20 underline-offset-2 transition hover:text-[#412460] disabled:cursor-wait disabled:opacity-50 short:order-last short:col-span-3"
               >
                 More than one package? Choose copies
               </button>
-              <div className="grid grid-cols-2 gap-2.5">
+              <div className="grid grid-cols-2 gap-2.5 short:contents">
                 <button
                   type="button"
                   onClick={undoSavedItem}
-                  className="rounded-full border border-[#E3DEEA] bg-white px-6 py-3 text-sm font-semibold text-[#2D2D2D]/70 transition hover:border-red-300 hover:text-red-600 active:scale-[.98]"
+                  className="rounded-full border border-[#E3DEEA] bg-white px-6 py-3 text-sm font-semibold text-[#2D2D2D]/70 transition hover:border-red-300 hover:text-red-600 active:scale-[.98] short:px-3 short:py-2.5"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={() => gateThen("ok")}
-                  className="rounded-full bg-[#2D2D2D] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#412460] active:scale-[.98]"
+                  className="rounded-full bg-[#2D2D2D] px-6 py-3 text-sm font-semibold text-white transition hover:bg-[#412460] active:scale-[.98] short:px-3 short:py-2.5"
                 >
                   OK
                 </button>
@@ -5469,10 +5512,26 @@ function ItemsTable({ rows, onView, withDate = false, emptyAll = false, emptyTex
   );
 }
 
+// The boxes of a group reduced to one per PARCEL, by CN tracking number. A label
+// carries the tracking number, so a second one for the same number would be an
+// exact copy — which is what the "How many labels?" prompt is for, not a group
+// print. Order kept, first record wins; a box with no tracking number is its own
+// parcel. The group's Print button and its count both go through this, so the
+// number on the button is the number of labels that come out.
+function distinctParcels(boxes) {
+  const seen = new Set();
+  return (boxes || []).filter((b) => {
+    const key = String(b?.trackingNumber || "").trim().toUpperCase() || `id:${b?.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 // GtradeA shipment table — the gtradea PR id, shelf, the linked 1688 order #, CN
 // tracking, product, status + Print/Download/Ship. Mirrors ItemsTable with the
 // 1688 columns.
-function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
+function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onPrintGroupAsk, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
   // One row per 1688 ORDER NUMBER, expanding to one row per PRODUCT in it.
   //
   // An order is what staff work from — gtradea publishes it, the supplier ships
@@ -5564,13 +5623,31 @@ function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText
   // (each keeps its own tracking number, all sharing the group's goods
   // number) and Ship marks every box in the group shipped at once. Per-box
   // actions (ship/print/download/delete just one) live in the expanded rows.
-  const groupActionButtons = (group) => (
-    <div className="flex items-center justify-center gap-1">
-      {onPrintGroup && (<button type="button" title={`Print ${group.length} labels`} onClick={(e) => { e.stopPropagation(); onPrintGroup(group); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconPrinter className="h-4 w-4" /></button>)}
-      {onShip && (<button type="button" title={`Ship all ${group.length}`} onClick={(e) => { e.stopPropagation(); onShip(group); }} className="ml-1 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#412460] text-white transition-colors hover:bg-[#B99353]"><IconCheck className="h-4 w-4" /></button>)}
-      {!onPrintGroup && !onShip && (<IconChevron className="h-4 w-4 text-[#2D2D2D]/25" />)}
-    </div>
-  );
+  //
+  // A group row has no Download or Delete of its own, and the buttons here are
+  // centred in the cell like every other row's. Leaving those two out would let
+  // Print and Ship slide toward the middle and stop lining up with the rows above
+  // and below, so each missing button is a blank the size of one: every icon then
+  // sits in the same column on every row.
+  const groupActionButtons = (group) => {
+    if (!onPrintGroup && !onShip) {
+      return (
+        <div className="flex items-center justify-center gap-1">
+          <IconChevron className="h-4 w-4 text-[#2D2D2D]/25" />
+        </div>
+      );
+    }
+    const blank = <span aria-hidden="true" className="h-8 w-8 shrink-0" />;
+    const parcels = distinctParcels(group).length;
+    return (
+      <div className="flex items-center justify-center gap-1">
+        {onPrintGroup ? (<button type="button" title={`Print ${parcels} ${parcels === 1 ? "label" : "labels"}`} onClick={(e) => { e.stopPropagation(); onPrintGroup(group); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#2D2D2D]/50 transition-colors hover:bg-[#F0EDE7] hover:text-[#412460]"><IconPrinter className="h-4 w-4" /></button>) : (onPrint && blank)}
+        {onDownload && blank}
+        {onShip && (<button type="button" title={`Ship all ${group.length}`} onClick={(e) => { e.stopPropagation(); onShip(group); }} className="ml-1 inline-flex h-8 w-8 items-center justify-center rounded-full bg-[#412460] text-white transition-colors hover:bg-[#B99353]"><IconCheck className="h-4 w-4" /></button>)}
+        {onDelete && blank}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -5675,9 +5752,11 @@ function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText
                 )}
                 {isGroup && (onPrintGroup || onShip) && (
                   <div className="mt-3 flex items-center gap-2 border-t border-[#F1EFEA] pt-3">
+                    {/* No number on the button: it asks "How many labels?" first (default 1
+                        of each parcel), like a single box's Print. The desktop icon prints at once. */}
                     {onPrintGroup && (
-                      <button type="button" onClick={(e) => { e.stopPropagation(); onPrintGroup(boxes); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
-                        <IconPrinter className="h-3.5 w-3.5" /> Print {boxes.length}
+                      <button type="button" onClick={(e) => { e.stopPropagation(); (onPrintGroupAsk || onPrintGroup)(boxes); }} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold text-[#2D2D2D]/65 ring-1 ring-[#ECE9E3] transition active:scale-95">
+                        <IconPrinter className="h-3.5 w-3.5" /> Print
                       </button>
                     )}
                     {onShip && (

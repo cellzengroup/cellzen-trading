@@ -25,6 +25,16 @@ export function readLocalDrafts() {
   }
 }
 
+// PI Generator and Billing Invoice share one localStorage cache (LS_KEY), so
+// a page for one type must filter the other type's drafts out. Legacy drafts
+// saved before documentType existed are treated as PI (that's what "Invoices"
+// meant before Billing Invoice existed).
+export function readLocalDraftsForType(documentType) {
+  const all = readLocalDrafts();
+  if (!documentType) return all;
+  return all.filter((d) => (d.documentType || "PI") === documentType);
+}
+
 export function writeLocalDrafts(drafts) {
   try {
     localStorage.setItem(LS_KEY, JSON.stringify(drafts));
@@ -77,18 +87,36 @@ function unwrapServerInvoice(row) {
     customerEmail: data.customerEmail || row.customer_email,
     invoiceDate: data.invoiceDate || row.invoice_date,
     currency: data.currency || row.currency,
+    documentType: data.documentType || row.document_type || "PI",
     createdByName: row.created_by_name || data.createdByName || null,
     createdByUserId: row.created_by_user_id || null,
     _serverUpdatedAt: row.updatedAt,
   };
 }
 
-// Pull all invoices the admin should see. Falls back to localStorage if the
+// Pull the invoices the admin should see. Falls back to localStorage if the
 // network fails so the page never goes blank. `cache: 'no-store'` defeats any
 // stale browser cache so a freshly-saved invoice always shows up immediately.
-export async function loadInvoices() {
+//
+// `documentType` ('PI' | 'Billing') scopes both the server fetch and the
+// local-cache merge to one invoice tool — PI Generator and Billing Invoice
+// share the same LS_KEY cache, so a page for one type must never write the
+// other type's cached drafts out when it persists its merged result.
+export async function loadInvoices(documentType) {
+  const qs = documentType ? `?documentType=${encodeURIComponent(documentType)}` : "";
+  // Merges `merged` (already scoped to `documentType`) back into the shared
+  // cache without disturbing drafts of the other type.
+  const persist = (merged) => {
+    if (!documentType) {
+      writeLocalDrafts(merged);
+      return;
+    }
+    const others = readLocalDrafts().filter((d) => (d.documentType || "PI") !== documentType);
+    writeLocalDrafts([...others, ...merged]);
+  };
+
   try {
-    const res = await resilientFetch("/inventory/invoices", {
+    const res = await resilientFetch(`/inventory/invoices${qs}`, {
       headers: authHeaders(),
       cache: "no-store",
     });
@@ -97,8 +125,9 @@ export async function loadInvoices() {
     if (!json?.success) throw new Error(json?.message || "Failed to load");
     const remote = (json.data || []).map(unwrapServerInvoice);
 
-    // One-time migration: push any local-only drafts up to the backend, then
-    // mirror the backend list back to localStorage as the source of truth.
+    // One-time migration (across ALL types, not just this page's): push any
+    // local-only drafts up to the backend, then mirror the backend list back
+    // to localStorage as the source of truth.
     if (!localStorage.getItem(MIGRATED_KEY)) {
       const local = readLocalDrafts();
       const remoteNumbers = new Set(remote.map((r) => r.invoiceNumber));
@@ -109,10 +138,10 @@ export async function loadInvoices() {
         try { await saveInvoice(o); } catch { /* keep going */ }
       }
       localStorage.setItem(MIGRATED_KEY, "1");
-      // Re-fetch so we include just-uploaded orphans
+      // Re-fetch so we include just-uploaded orphans of this type
       if (orphans.length > 0) {
         try {
-          const res2 = await resilientFetch("/inventory/invoices", {
+          const res2 = await resilientFetch(`/inventory/invoices${qs}`, {
             headers: authHeaders(),
             cache: "no-store",
           });
@@ -120,8 +149,8 @@ export async function loadInvoices() {
             const json2 = await res2.json();
             if (json2?.success) {
               const remote2 = (json2.data || []).map(unwrapServerInvoice);
-              const merged = mergeRemoteWithLocal(remote2, readLocalDrafts());
-              writeLocalDrafts(merged);
+              const merged = mergeRemoteWithLocal(remote2, readLocalDraftsForType(documentType));
+              persist(merged);
               return { source: "remote", invoices: merged };
             }
           }
@@ -131,11 +160,11 @@ export async function loadInvoices() {
 
     // Merge so a freshly-saved local edit isn't reverted by a server response
     // that raced ahead of the background save (prevents the update flicker).
-    const merged = mergeRemoteWithLocal(remote, readLocalDrafts());
-    writeLocalDrafts(merged);
+    const merged = mergeRemoteWithLocal(remote, readLocalDraftsForType(documentType));
+    persist(merged);
     return { source: "remote", invoices: merged };
   } catch (err) {
-    return { source: "local", invoices: readLocalDrafts(), error: err?.message };
+    return { source: "local", invoices: readLocalDraftsForType(documentType), error: err?.message };
   }
 }
 

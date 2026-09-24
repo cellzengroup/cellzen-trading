@@ -5,12 +5,14 @@
 //   amountInUSD    = amount / rates[fromCurrency]
 //   amountInTarget = amountInUSD * rates[toCurrency]
 //
-// Five fields hold currency values:
+// Monetary fields converted:
 //   - items[].unitPrice     (per-product price; line totals derive from this)
 //   - customsDuty
 //   - documentationCharges
 //   - otherCharges
 //   - transportCost
+//   - discount              (Billing Invoice only)
+//   - amountReceived        (Billing Invoice only)
 //
 // quantity, commission %, weight, and CBM are NOT currencies and are left
 // untouched. The grand total / in-words / per-line totals are derived
@@ -74,6 +76,8 @@ export function convertInvoiceCurrency(invoice, targetCurrency, rates = DEFAULT_
       documentationCharges: conv(raw.documentationCharges),
       otherCharges: conv(raw.otherCharges),
       transportCost: conv(raw.transportCost),
+      discount: conv(raw.discount),
+      amountReceived: conv(raw.amountReceived),
       currency: targetCurrency,
       // Preserve the original so future re-conversions are still possible.
       originalCurrency: fromCurrency,

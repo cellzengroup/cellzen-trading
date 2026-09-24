@@ -86,7 +86,7 @@ import { useLocation } from 'react-router-dom';
 // Hides MANAS on specific pages where it clutters the UI
 function ManasBubbleGuard() {
   const { pathname } = useLocation();
-  if (pathname.startsWith('/admin-invoices')) return null;
+  if (pathname.startsWith('/admin-invoices') || pathname.startsWith('/admin-billing-invoices')) return null;
   // No MANAS chat bubble inside the standalone Warehouse portal.
   if (pathname.startsWith('/warehouse')) return null;
   return <ManasBubble />;
@@ -179,6 +179,9 @@ function App() {
         <Route path="/admin-invoices" element={<AdminInvoices />} />
         <Route path="/admin-invoices/create" element={<AdminCreateInvoice />} />
         <Route path="/admin-invoices/edit" element={<AdminCreateInvoice />} />
+        <Route path="/admin-billing-invoices" element={<AdminInvoices documentType="Billing" />} />
+        <Route path="/admin-billing-invoices/create" element={<AdminCreateInvoice documentType="Billing" />} />
+        <Route path="/admin-billing-invoices/edit" element={<AdminCreateInvoice documentType="Billing" />} />
         <Route path="/admin-managements" element={<AdminManagements />} />
         <Route path="/admin-inventory" element={<AdminInventory />} />
         <Route path="/admin-tools" element={<AdminTools />} />
@@ -209,6 +212,9 @@ function App() {
         <Route path="/staff-invoices" element={<StaffInvoices />} />
         <Route path="/staff-invoices/create" element={<StaffCreateInvoice />} />
         <Route path="/staff-invoices/edit" element={<StaffCreateInvoice />} />
+        <Route path="/staff-billing-invoices" element={<StaffInvoices documentType="Billing" />} />
+        <Route path="/staff-billing-invoices/create" element={<StaffCreateInvoice documentType="Billing" />} />
+        <Route path="/staff-billing-invoices/edit" element={<StaffCreateInvoice documentType="Billing" />} />
         <Route path="/staff-packing" element={<StaffPackingList />} />
         <Route path="/staff-packing/create" element={<StaffPackingEditor />} />
         <Route path="/staff-packing/edit" element={<StaffPackingEditor />} />

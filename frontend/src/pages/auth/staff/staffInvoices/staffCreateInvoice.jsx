@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import * as XLSX from 'xlsx';
 import StaffPageShell from "../StaffPageShell";
 import CountrySelector from "../../../../components/ui/CountrySelector";
+import UnitSelect from "../../../../components/ui/UnitSelect";
 import { countries } from "../../../../components/countries";
 import { useCurrency } from "../../../../contexts/CurrencyContext.jsx";
 import { saveInvoice as syncInvoiceToBackend } from "../../../../utils/invoiceSync.js";
@@ -19,6 +20,11 @@ import {
 } from "../../../../utils/hsCodeLookup";
 import HsCodeDrawer from "./HsCodeDrawer";
 import HsBreakdownModal from "./HsBreakdownModal";
+
+// Billing Invoice numbers encode the shipment mode: CZN<MODE>-MMDD-NNNN, e.g.
+// CZNLND-0923-0001 for "by land", generated Sep 23rd. Must match backend
+// MODE_CODE in backend/inventory/routes/invoices.js exactly.
+const MODE_CODE = { road: "LND", air: "AIR", sea: "SEA", rail: "RAL" };
 
 // Invoice Number Input Component
 function InvoiceNumberInput({ value, onChange }) {
@@ -561,9 +567,11 @@ function SearchableUserDropdown({ users, value, onChange, placeholder }) {
   );
 }
 
-export default function StaffCreateInvoice() {
+export default function StaffCreateInvoice({ documentType = "PI" }) {
   const navigate = useNavigate();
   const { currency, setCurrency } = useCurrency();
+  const isBilling = documentType === "Billing";
+  const listPath = isBilling ? "/staff-billing-invoices" : "/staff-invoices";
   const [loading, setLoading] = useState(false);
   const [currentStep, setCurrentStep] = useState(1);
   const [showCancelModal, setShowCancelModal] = useState(false);
@@ -576,6 +584,9 @@ export default function StaffCreateInvoice() {
   // editing. Using a ref (not state) avoids the cross-effect race that was
   // silently bumping an edited invoice's number (e.g. 006 → 007 → duplicate).
   const editModeRef = useRef(false);
+  // True once the user edits Due Date directly — after that, changing the
+  // Invoice Date no longer overwrites it with the +6-day default.
+  const dueDateTouchedRef = useRef(false);
 
   // Data from backend
   const [customers, setCustomers] = useState([]);
@@ -600,6 +611,9 @@ export default function StaffCreateInvoice() {
     if (editData) {
       // Mark edit mode synchronously so the next-number effect skips numbering.
       editModeRef.current = true;
+      // The saved Due Date is an explicit value, not the +6-day default —
+      // don't let a later Invoice Date edit silently overwrite it.
+      dueDateTouchedRef.current = true;
       const parsedData = JSON.parse(editData);
       setIsEditMode(true);
       setEditInvoiceId(parsedData.invoiceNumber || parsedData.id);
@@ -644,58 +658,6 @@ export default function StaffCreateInvoice() {
     }
   }, []);
 
-  // Auto-generate the next invoice number on mount. Skipped when editing an
-  // existing invoice so we don't overwrite its number.
-  //
-  // The sequence is ONE global running counter across all months (the month
-  // segment is just a label), so a new month continues from the previous max
-  // (…0017 → CZN-06-0018) instead of resetting to 0001. We take the higher of
-  // the backend value and the locally-cached invoices, so the number is correct
-  // even if the backend hasn't synced those invoices yet.
-  useEffect(() => {
-    // If we're editing an existing invoice, keep its number — never auto-bump.
-    // editModeRef is set synchronously by the edit-mode effect (which also
-    // clears sessionStorage), so checking the ref is race-free; the
-    // sessionStorage check remains as a belt-and-suspenders fallback.
-    if (editModeRef.current || sessionStorage.getItem("edit_invoice_data")) return;
-
-    const month = String(new Date().getMonth() + 1).padStart(2, "0");
-
-    // Highest trailing sequence already present in the local cache, across all
-    // months (CZN-MM-NNNN → NNNN). 0 when none.
-    const localMaxSeq = () => {
-      try {
-        const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
-        return drafts.reduce((max, d) => {
-          const parts = String(d.invoiceNumber || d.id || "").split("-");
-          const n = parseInt(parts[parts.length - 1], 10);
-          return !isNaN(n) && n > max ? n : max;
-        }, 0);
-      } catch {
-        return 0;
-      }
-    };
-
-    let cancelled = false;
-    (async () => {
-      // Start from what we know locally so a new month never resets to 0001.
-      let seq = localMaxSeq() + 1;
-      try {
-        const res = await authFetch("/inventory/invoices/next-number");
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && data?.success && data.data?.sequence) {
-          seq = Math.max(seq, data.data.sequence);
-        }
-      } catch {
-        // Network error — fall back to the local-derived sequence.
-      }
-      if (cancelled) return;
-      const next = `CZN-${month}-${String(seq).padStart(4, "0")}`;
-      setFormData((prev) => ({ ...prev, invoiceNumber: next }));
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
   // Currency options
   const CURRENCIES = [
     { code: "NPR", symbol: "Rs. ", name: "NPR" },
@@ -703,25 +665,69 @@ export default function StaffCreateInvoice() {
     { code: "CNY", symbol: "¥ ", name: "RMB" },
   ];
 
-  // Default invoice number for the current month — used as a placeholder until
-  // the backend returns the authoritative next sequence (see effect below).
-  // Format: CZN-MM-NNNN starting at 0001.
+  // Default invoice number — used as a placeholder until the backend returns
+  // the authoritative next sequence (see effect below). PI: CZN-MM-0001.
+  // Billing: CZN<MODE>-MMDD-0001, mode defaults to GEN until the shipment
+  // mode is chosen.
   const defaultInvoiceNumber = () => {
-    const month = String(new Date().getMonth() + 1).padStart(2, "0");
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    if (isBilling) {
+      const day = String(now.getDate()).padStart(2, "0");
+      return `CZNGEN-${month}${day}-0001`;
+    }
     return `CZN-${month}-0001`;
   };
 
+  // Due Date defaults to 1 week (7 days) after the Invoice Date; stays in sync until
+  // the user edits Due Date directly (see dueDateTouchedRef below).
+  const defaultDueDate = (invoiceDateStr) => {
+    const d = invoiceDateStr ? new Date(invoiceDateStr) : new Date();
+    if (isNaN(d)) return "";
+    d.setDate(d.getDate() + 7);
+    return d.toISOString().split("T")[0];
+  };
+
+  // Fixed default line items for a NEW Billing Invoice — the common freight/
+  // customs/logistics charge checklist, so staff just fill in Qty/Unit/Rate
+  // per row instead of typing each one from scratch. Only seeds a brand-new
+  // Billing Invoice (an edit overwrites `items` from the saved draft anyway);
+  // extra rows can still be added on top via the normal "+ Add Item" control.
+  const defaultBillingItems = () => [
+    "Freight charges",
+    "Custom Duty",
+    "China Custom Charges",
+    "Insurance charge",
+    "HAWB/BL Charges",
+    "DO charges",
+    "Warehouse charges - as per bill",
+    "Custom Clearance Charges",
+    "Local Transportation charges",
+    "Loading and Unloading",
+    "Documentation charges",
+    "Service Charges",
+    "Other Charges",
+  ].map((name) => ({
+    productName: name, productImage: "", quantity: "", unit: "", unitPrice: "", priceUnit: "",
+    weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none",
+    dutyOrigin: null, alcoholAbv: null, mergedInto: {},
+  }));
+
   // Form State
   const [formData, setFormData] = useState({
+    documentType,
     invoiceNumber: defaultInvoiceNumber(),
     invoiceDate: new Date().toISOString().split("T")[0],
     customerName: "",
     customerEmail: "",
     customerPhone: "",
+    customerAddress: "", // Billing Invoice only — printed under the customer name
     shareTo: "",
     modeOfDelivery: "",
     exportCountry: "",
-    items: [{ productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null, mergedInto: {} }],
+    items: isBilling
+      ? defaultBillingItems()
+      : [{ productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null, mergedInto: {} }],
     notes: "",
     customsDuty: "",
     documentationCharges: "",
@@ -738,7 +744,71 @@ export default function StaffCreateInvoice() {
     includeHsCode: false, // When true, the HS Code column is rendered in the downloaded PDF/Excel
     defaultDutyOrigin: "CN", // Origin country used for HS-based duty calc unless an item overrides (China is the most common origin for Cellzen)
     customsDutyAutoFilled: true, // True until the user manually edits the customs duty input — keeps the HS-derived value in sync
+    dueDate: defaultDueDate(), // Billing Invoice only — defaults to 1 week after the invoice date
+    paymentMethod: "", // Billing Invoice only — Cash / Bank Transfer / Cheque / Other
+    discount: "", // Billing Invoice only
+    amountReceived: "", // Billing Invoice only — payment already collected from the client
   });
+
+  // Auto-generate the next invoice number on mount (and, for a Billing
+  // Invoice, whenever the shipment mode changes — the mode is baked into the
+  // number). Skipped when editing an existing invoice so we don't overwrite
+  // its number.
+  //
+  // The sequence is ONE global running counter per document type (PI and
+  // Billing Invoice numbers must never be compared against each other), not
+  // reset monthly. We take the higher of the backend value and the
+  // locally-cached invoices, so the number is correct even if the backend
+  // hasn't synced those invoices yet.
+  useEffect(() => {
+    // If we're editing an existing invoice, keep its number — never auto-bump.
+    // editModeRef is set synchronously by the edit-mode effect (which also
+    // clears sessionStorage), so checking the ref is race-free; the
+    // sessionStorage check remains as a belt-and-suspenders fallback.
+    if (editModeRef.current || sessionStorage.getItem("edit_invoice_data")) return;
+
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    const modeCode = MODE_CODE[formData.modeOfDelivery] || "GEN";
+
+    // Highest trailing 4-digit sequence already present in the local cache,
+    // for THIS document type only — the running counter for both formats
+    // (…-NNNN and …-YYMMNNNN) is always the last 4 characters. 0 when none.
+    const localMaxSeq = () => {
+      try {
+        const drafts = JSON.parse(localStorage.getItem("invoice_drafts") || "[]");
+        return drafts.reduce((max, d) => {
+          if ((d.documentType || "PI") !== documentType) return max;
+          const n = parseInt(String(d.invoiceNumber || d.id || "").slice(-4), 10);
+          return !isNaN(n) && n > max ? n : max;
+        }, 0);
+      } catch {
+        return 0;
+      }
+    };
+
+    let cancelled = false;
+    (async () => {
+      // Start from what we know locally so a new month never resets to 0001.
+      let seq = localMaxSeq() + 1;
+      try {
+        const modeQuery = isBilling ? `&mode=${formData.modeOfDelivery || ""}` : "";
+        const res = await authFetch(`/inventory/invoices/next-number?documentType=${documentType}${modeQuery}`);
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data?.success && data.data?.sequence) {
+          seq = Math.max(seq, data.data.sequence);
+        }
+      } catch {
+        // Network error — fall back to the local-derived sequence.
+      }
+      if (cancelled) return;
+      const seqStr = String(seq).padStart(4, "0");
+      const next = isBilling ? `CZN${modeCode}-${month}${day}-${seqStr}` : `CZN-${month}-${seqStr}`;
+      setFormData((prev) => ({ ...prev, invoiceNumber: next }));
+    })();
+    return () => { cancelled = true; };
+  }, [documentType, isBilling, formData.modeOfDelivery]);
 
   // HS tariff loading + drawer/modal state
   const [tariffReady, setTariffReady] = useState(isTariffReady());
@@ -988,7 +1058,12 @@ export default function StaffCreateInvoice() {
   const addItem = () => {
     setFormData(prev => ({
       ...prev,
-      items: [...prev.items, { productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null, mergedInto: {} }],
+      // Billing Invoice rows start fully blank (only Description gets typed
+      // in) so an unfilled charge doesn't read as real data; PI keeps its
+      // long-standing defaults of qty 1 / unit KG.
+      items: [...prev.items, isBilling
+        ? { productName: "", productImage: "", quantity: "", unit: "", unitPrice: "", priceUnit: "", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null, mergedInto: {} }
+        : { productName: "", productImage: "", quantity: 1, unit: "KG", unitPrice: 0, priceUnit: "KG", weight: "", cbm: "", commission: 0, hsCode: "", hsAutoMatched: true, hsConfidence: "none", dutyOrigin: null, alcoholAbv: null, mergedInto: {} }],
     }));
   };
 
@@ -2027,7 +2102,7 @@ export default function StaffCreateInvoice() {
 
   const handleConfirmCancel = () => {
     setShowCancelModal(false);
-    navigate("/staff-invoices");
+    navigate(listPath);
   };
 
   const handleSaveDraft = async () => {
@@ -2254,6 +2329,24 @@ export default function StaffCreateInvoice() {
     }, 0);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Billing grid only: Ctrl/Cmd+C with a dragged multi-cell range selected
+  // copies it as TSV (pastes straight into Excel/Sheets). A single cell is
+  // left alone so the browser's normal in-field text copy still works.
+  const handleBillingGridCopy = useCallback((e) => {
+    if (!((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C'))) return;
+    if (!selRange || (selRange.r1 === selRange.r2 && selRange.c1 === selRange.c2)) return;
+    e.preventDefault();
+    const cols = ['productName', 'quantity', 'unit', 'unitPrice'];
+    const rows = [];
+    for (let r = selRange.r1; r <= selRange.r2; r++) {
+      const item = formData.items[r];
+      const cells = [];
+      for (let c = selRange.c1; c <= selRange.c2; c++) cells.push(String(item?.[cols[c]] ?? ''));
+      rows.push(cells.join('\t'));
+    }
+    navigator.clipboard?.writeText(rows.join('\n')).catch(() => {});
+  }, [selRange, formData.items]);
 
   // Apply fill-down when the user releases the mouse after dragging a handle.
   useEffect(() => {
@@ -2582,7 +2675,11 @@ export default function StaffCreateInvoice() {
   ];
 
   return (
-    <StaffPageShell activePage="Invoices" title="Create Invoice" eyebrow="Create a new invoice for your customer">
+    <StaffPageShell
+      activePage={isBilling ? "Billing Invoice" : "PI Generator"}
+      title={isBilling ? "Create Billing Invoice" : "Create PI"}
+      eyebrow={isBilling ? "Create a new billing invoice for your customer" : "Create a new proforma invoice for your customer"}
+    >
       <div className={`rounded-[2rem] border border-[#E1E3EE] bg-white ${currentStep === 2 ? 'py-6 px-0' : 'p-6'}`}>
         {/* Header with Title and Back Button */}
         <div className={`flex items-center justify-between border-b border-[#EAE8E5] pb-4 ${currentStep === 2 ? 'px-6' : ''}`}>
@@ -2737,7 +2834,11 @@ export default function StaffCreateInvoice() {
                   type="date"
                   required
                   value={formData.invoiceDate}
-                  onChange={(e) => setFormData(prev => ({ ...prev, invoiceDate: e.target.value }))}
+                  onChange={(e) => setFormData(prev => ({
+                    ...prev,
+                    invoiceDate: e.target.value,
+                    dueDate: (isBilling && !dueDateTouchedRef.current) ? defaultDueDate(e.target.value) : prev.dueDate,
+                  }))}
                   className="w-full rounded-[1rem] border border-[#E1E3EE] px-4 py-3 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none focus:ring-2 focus:ring-[#412460]/20"
                 />
               </div>
@@ -2820,6 +2921,79 @@ export default function StaffCreateInvoice() {
               </div>
             </div>
 
+            {/* Billing Invoice only — client-billing fields not needed on a PI */}
+            {isBilling && (
+              <>
+                <div>
+                  <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Customer Address</label>
+                  <textarea
+                    rows="2"
+                    value={formData.customerAddress || ""}
+                    onChange={(e) => setFormData(prev => ({ ...prev, customerAddress: e.target.value }))}
+                    className="w-full rounded-[1rem] border border-[#E1E3EE] px-4 py-3 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none focus:ring-2 focus:ring-[#412460]/20"
+                    placeholder="City, Country..."
+                  />
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Due Date</label>
+                    <input
+                      type="date"
+                      value={formData.dueDate || ""}
+                      onChange={(e) => {
+                        dueDateTouchedRef.current = true;
+                        setFormData(prev => ({ ...prev, dueDate: e.target.value }));
+                      }}
+                      className="w-full rounded-[1rem] border border-[#E1E3EE] px-4 py-3 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none focus:ring-2 focus:ring-[#412460]/20"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Payment Method</label>
+                    <select
+                      value={formData.paymentMethod || ""}
+                      onChange={(e) => setFormData(prev => ({ ...prev, paymentMethod: e.target.value }))}
+                      className="w-full rounded-[1rem] border border-[#E1E3EE] bg-white px-4 py-3 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none focus:ring-2 focus:ring-[#412460]/20 appearance-none cursor-pointer"
+                      style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%232D2D2D' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`, backgroundRepeat: 'no-repeat', backgroundPosition: 'right 12px center', backgroundSize: '16px' }}
+                    >
+                      <option value="">Select method...</option>
+                      <option value="Cash">Cash</option>
+                      <option value="Bank Transfer">Bank Transfer</option>
+                      <option value="Cheque">Cheque</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Discount</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={formData.discount}
+                      onChange={(e) => setFormData(prev => ({ ...prev, discount: e.target.value }))}
+                      className="w-full rounded-[1rem] border border-[#E1E3EE] px-4 py-3 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none focus:ring-2 focus:ring-[#412460]/20"
+                      placeholder="0.00"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Total Amount Received</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={formData.amountReceived}
+                      onChange={(e) => setFormData(prev => ({ ...prev, amountReceived: e.target.value }))}
+                      className="w-full rounded-[1rem] border border-[#E1E3EE] px-4 py-3 text-sm text-[#2D2D2D] focus:border-[#412460] focus:outline-none focus:ring-2 focus:ring-[#412460]/20"
+                      placeholder="0.00"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+
             {/* Notes */}
             <div>
               <label className="mb-2 block text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Notes (Optional)</label>
@@ -2852,8 +3026,234 @@ export default function StaffCreateInvoice() {
           </div>
         )}
 
-        {/* Step 2: Invoice Items */}
-        {currentStep === 2 && (
+        {/* Step 2: Invoice Items — Billing Invoice uses a simple S.N./Description/
+            Qty/Unit/Rate/Total table (see the isBilling branch below); the
+            Excel-style grid here (images, HS code, weight, CBM, merge/drag) is
+            PI-only, matching the customs/shipping data a Proforma Invoice needs. */}
+        {currentStep === 2 && isBilling && (
+          <form
+            onSubmit={handleSubmit}
+            // Belt-and-suspenders: handleCellKeyDown already preventDefaults
+            // Enter on every grid cell, but this stops it submitting the form
+            // even if focus somehow lands on a grid input without that wiring.
+            onKeyDown={(e) => { if (e.key === "Enter" && e.target.tagName === "INPUT") e.preventDefault(); }}
+            className="mt-6 space-y-6"
+          >
+            <div className="rounded-[2rem] border border-[#E1E3EE] bg-white p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <label className="text-xs font-semibold uppercase tracking-[0.08em] text-[#2D2D2D]/70">Items</label>
+                <button
+                  type="button"
+                  onClick={addItem}
+                  className="rounded-lg border border-[#412460] px-4 py-2 text-xs font-semibold text-[#412460] transition-colors hover:bg-[#412460] hover:text-white"
+                >
+                  + Add Item
+                </button>
+              </div>
+
+              {/* Compact Excel-style grid — same spreadsheet look as the PI
+                  generator's item table, just far fewer columns and smaller
+                  cells since Billing only needs Description/Qty/Unit/Rate. */}
+              <div
+                className="border border-[#d0d0d0]"
+                style={{ userSelect: "none" }}
+                onClick={(e) => { if (e.target === e.currentTarget) setFocusedCell(null); }}
+                onKeyDown={handleBillingGridCopy}
+              >
+                <table
+                  className="border-collapse"
+                  style={{ fontSize: 12.5, tableLayout: "fixed", width: "100%", fontVariantNumeric: "tabular-nums" }}
+                >
+                  <colgroup>
+                    <col style={{ width: 40 }} />
+                    <col />
+                    <col style={{ width: 64 }} />
+                    <col style={{ width: 104 }} />
+                    <col style={{ width: 88 }} />
+                    <col style={{ width: 88 }} />
+                    <col style={{ width: 32 }} />
+                  </colgroup>
+                  <thead>
+                    <tr style={{ height: 26, background: "#f7f7f7" }}>
+                      {["S.N.", "Description", "Qty", "Unit", "Rate", "Total", ""].map((label, ci) => (
+                        <td
+                          key={ci}
+                          className={ci === 1 ? "text-left" : "text-center"}
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            color: "#555",
+                            padding: "0 6px",
+                            borderRight: ci === 6 ? "none" : "1px solid #d0d0d0",
+                            borderBottom: "2px solid #c0c0c0",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {label}
+                        </td>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {formData.items.map((item, index) => {
+                      const total = (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0);
+                      const inputStyle = {
+                        display: "block", width: "100%", height: 30, padding: "0 8px",
+                        background: "transparent", border: "none", outline: "none",
+                        fontSize: 12.5, color: "#1f1f1f", fontFamily: "inherit", boxSizing: "border-box",
+                      };
+                      // Billing column order for cell selection/range — mirrors the
+                      // PI grid's click/drag-select + Enter-moves-down behaviour.
+                      const BILLING_COLS = ["productName", "quantity", "unit", "unitPrice"];
+                      const cellStyle = (colIdx) => {
+                        const colKey = BILLING_COLS[colIdx];
+                        const active = focusedCell?.row === index && focusedCell?.col === colKey;
+                        const inRange = selRange &&
+                          (selRange.r1 !== selRange.r2 || selRange.c1 !== selRange.c2) &&
+                          index >= selRange.r1 && index <= selRange.r2 &&
+                          colIdx >= selRange.c1 && colIdx <= selRange.c2;
+                        return {
+                          position: "relative",
+                          borderRight: "1px solid #d0d0d0", borderBottom: "1px solid #d0d0d0", padding: 0,
+                          background: active ? "#fff" : inRange ? "#cce5ff" : "#fff",
+                          outline: active ? "2px solid #1d6f42" : inRange ? "1px solid #1d6f42" : "none",
+                          outlineOffset: active ? -2 : -1,
+                        };
+                      };
+                      const cellMD = (colIdx) => (e) => handleCellMouseDown(e, index, colIdx);
+                      const cellME = (colIdx) => () => handleCellMouseEnter(index, colIdx);
+                      const cellFocus = (colKey) => () => setFocusedCell({ row: index, col: colKey });
+                      // The small green square in the focused cell's corner — drag it down
+                      // to copy that cell's value into the rows you drag over (Excel fill).
+                      const fillHandle = (colIdx) => {
+                        const colKey = BILLING_COLS[colIdx];
+                        if (!(focusedCell?.row === index && focusedCell?.col === colKey)) return null;
+                        return (
+                          <div
+                            style={{
+                              position: "absolute", bottom: -4, right: -4, width: 8, height: 8,
+                              background: "#1d6f42", border: "1.5px solid #fff", cursor: "crosshair", zIndex: 20,
+                            }}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setFillDrag({ colKey, fromIndex: index, toIndex: index });
+                            }}
+                            title="Drag to fill down"
+                          />
+                        );
+                      };
+                      return (
+                        <tr
+                          key={index}
+                          style={{ height: 30 }}
+                          onMouseEnter={() => {
+                            if (fillDrag) setFillDrag(prev => prev ? { ...prev, toIndex: Math.max(prev.fromIndex, index) } : null);
+                          }}
+                        >
+                          <td className="select-none text-center" style={{ borderRight: "1px solid #d0d0d0", borderBottom: "1px solid #d0d0d0", fontSize: 11, color: "#888", background: "#f2f2f2" }}>
+                            {index + 1}
+                          </td>
+                          <td style={cellStyle(0)} onMouseDown={cellMD(0)} onMouseEnter={cellME(0)}>
+                            <input
+                              type="text"
+                              data-cell={`${index}-productName`}
+                              value={item.productName}
+                              onChange={(e) => updateItem(index, "productName", e.target.value)}
+                              onFocus={cellFocus("productName")}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, "productName")}
+                              style={inputStyle}
+                              className="focus:bg-[#F9F8FC]"
+                              placeholder="Description"
+                            />
+                            {fillHandle(0)}
+                          </td>
+                          <td style={cellStyle(1)} onMouseDown={cellMD(1)} onMouseEnter={cellME(1)}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              data-cell={`${index}-quantity`}
+                              value={item.quantity}
+                              onChange={(e) => updateItem(index, "quantity", e.target.value === "" ? "" : parseFloat(e.target.value))}
+                              onFocus={cellFocus("quantity")}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, "quantity")}
+                              style={{ ...inputStyle, textAlign: "right" }}
+                              className="focus:bg-[#F9F8FC]"
+                            />
+                            {fillHandle(1)}
+                          </td>
+                          <td style={cellStyle(2)} onMouseDown={cellMD(2)} onMouseEnter={cellME(2)}>
+                            <UnitSelect
+                              value={item.unit}
+                              onChange={(v) => updateItem(index, "unit", v)}
+                              inputStyle={inputStyle}
+                              inputClassName="focus:bg-[#F9F8FC]"
+                              dataCell={`${index}-unit`}
+                              onFocus={cellFocus("unit")}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, "unit")}
+                            />
+                            {fillHandle(2)}
+                          </td>
+                          <td style={cellStyle(3)} onMouseDown={cellMD(3)} onMouseEnter={cellME(3)}>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              data-cell={`${index}-unitPrice`}
+                              value={item.unitPrice}
+                              onChange={(e) => updateItem(index, "unitPrice", e.target.value === "" ? "" : parseFloat(e.target.value))}
+                              onFocus={cellFocus("unitPrice")}
+                              onKeyDown={(e) => handleCellKeyDown(e, index, "unitPrice")}
+                              style={{ ...inputStyle, textAlign: "right" }}
+                              className="focus:bg-[#F9F8FC]"
+                            />
+                            {fillHandle(3)}
+                          </td>
+                          <td className="text-right select-none" style={{ borderRight: "1px solid #d0d0d0", borderBottom: "1px solid #d0d0d0", padding: "0 8px", fontWeight: 600, color: "#2D2D2D" }}>
+                            {total ? total.toFixed(2) : "-"}
+                          </td>
+                          <td className="text-center select-none" style={{ borderBottom: "1px solid #d0d0d0" }}>
+                            <button
+                              type="button"
+                              onClick={() => removeItem(index)}
+                              disabled={formData.items.length <= 1}
+                              className="text-[#E05353] transition-colors hover:text-[#C04444] disabled:cursor-not-allowed disabled:opacity-30"
+                              title="Remove row"
+                            >
+                              <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                              </svg>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-4">
+              <button
+                type="button"
+                onClick={handleCancelClick}
+                className="rounded-lg border border-[#E1E3EE] px-6 py-3 text-sm font-semibold text-[#2D2D2D] transition-colors hover:bg-[#F4F2EF]"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={loading}
+                className="rounded-lg bg-[#412460] px-6 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#B99353] disabled:opacity-50"
+              >
+                {loading ? "Generating..." : "Generate Invoice"}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {currentStep === 2 && !isBilling && (
           <form onSubmit={handleSubmit} className="mt-6 space-y-6">
 
             {/* Invoice Items Table — full-bleed (card has px-0 on step 2) */}
@@ -4047,7 +4447,7 @@ export default function StaffCreateInvoice() {
                     const wasType = successModal.type;
                     setSuccessModal({ show: false, message: "", type: "" });
                     if (wasType !== "error" && wasType !== "info") {
-                      navigate("/staff-invoices");
+                      navigate(listPath);
                     }
                   }}
                   className="w-full rounded-lg bg-[#2A1740] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#412460]"

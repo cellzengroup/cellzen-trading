@@ -13,6 +13,14 @@ const Invoice = sequelize
         allowNull: false,
         unique: true,
       },
+      // 'PI' (Proforma Invoice) or 'Billing' (Billing Invoice) — two separate
+      // sidebar tools sharing this same table/generator. Defaults to 'PI'
+      // because every row created before this column existed was a PI.
+      document_type: {
+        type: DataTypes.STRING,
+        allowNull: false,
+        defaultValue: 'PI',
+      },
       shared_user_id: {
         type: DataTypes.UUID,
         allowNull: true,
@@ -70,6 +78,7 @@ const Invoice = sequelize
       indexes: [
         { fields: ['created_by_user_id'] },
         { fields: ['shared_user_id'] },
+        { fields: ['document_type'] },
       ],
     })
   : null;

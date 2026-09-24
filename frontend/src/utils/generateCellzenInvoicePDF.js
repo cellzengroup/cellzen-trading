@@ -117,7 +117,7 @@ export const generateInvoicePDF = async (invoiceInput, currency = 'USD', rates =
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(22);
   doc.setTextColor(...C.purple);
-  doc.text('Performa Invoice', pageWidth / 2, y, { align: 'center' });
+  doc.text(raw.documentType === 'Billing' ? 'Billing Invoice' : 'Proforma Invoice', pageWidth / 2, y, { align: 'center' });
   y += 10;
 
   // ── Buyer label ────────────────────────────────────────────────────────────

@@ -62,6 +62,13 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   const items = raw.items       || [];
   const sym   = symOf(currency);
 
+  // Billing Invoice: a charge row from the default checklist that staff never
+  // filled in (no Qty or Rate) shouldn't appear as a blank line on the sheet —
+  // same rule as the Billing PDF export. PI keeps every item row as-is.
+  const renderItems = raw.documentType === 'Billing'
+    ? items.filter((it) => parseFloat(it.quantity) > 0 || parseFloat(it.unitPrice) > 0)
+    : items;
+
   // HS Code column is opt-in via the "Add HS Code in PDF/Excel" checkbox on the
   // create-invoice screen. When on (and any item has a code) it becomes column J,
   // making column 10 the last column; otherwise the sheet stays 9 columns wide.
@@ -133,12 +140,12 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   row(2).height = 8;
 
   // ===========================================================================
-  // ROW 3  –  "Performa Invoice" title
+  // ROW 3  –  Document title ("Proforma Invoice" or "Billing Invoice")
   // ===========================================================================
   row(3).height = 38;
   mg(3, 1, 3, LAST);
   const title = cel(3, 1);
-  title.value = 'Performa Invoice';
+  title.value = raw.documentType === 'Billing' ? 'Billing Invoice' : 'Proforma Invoice';
   fnt(title, { size: 22, bold: true, color: C.purple });
   aln(title, 'center', 'middle');
 
@@ -239,8 +246,8 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   const COL_OFFSET = (COL_B_PX - IMG_W)    / 2 / COL_B_PX;
   const ROW_OFFSET = (ROW_H_PX - IMG_H_PX) / 2 / ROW_H_PX;
 
-  for (let i = 0; i < items.length; i++) {
-    const it     = items[i];
+  for (let i = 0; i < renderItems.length; i++) {
+    const it     = renderItems[i];
     const hasImg = !!it.productImage;
     row(curRow).height = hasImg ? IMG_H : TEXT_H;
     // Plain white for every product row — no alternating tint.
@@ -295,7 +302,7 @@ export const generateInvoiceExcel = async (invoiceInput, currency = 'USD', rates
   }
 
   // ── Empty filler rows – NO S.No numbers, just blank cells ─────────────────
-  for (let i = items.length; i < 5; i++) {
+  for (let i = renderItems.length; i < 5; i++) {
     row(curRow).height = TEXT_H;
     for (let col = 1; col <= LAST; col++) {
       const c = cel(curRow, col);

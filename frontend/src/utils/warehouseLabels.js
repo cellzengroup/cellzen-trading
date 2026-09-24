@@ -655,7 +655,12 @@ const GT_LIST = {
 // always keeps its prefix, so the list still reads as ids rather than as a row
 // of bare numbers.
 function includedIds(item) {
-  const ids = [...new Set(parcelProductIds(item).filter(Boolean).map((c) => String(c).trim()))];
+  return collapsePrefix([...new Set(parcelProductIds(item).filter(Boolean).map((c) => String(c).trim()))]);
+}
+
+// The ids with the prefix they share written once (see includedIds). Ids that do
+// not all share one are returned as they are.
+function collapsePrefix(ids) {
   if (ids.length < 2) return ids;
   const prefix = (ids[0].match(/^\D+/) || [])[0];
   if (!prefix || !ids.every((c) => c.startsWith(prefix) && c.length > prefix.length)) return ids;
@@ -738,6 +743,95 @@ function drawIncludedList(ctx, t, layout) {
   const ascent = ctx.measureText(GT_LIST.ref).actualBoundingBoxAscent;
   rows.forEach((row, i) => {
     ctx.fillText(row, GT_LIST.x, first + i * v * GT_LIST.pitch + ascent);
+  });
+  ctx.restore();
+}
+
+// ------------------------------------------------------------- "Order No:"
+// A supplier can bag SEVERAL 1688 orders under one tracking number. The warehouse
+// stores that bag as ONE box and prints ONE label for it, so the label has to name
+// every order in the bag — a single line left all but the first unaccounted for.
+//
+// One order (or none) is set exactly as the design has it, on its one line. Two or
+// more are set as rows of comma-separated numbers in the stock under the "Order No:"
+// caption, in the largest type that fits, wrapped by width, with the shared "ORD-"
+// written once as the product list above does. The band cannot grow — the rules
+// above and below are fixed artwork — so a bag with too many orders for it at the
+// smallest readable size closes with a count ("+2"), and how many orders are in the
+// box is never wrong.
+const GT_ORDERS = {
+  x: GT_FIELDS.order.x,          // the left margin the single line is set on
+  right: GT_FIELDS.order.right,  // ... and the hard right edge (the rules' end)
+  top: 843,       // the first row's ink top: clear of the caption above
+  bottom: 888,    // the last row's ink bottom: leaves ~13 units clear of the rule at y 901
+  ink: GT_FIELDS.order.bottom - GT_FIELDS.order.top, // the biggest type — the single line's
+  inkMin: 12,     // never set smaller: list fewer orders and count the rest
+  pitch: 1.3,     // row pitch as a multiple of the ink height
+  ref: GT_FIELDS.order.ref, // sizes every row, so they cannot jump about
+};
+
+// The parcel's orders, distinct, in the order the server sends them. The box's own
+// order number is a floor for a row that predates the list (a cached one) and is
+// never allowed to go missing from it.
+function parcelOrders(item) {
+  const list = [...new Set((Array.isArray(item?.orderNumbers) ? item.orderNumbers : []).filter(Boolean).map((o) => String(o).trim()))];
+  const own = String(item?.orderNumber || "").trim();
+  if (own && !list.includes(own)) list.unshift(own);
+  return list;
+}
+
+// null for the one-line case (see above), else { rows, v, px, top }.
+function orderLayout(ctx, item) {
+  const all = parcelOrders(item);
+  if (all.length < 2) return null;
+
+  const room = GT_ORDERS.right - GT_ORDERS.x;
+  const band = GT_ORDERS.bottom - GT_ORDERS.top;
+  const pxFor = (v) => (100 * v) / inkHeight(ctx, GT_ORDERS.ref, 100, "700");
+  const blockHeight = (n, v) => v * ((n - 1) * GT_ORDERS.pitch + 1);
+  // Greedy: as many to a row as the width holds. A wrapped row keeps no trailing
+  // comma — the break carries it, as in the product list.
+  const wrap = (tokens, v) => {
+    ctx.font = `700 ${pxFor(v)}px ${FONT_STACK}`;
+    const rows = [];
+    for (const tok of tokens) {
+      const next = rows.length ? `${rows[rows.length - 1]}, ${tok}` : tok;
+      if (rows.length && ctx.measureText(next).width <= room) rows[rows.length - 1] = next;
+      else rows.push(tok);
+    }
+    return rows;
+  };
+  const fits = (rows, v) => blockHeight(rows.length, v) <= band;
+
+  let tokens = collapsePrefix(all);
+  let v = GT_ORDERS.ink;
+  let rows = wrap(tokens, v);
+  while (v > GT_ORDERS.inkMin && !fits(rows, v)) {
+    v -= 0.5;
+    rows = wrap(tokens, v);
+  }
+  // Still too many at the smallest size: name as many as fit and count the rest.
+  for (let keep = all.length - 1; keep >= 1 && !fits(rows, v); keep -= 1) {
+    tokens = [...collapsePrefix(all.slice(0, keep)), `+${all.length - keep}`];
+    rows = wrap(tokens, v);
+  }
+
+  const top = GT_ORDERS.top + (band - blockHeight(rows.length, v)) / 2; // centred in the band
+  return { rows, v, px: pxFor(v), top };
+}
+
+function drawOrderRows(ctx, t, layout) {
+  const { rows, v, px, top } = layout;
+  ctx.save();
+  ctx.translate(t.dx, t.dy);
+  ctx.scale(t.scale, t.scale);
+  ctx.textAlign = "left";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = "#000000";
+  ctx.font = `700 ${px}px ${FONT_STACK}`;
+  const ascent = ctx.measureText(GT_ORDERS.ref).actualBoundingBoxAscent;
+  rows.forEach((row, i) => {
+    ctx.fillText(row, GT_ORDERS.x, top + i * v * GT_ORDERS.pitch + ascent);
   });
   ctx.restore();
 }
@@ -857,7 +951,10 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   drawField(ctx, GT_FIELDS.shelf, item.rackId || "-", t);
   drawField(ctx, GT_FIELDS.item, code, t);
   drawIncludedList(ctx, t, list);
-  drawField(ctx, GT_FIELDS.order, item.orderNumber || "-", t);
+  // Every order in the parcel; a parcel with one keeps the design's single line.
+  const orders = orderLayout(ctx, item);
+  if (orders) drawOrderRows(ctx, t, orders);
+  else drawField(ctx, GT_FIELDS.order, item.orderNumber || "-", t);
   drawField(ctx, GT_FIELDS.tracking, item.trackingNumber || "-", t);
   drawField(ctx, GT_FIELDS.stamp, formatLabelStamp(item.createdAt), t);
   drawField(ctx, GT_FIELDS.mode, mode === "land" ? "VIA LAND" : "VIA AIR", t);
