@@ -75,6 +75,32 @@ const normalizeShipMode = (v) => {
 // The panel wants a number, and NULL (not weighed yet) must stay null rather than
 // become 0 — a zero would read as "weighed, weightless".
 const kgOut = (v) => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+
+// gtradea's "Net unit ¥" for one procurement line: what a single piece really
+// costs once its share of the freight is on it (unit_price_cny +
+// frt_per_unit_cny). Both arrive from pg as DECIMAL strings, so they are coerced
+// before they are added — '3.5' + '0.35' is the string '3.50.35'.
+//
+// null when the line has NO unit price: gtradea has not priced it yet, and a
+// freight share on its own is not a unit cost. A priced line with no freight
+// recorded is a real ¥0 share, though, so that half falls back to 0 rather than
+// voiding the answer.
+const netUnitOut = (unit, frt) => {
+  const u = kgOut(unit);
+  if (u == null) return null;
+  // Four decimals: the precision gtradea prices the freight share at, and the
+  // one that keeps net unit x quantity equal to the total its panel prints.
+  return Math.round((u + (kgOut(frt) || 0)) * 10000) / 10000;
+};
+
+// Total Price for a line: its net unit cost x how many pieces were ordered.
+// Money, so rounded to 2 dp — the 4-dp net unit exists to keep this exact
+// (¥3.8500 x 10 = ¥38.50), not to be shown as a fraction of a fen itself.
+const lineTotalOut = (netUnit, qty) => {
+  const n = Number(qty);
+  if (netUnit == null || !Number.isFinite(n) || n <= 0) return null;
+  return Math.round(netUnit * n * 100) / 100;
+};
 // Largest weight the column can hold and a sane single line could ever carry
 // (DECIMAL(10,3) tops out just under 10,000,000). Anything past this is a typo.
 const MAX_KG = 100000;
@@ -213,6 +239,7 @@ async function fetchSupplierOrders(search, { from, to, withQc = false } = {}) {
       const m = key ? matchMap[key] : null;
       const auto = autoModes[i];
       const override = normalizeShipMode(r.ship_mode_override);
+      const netUnit = netUnitOut(r.unit_price_cny, r.frt_per_unit_cny);
       return {
         id: r.id,
         order_number: r.order_number,
@@ -242,6 +269,16 @@ async function fetchSupplierOrders(search, { from, to, withQc = false } = {}) {
           ? `Set to ${override === 'land' ? 'By Land' : 'By Air'} by warehouse staff (auto-detected ${auto.mode === 'land' ? 'By Land' : 'By Air'}: ${auto.reason})`
           : auto.reason,
         order_status: r.order_status,
+        // What gtradea's China Operations panel prices this line at, per piece
+        // and in total. `net_unit_price` is its "Net unit ¥" column (unit +
+        // freight share) — the Unit Price the 1688 tab's product popup shows —
+        // and `total_price` is that x quantity. Both null on a line gtradea has
+        // not priced yet; the two components ride along so the popup can show
+        // the working rather than one unexplained figure.
+        unit_price_cny: kgOut(r.unit_price_cny),
+        frt_per_unit_cny: kgOut(r.frt_per_unit_cny),
+        net_unit_price: netUnit,
+        total_price: lineTotalOut(netUnit, r.quantity),
         paid_amount: r.paid_amount,
         ordered_at: r.ordered_at,
         synced_at: r.synced_at,
@@ -566,14 +603,24 @@ const PACKING_COLUMNS = [
   { key: 'unit', header: 'Unit', width: 14 },
   { key: 'kg', header: 'KG', width: 14 },
   { key: 'cbm', header: 'CBM', width: 14 },
-  // Both amounts name their currency with its SYMBOL, not its code: the header
-  // is set in 13pt Arial, and "Amount in RMB" wrapped onto a second line inside
-  // a 16-wide column. The widths carry the shorter label on one line with room
-  // to spare, and the symbol matches the one the cells below are formatted with.
+  // Every money column names its currency with its SYMBOL, not its code: the
+  // header is set in 13pt Arial, and "Amount in RMB" wrapped onto a second line
+  // inside a 16-wide column. The widths carry the shorter label on one line with
+  // room to spare, and the symbol matches the one the cells below are formatted
+  // with.
+  //
+  // The four read left to right as the sum they are, and in the SHEET all but
+  // the first are live formulas over the cells to their left (see the row loop),
+  // never baked-in numbers — a reader clicking any of them sees the working,
+  // and correcting the rate is one find-and-replace in Excel:
+  //
+  //   Unit Price in ¥    what gtradea prices ONE piece at (its "Net unit ¥"")
+  //   Unit Price in $    = <Unit ¥ cell> / 6.7
+  //   Amount in ¥       = <Unit ¥ cell> * <Quantity cell>
+  //   Amount in $        = <Unit $ cell> * <Quantity cell>
+  { key: 'unitPaid', header: 'Unit Price in ¥', width: 20 },
+  { key: 'unitPaidUsd', header: 'Unit Price in $', width: 20 },
   { key: 'paid', header: 'Amount in ¥', width: 20 },
-  // The same figure in dollars, as a live formula over the ¥ cell (see the row
-  // loop) rather than a baked-in number — a reader clicking the cell sees the
-  // conversion, and correcting a rate is one find-and-replace in Excel.
   { key: 'paidUsd', header: 'Amount in $', width: 20 },
 ];
 // -> { columns: [...], col: { marka: 1, ctn: 2, ... } }, 1-indexed for ExcelJS.
@@ -604,13 +651,23 @@ const USD_FMT = '_ [$$-409]* #,##0.00_ ;_ [$$-409]* -#,##0.00_ ;_ [$$-409]* "-"?
 // constant and one helper on purpose — if the rate moves, or the direction is
 // ever meant to be the other way round, this is the only place to change.
 const RMB_PER_USD = 6.7;
-// Rounded to the cent here rather than left to the number format, so what the
-// cell HOLDS is what it shows and a reader adding the column by hand gets the
-// figure the sheet prints.
-const rmbToUsd = (rmb) => {
+// Deliberately NOT rounded to the cent. Every dollar figure on the sheet is the
+// cached result of a cell that holds a FORMULA (`=B7/6.7`, `=C7*J7`), and Excel
+// recomputes those at full precision the moment it recalculates — so a rounded
+// cache would make the cell change value between opening the file and touching
+// it, and a unit price rounded before being multiplied by a quantity compounds
+// that cent into the total. The number format still shows two decimals, and the
+// PDF still prints two, so nothing looks different; only what the cell holds is
+// right. Unpriced stays null, never 0.
+const usdExact = (rmb) => {
+  // Nullish is rejected BEFORE the coercion, not after: Number(null) and
+  // Number('') are both 0, which is finite, so a bare Number.isFinite() check
+  // turns a line gtradea has not priced into $0.00 — and, worse, into a live
+  // `=M7/6.7` formula sitting in a column of real prices, claiming the goods
+  // were free rather than that nobody has priced them.
+  if (rmb == null || rmb === '') return null;
   const n = Number(rmb);
-  if (!Number.isFinite(n)) return null;
-  return Math.round((n / RMB_PER_USD) * 100) / 100;
+  return Number.isFinite(n) ? n / RMB_PER_USD : null;
 };
 
 // ---- Product photo geometry. The photo is drawn at EXACTLY the width of the
@@ -986,6 +1043,20 @@ function packingLogoAnchor(columns) {
 // columns are deliberately different renderings of the same field: a packer reads
 // the short name off the line, and a broker reads the full title.
 function packingRowValues(o, name) {
+  // The line's own price and quantity, computed once here so the four money
+  // columns below and the sheet's formulas can never disagree about them. Both
+  // come off the serialised row (see the list route), which already worked the
+  // net unit out from gtradea's unit price + freight share.
+  const qty = Number(o.quantity) || null;
+  const netUnit = o.net_unit_price == null || !Number.isFinite(Number(o.net_unit_price))
+    ? null
+    : Number(o.net_unit_price);
+  // Blank, not 0, when either half is missing: a line gtradea has not priced,
+  // or one with no quantity, has no amount — and ¥0.00 in a price column reads
+  // as "free", which is a different claim.
+  const lineTotal = netUnit == null || qty == null
+    ? null
+    : Math.round(netUnit * qty * 100) / 100;
   return {
     marka: 'CZN-GT',   // fixed shipping mark for every carton in this batch
     ctn: null,         // Ctn. No — filled in by hand once cartons are packed
@@ -1009,29 +1080,46 @@ function packingRowValues(o, name) {
     // than a dash when there is none — an empty cell in a wrapped text column
     // reads as "not supplied", where a dash reads as a value.
     description: o.product_name || '',
-    quantity: Number(o.quantity) || null,
+    quantity: qty,
     unit: 'pcs',
-    kg: null,          // filled in by hand at packing time
+    // The weight staff typed into the KG column of the 1688 tab, read straight
+    // across. gtradea publishes no weight, so a line nobody has weighed yet has
+    // none — and that stays BLANK rather than becoming a 0, which in a weight
+    // column reads as "weighed, and it came to nothing".
+    kg: o.kg == null || !Number.isFinite(Number(o.kg)) ? null : Number(o.kg),
     cbm: null,         // filled in by hand at packing time
-    // Amount — the paid figure from gtradea's procurement/China-ops view, packing list
-    // only (not shown on the 1688 tab).
-    paid: o.paid_amount != null ? Number(o.paid_amount) : null,
-    // The Amount again, in dollars. Derived, never stored — see RMB_PER_USD.
-    paidUsd: o.paid_amount != null ? rmbToUsd(o.paid_amount) : null,
+    // Unit Price — gtradea's own "Net unit ¥" for this line: one piece including
+    // its share of the freight. This is the only one of the four money figures
+    // that is a stored input; the other three are worked out from it and the
+    // quantity — in the sheet as live formulas, and here as the numbers the PDF
+    // prints and the sheet caches.
+    //
+    // NOT paid_amount, which used to fill the Amount column: that is a 1688
+    // ORDER total repeated on every line of the order, so it could not be
+    // divided into a per-piece price, and on a multi-line order it overstated
+    // any single line.
+    unitPaid: netUnit,
+    unitPaidUsd: usdExact(netUnit),
+    paid: lineTotal,
+    paidUsd: usdExact(lineTotal),
   };
 }
 
 // Consecutive line items that belong to the same order AND the same CN tracking
-// number are one shipment split across several product rows, so their order
-// number and paid amount (both order-level, not per-item) read once per shipment
-// instead of repeating on every line — merged cells in the sheet, an unbroken
-// cell on the page. Returns, for every row, the index of the first row of its
-// shipment, plus the paid total counted ONCE per shipment so it isn't inflated
-// by multi-item orders.
+// number are one shipment split across several product rows, so their ORDER
+// NUMBER reads once per shipment instead of repeating on every line — a merged
+// cell in the sheet, an unbroken cell on the page. Returns, for every row, the
+// index of the first row of its shipment.
+//
+// The money columns are NOT merged with it any more, and that is the point of
+// this comment. They used to be, because the Amount was `paid_amount` — a
+// 1688-ORDER total that genuinely was the same figure on every line of the
+// order, so printing it once was the honest way to show it. Each line now
+// carries its OWN price and amount (unit ¥ x qty), which differ line to line, so
+// merging them would hide every line but the first.
 function packingShipmentGroups(orders) {
   const groupOf = new Array(orders.length).fill(0);
   let start = 0;
-  let totalPaid = 0;
   for (let i = 1; i <= orders.length; i++) {
     const sameShipment = i < orders.length
       && orders[i].order_number && orders[i].china_tracking_no
@@ -1039,12 +1127,27 @@ function packingShipmentGroups(orders) {
       && orders[i].china_tracking_no === orders[start].china_tracking_no;
     if (!sameShipment) {
       for (let k = start; k < i; k++) groupOf[k] = start;
-      const paid = Number(orders[start].paid_amount);
-      if (Number.isFinite(paid)) totalPaid += paid;
       start = i;
     }
   }
-  return { groupOf, totalPaid: totalPaid ? Math.round(totalPaid * 100) / 100 : null };
+  return { groupOf };
+}
+
+// What the Total row carries: every line's own amount added up, in both
+// currencies. A plain sum over the lines now that each holds its own figure —
+// the old version added one order-level amount per SHIPMENT, which was the only
+// way not to count a multi-line order once per line back when every line of it
+// repeated the same total.
+function packingTotals(orders) {
+  let rmb = 0;
+  let seen = false;
+  for (const o of orders) {
+    const v = packingRowValues(o, '').paid;
+    if (v != null) { rmb += v; seen = true; }
+  }
+  if (!seen) return { totalPaid: null, totalPaidUsd: null };
+  const total = Math.round(rmb * 100) / 100;
+  return { totalPaid: total, totalPaidUsd: usdExact(total) };
 }
 
 // GET /export.xlsx — packing list for the (optionally search-, scope- and
@@ -1104,9 +1207,29 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
 
     // Data rows
     let totalQty = 0;
-    // Column letter of the ¥ amount, for the dollar column's formulas. Read off
-    // the sheet rather than hard-coded: ?images=0 drops a column and shifts it.
+    // The column letters the row formulas are written against. Read off the
+    // sheet rather than hard-coded: ?images=0 drops a column and shifts them all.
+    const unitRmbLetter = sheet.getColumn(col.unitPaid).letter;
+    const unitUsdLetter = sheet.getColumn(col.unitPaidUsd).letter;
+    const qtyLetter = sheet.getColumn(col.quantity).letter;
     const rmbLetter = sheet.getColumn(col.paid).letter;
+    const usdLetter = sheet.getColumn(col.paidUsd).letter;
+    // The money cell for one column on row `rr`: the stored Unit Price in ¥ as a
+    // plain number, and the other three as the live formula that derives them,
+    // each carrying the computed figure as its cached result so the sheet reads
+    // correctly the moment it opens, before Excel has recalculated anything.
+    //
+    // A missing figure gets an EMPTY CELL, never a formula: `=B7*C7` over a blank
+    // unit price shows ¥0.00, which would state that an unpriced line is free.
+    const moneyCell = (key, values, rr) => {
+      const v = values[key];
+      if (v == null) return null;
+      if (key === 'unitPaid') return v;
+      if (key === 'unitPaidUsd') return { formula: `${unitRmbLetter}${rr}/${RMB_PER_USD}`, result: v };
+      if (key === 'paid') return { formula: `${unitRmbLetter}${rr}*${qtyLetter}${rr}`, result: v };
+      return { formula: `${unitUsdLetter}${rr}*${qtyLetter}${rr}`, result: v };
+    };
+    const MONEY_FMT = { unitPaid: CNY_FMT, unitPaidUsd: USD_FMT, paid: CNY_FMT, paidUsd: USD_FMT };
     let r = 4;
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i];
@@ -1122,21 +1245,14 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
         cell.border = PACKING_THIN_BORDER;
         if (numFmt) cell.numFmt = numFmt;
       };
-      // Amount is money and is formatted as such — a bare 1234.5 in a column of
-      // prices reads as a quantity, and staff were left working out for
-      // themselves which currency it was in.
-      //
-      // The dollar figure goes in as =<¥ cell>/6.7, with the computed number
-      // carried alongside as the cached result so the sheet reads correctly the
-      // moment it opens, before Excel has recalculated anything. A row with no
-      // ¥ amount gets an empty cell, not a formula that would show $0.00.
+      // Money is formatted as money — a bare 1234.5 in a column of prices reads
+      // as a quantity, and staff were left working out for themselves which
+      // currency it was in. See moneyCell for how the four are written.
       columns.forEach((c, idx) => setCell(
         idx + 1,
-        c.key === 'paidUsd'
-          ? (values.paidUsd == null ? null : { formula: `${rmbLetter}${r}/${RMB_PER_USD}`, result: values.paidUsd })
-          : values[c.key],
+        MONEY_FMT[c.key] ? moneyCell(c.key, values, r) : values[c.key],
         c.key === 'name' ? { bold: true } : undefined,
-        c.key === 'paid' ? CNY_FMT : (c.key === 'paidUsd' ? USD_FMT : undefined),
+        MONEY_FMT[c.key],
       ));
 
       // The photo decides how tall this row is. It's drawn at the exact width of
@@ -1176,15 +1292,17 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       r += 1;
     }
 
-    // One shipment split across several product rows reads its order number and
-    // paid amount once, as a merged cell down the group.
-    const { groupOf, totalPaid } = packingShipmentGroups(orders);
+    // One shipment split across several product rows reads its ORDER NUMBER
+    // once, as a merged cell down the group. Only that column: the money columns
+    // now differ line to line (see packingShipmentGroups).
+    const { groupOf } = packingShipmentGroups(orders);
+    const { totalPaid, totalPaidUsd } = packingTotals(orders);
     for (let i = 0; i < orders.length; i++) {
       if (groupOf[i] !== i) continue;
       let end = i;
       while (end + 1 < orders.length && groupOf[end + 1] === i) end += 1;
       if (end === i) continue;
-      [col.order, col.paid, col.paidUsd].forEach((c) => {
+      [col.order].forEach((c) => {
         sheet.mergeCells(4 + i, c, 4 + end, c);
         sheet.getCell(4 + i, c).alignment = { horizontal: 'center', vertical: 'middle' };
       });
@@ -1208,17 +1326,27 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     totalRow.getCell(col.model).value = 'Total';
     totalRow.getCell(col.quantity).value = totalQty;
     totalRow.getCell(col.unit).value = 'pcs';
-    const totalPaidCell = totalRow.getCell(col.paid);
-    totalPaidCell.value = totalPaid;
-    totalPaidCell.numFmt = CNY_FMT;
-    // Converted from the RMB total, NOT summed from the USD column: the amount
-    // is order-level and reads once per shipment, so adding the cells up would
-    // count a multi-item order once per line.
-    const totalUsdCell = totalRow.getCell(col.paidUsd);
-    totalUsdCell.value = totalPaid == null
-      ? null
-      : { formula: `${rmbLetter}${r}/${RMB_PER_USD}`, result: rmbToUsd(totalPaid) };
-    totalUsdCell.numFmt = USD_FMT;
+    // Both totals are a SUM down their own column, which is what a reader
+    // checking the sheet expects to find there and what lets Excel re-total it
+    // after an edit. Summing is honest now that each line carries its own
+    // amount; when the column held one order-level figure repeated per line, it
+    // would have counted a multi-line order once per line.
+    //
+    // The unit-price columns get NO total: adding up prices-per-piece produces a
+    // number that means nothing, and a blank says so.
+    const firstDataRow = 4;
+    const lastDataRow = r - 1;
+    const sumCell = (c, letter, total, fmt) => {
+      const cell = totalRow.getCell(c);
+      cell.value = total == null
+        ? null
+        : { formula: `SUM(${letter}${firstDataRow}:${letter}${lastDataRow})`, result: total };
+      cell.numFmt = fmt;
+    };
+    if (lastDataRow >= firstDataRow) {
+      sumCell(col.paid, rmbLetter, totalPaid, CNY_FMT);
+      sumCell(col.paidUsd, usdLetter, totalPaidUsd, USD_FMT);
+    }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${packingFilename(opts, 'xlsx')}"`);
@@ -1269,16 +1397,20 @@ function registerPdfFonts(doc) {
 
 // Cell values as printable text. The sheet stores numbers so Excel can total
 // them; the page has to show them, so they're formatted here instead.
+// The four money columns, and which currency each prints in. The page has no
+// formulas, so it prints the same numbers the sheet caches as its results — a
+// reader holding the printout against the file has to see identical figures.
+const PDF_MONEY = { unitPaid: "¥", unitPaidUsd: '$', paid: "¥", paidUsd: '$' };
 const pdfText = (key, value) => {
   if (value == null || value === '') return '';
-  if (key === 'paid' || key === 'paidUsd' || key === 'quantity') {
+  if (PDF_MONEY[key] || key === 'quantity') {
     const n = Number(value);
     if (!Number.isFinite(n)) return String(value);
     // Money keeps both decimals and its currency mark, matching how the sheet
     // formats the same column (CNY_FMT) — "¥1,234.50", never "1234.5".
     if (key === 'quantity') return String(n);
     const money = n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return key === 'paid' ? `¥${money}` : `$${money}`;
+    return `${PDF_MONEY[key]}${money}`;
   }
   return String(value);
 };
@@ -1295,7 +1427,8 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
     // failure can still answer with a clean JSON 500 instead of a half-written
     // PDF that a browser would happily save as a corrupt file.
     const { orders, nerNames, imageBuffers } = await buildPackingExport(opts);
-    const { groupOf, totalPaid } = packingShipmentGroups(orders);
+    const { groupOf } = packingShipmentGroups(orders);
+    const { totalPaid, totalPaidUsd } = packingTotals(orders);
     const logo = await packingLogo();
     const title = packingTitle(opts);
 
@@ -1396,8 +1529,10 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
     let y = drawPageChrome(true);
     let firstRowOnPage = true;
     let totalQty = 0;
-    // The two order-level columns that read once per shipment (0-indexed).
-    const mergedCols = new Set([col.order - 1, col.paid - 1, col.paidUsd - 1]);
+    // The one order-level column that reads once per shipment (0-indexed). The
+    // money columns are per LINE now and each row prints its own — see
+    // packingShipmentGroups.
+    const mergedCols = new Set([col.order - 1]);
 
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i];
@@ -1468,7 +1603,7 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
       quantity: String(totalQty),
       unit: 'pcs',
       paid: pdfText('paid', totalPaid),
-      paidUsd: pdfText('paidUsd', totalPaid == null ? null : rmbToUsd(totalPaid)),
+      paidUsd: pdfText('paidUsd', totalPaidUsd),
     };
     columns.forEach((c, ci) => {
       line(colX[ci], y, colX[ci + 1], y);

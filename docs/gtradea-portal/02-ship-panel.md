@@ -15,10 +15,56 @@ from this list and reappears in **Dispatched**.
 |---|---|
 | Search box | Filters by code, tracking number, or shelf; `Enter` also tries an exact lookup (`doLookup`) so a full tracking/code scan jumps straight to the item |
 | Batch Ship toggle | Reveals row checkboxes + a "Ship selected" / "Cancel" pair; replaces the plain search bar's trailing controls |
+| Parcel popup | What tapping an order card opens — product photo, ids, and this tab actions. See [The parcel popup](#the-parcel-popup-parcelviewer) below |
 | Item detail card | Shown above the table when an item is selected — full details + barcode + "Mark as Shipped" / "Download Label" buttons |
+| | Reached by a **scan** or an `Enter` lookup, not by tapping a row — the row opens the parcel popup instead |
 | `GtradeaItemsTable` | CZN code, shelf, linked 1688 order #, CN tracking, shipment mode, and row actions (print / download / ship) |
 | Ship-confirm dialog | Modal that finalizes one or many ships |
 | Print-quantity dialog | Modal asking how many label copies to print (and, per item, its shipment mode) |
+
+## The parcel popup (`ParcelViewer`)
+
+Tapping an order card (or, on a multi-product order, one of the product rows it
+expands to) opens the parcel:
+
+| Left | Right |
+|---|---|
+| The product photo, `object-contain` on white; one thumbnail per product when the parcel holds several | Description · **Product ID** · **Tracking Number** · **Shipment** (By Air / By Land), then the actions |
+
+The **order number** heads it. Tapping the **Product ID** opens that box QC
+photos — the same `GoodsNo` control as in the row behind, so the dotted
+underline means the same thing in both places.
+
+**The actions are whatever the table was given.** Ship passes `onShip`, so the
+popup offers **Mark as Shipped** and **Print**; Dispatched passes none, so it
+offers **Print** alone and nothing there invites re-shipping goods that have
+already gone. Neither action acts on the spot: each opens a dialog of its own
+(the ship confirm, the print-quantity prompt) and closes this popup first, so two
+modals are never stacked.
+
+A **multi-product order card still expands** rather than opening — its products
+each get a row, and tapping one opens this popup **on that product**
+(`focusId`), not on the first. A summary row that opened straight into a popup
+would make the per-product rows unreachable on a phone, which has no separate
+expand control.
+
+### Where the photo comes from
+
+`GET /items` deliberately returns **no** `products` field — a photo URL and a
+full 1688 title on every one of its 5000 rows would bloat the poll and the
+instant-paint cache for something no list screen draws. So a row handed to this
+popup by the list has no picture in it, and the popup fetches one parcel worth:
+
+```
+GET /api/inventory/warehouse/items/:id
+  -> the box, + products: [{ item_code, product_name, product_image, quantity }]
+```
+
+the same `attachParcelSafely(details: true)` enrichment every write reply already
+carries. A row that came back from a **write** therefore already holds its
+products and paints instantly; the fetch then only confirms it, and the popup
+never blanks in between. If the fetch fails, only the photo panel says so — the
+ids, the tracking number and every action still work without a picture.
 
 ## State
 

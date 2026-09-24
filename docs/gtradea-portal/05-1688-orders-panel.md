@@ -20,6 +20,130 @@ opening gtradea.com itself.
 | | **Both are filters and they stack** — Received + By Air leaves exactly the received orders that still have to fly. Every option carries an `(n)`: how many rows you'd be left with if you picked it, counted with the *other* dropdown held where you left it |
 | Search box | Filters by order #, CN tracking, product name, item code, or job code |
 | `SupplierOrdersTable` | Date, **Product ID** (gtradea's per-item `GTI-…` code, stored as `item_code`), order #, product (+ photo), quantity, CN tracking, warehouse-status pill |
+| Product photo **and** description | Both are buttons, not plain content — tapping either opens the **product popup** (below). On a phone that is also why tapping them does *not* open the card's QC photos: the card's tap handler skips anything inside a `button`. |
+
+## The product popup (`ProductViewer`)
+
+Tapping a line's product photo **or its description** opens the photo large, with
+everything the line is known by beside it:
+
+The **order number** heads it — that is what a line is chased by outside the
+warehouse (gtradea, the supplier, the customer). The Product ID names this one
+line, so it sits with the rest of the line's own detail in the table instead.
+
+| Left | Right |
+|---|---|
+| The photo, `object-contain` on white, linked to the full-size file | Description (the full 1688 title), then a table: Product ID · Qty · **Unit Price** (with its goods + freight working under it) · **Total Price** |
+
+`object-contain`, not `cover`: this *is* the enlargement, so the whole product
+has to be in frame — cropping here would hide exactly the packaging detail
+someone opened the photo to check. The photo is also a link: it opens the
+original file in its own tab, which is the only way to get closer on a phone,
+since the page is pinned at `user-scalable=no`. Stacks vertically on a phone,
+where side-by-side would leave both halves too narrow to read.
+
+Everything it shows is already on the row the table rendered, so it opens with no
+round trip and works exactly as well as the row behind it does.
+
+### Getting out of it
+
+Five ways, and **all of them are instant** — the popup unmounts on the press,
+with no exit animation to sit through:
+
+| Way out | Notes |
+|---|---|
+| ✕ | 44 px, top right — a finger-sized target, not the 40 px it was |
+| The backdrop | Only when the press *started* there. A press that began inside the sheet and ended outside (selecting the description, or a swipe that overshoots) leaves it open, which is what `downOnBackdrop` guards |
+| **Swipe the header down** (phone) | Drag the grab handle or the order-number bar: the sheet follows the finger, and past ~110 px — or on a quick flick — it goes. A shorter pull springs back |
+| Escape | |
+| — | Whichever way it went, focus returns to the photo or description button that opened it |
+
+The sheet animates **in** (`whSheetUp` on a phone, `whPopIn` centred on a
+desktop, both in `index.css`) and never out. A dialog that plays 200 ms of exit
+before it disappears reads as a dead tap on a warehouse phone, and that
+complaint is what this replaced.
+
+While it is open the page behind is frozen (`body.overflow = hidden`, with the
+desktop scrollbar's width kept as padding so nothing jogs sideways) — flicking
+the backdrop used to scroll the table underneath, so closing the popup dropped
+you somewhere else in the list than where you opened it.
+
+### Why it used to close a second or two late
+
+**It was never the popup.** `SupplierOrdersTable` was not memoised, so *any*
+state change in `WarehouseApp` — including "the product popup just closed" —
+re-rendered every 1688 row on screen, each with a photo, a mode `<select>` and a
+KG `<input>`. Measured in throttled Chromium on the phone viewport with 200
+rows, a tap took **1.8–4.0 s** to take the popup off screen; the tap had
+registered instantly and the work behind it was the wait.
+
+The table is now `memo()`'d and every prop it is handed is stable — the rows are
+`useMemo`'d, and `openProduct`, `openQc1688` and the three `onToggleAll`
+handlers are `useCallback`'d rather than written as arrows in the JSX. The same
+measurement now reads **~150–200 ms**, with **zero** table re-renders during a
+close; at 400 rows on a 6×-throttled CPU it is ~350 ms, and what is left is the
+browser's own repaint of the page the overlay came off, not React.
+
+**If you add a prop to `SupplierOrdersTable`, keep it stable** (a `useMemo`
+value, a `useCallback`, or a primitive). An inline arrow or a fresh object
+literal silently undoes all of this, and nothing fails loudly when it does — the
+panel just goes slow again.
+
+### The ids copy
+
+Tapping the **order number** or the **Product ID** copies it, and the label above
+says `· COPIED` for 1.4 s. Both are on their way into gtradea, a courier's site
+or a chat far more often than they are read aloud. `navigator.clipboard` needs a
+secure context, so there is a `<textarea>` + `execCommand` fallback for any
+tablet reaching this over plain http.
+
+### Where the prices come from
+
+**Unit Price is gtradea's own "Net unit ¥"** — the column its China Operations
+panel prices every procurement line at — and **Total Price is that × quantity**:
+
+```
+net unit = unit_price_cny + frt_per_unit_cny      (per piece, 4 dp)
+total    = net unit x quantity                    (money, 2 dp)
+```
+
+Both halves are synced straight off the procurement item into
+`supplier_orders.unit_price_cny` / `.frt_per_unit_cny`, and the two derived
+figures are computed **server-side** (`net_unit_price`, `total_price`) so the
+popup can never quote a total that disagrees with a downloaded report.
+
+**Four decimals upstream, two on screen.** gtradea prices the freight share to
+four (¥0.3500), so the net unit is carried at four decimals all the way through
+the database and the route, and `total_price` is worked out from that
+*unrounded* figure. The popup then shows both as plain money, to two. Worked
+through on a real line — PR-2230's `GTI-101733`, qty 10:
+
+| Unit ¥ | Frt/unit ¥ | Net unit ¥ | × qty | Total |
+|---|---|---|---|---|
+| 3.50 | 0.3500 | 3.8500 → shown **¥3.85** | 10 | **¥38.50** |
+
+which is exactly that line's `paid_cny` on gtradea. Rounding the unit *before*
+multiplying is what this ordering avoids: a line at ¥0.41 + ¥1.1667 freight is
+¥1.5767 a piece, which reads as ¥1.58 but totals ¥4.73 over three — not the
+¥4.74 the rounded figure would give. The popup shows the two figures on their
+own, with no arithmetic written out between them.
+
+**Not divided out of `paid_amount`.** That column is a 1688-**order**-level
+total that can cover several procurement lines, so dividing it by one line's
+quantity would overstate that line whenever an order bundles more than one.
+`unit_price_cny` / `frt_per_unit_cny` are per **item**, which is the only pair
+that stays right in that case.
+
+**A line gtradea has not priced yet shows —, never ¥0.00.** "No price recorded"
+and "free" are different answers. The chain that keeps them apart runs the whole
+way down: `money()` in the sync rejects `null`/`''` before coercing (`Number('')`
+is `0`); `netUnitOut()` returns null when there is no unit price (a freight share
+on its own is not a unit cost); and `fmtCny()` in the popup rejects nullish input
+*before* `Number.isFinite`, which would otherwise pass `Number(null) === 0`
+straight through. A *priced* line with no freight recorded is a real ¥0 share,
+though, so that half falls back to 0 rather than voiding the answer — and the
+popup then drops the "goods + freight" working line rather than printing
+"¥18.0000 + ¥0.0000 freight".
 
 ## State
 
@@ -140,6 +264,50 @@ Two invariants fall out of this and are covered by the checks: the two modes
 always partition the current state selection (`land + air = all modes`), and
 the four states always partition the current mode selection.
 
+## The downloaded packing list (`/export.xlsx`, `/export.pdf`)
+
+Four money columns, left to right as the sum they are. In the **sheet** only the
+first holds a number; the other three are live Excel formulas over the cells to
+their left, each carrying the computed figure as its cached result so the file
+reads correctly before Excel has recalculated anything:
+
+| Column | Sheet cell |
+|---|---|
+| Unit Price in ¥ | the stored net unit price (gtradea's "Net unit ¥") — a plain number
+| Unit Price in $ | `=<Unit ¥># / 6.7` |
+| Amount in ¥ | `=<Unit ¥># * <Quantity#>` |
+| Amount in $ | `=<Unit $># * <Quantity#>` |
+| **Total** row | `=SUM(...)` down the two Amount columns |
+
+The rate is `RMB_PER_USD`, one constant in the route, so correcting it is one
+find-and-replace in the sheet and one line in the code.
+
+**Amount is now per LINE, not per order.** It used to be `paid_amount` — a
+1688-ORDER total repeated on every line of the order, which could not be divided
+into a per-piece price and overstated any single line of a multi-line order.
+Two consequences: the amount cells are **no longer merged** down a shipment
+(only the order number still is — see `packingShipmentGroups`), and the total is a
+plain `SUM` rather than one figure counted once per shipment.
+
+**Dollars are cached UNROUNDED** (`usdExact`, not a rounded helper). Excel
+recomputes `=M7/6.7` at full precision the moment it recalculates, so a rounded
+cache would make the cell change value between opening the file and touching it,
+and a unit price rounded before being multiplied by a quantity compounds that
+cent into the total. The number format still shows two decimals.
+
+**An unpriced line gets blank cells, not formulas.** `=M7*I7` over a blank unit
+price shows ¥0.00, which states the goods were free rather than that nobody has
+priced them. The same nullish-before-coercion guard as everywhere else on this
+path — `Number(null)` is `0`, and `0` is finite.
+
+**KG** carries whatever staff typed into the KG column of this panel, and is left
+**empty** where nobody has weighed the line. gtradea publishes no weight, so a 0
+there would read as "weighed, and it came to nothing".
+
+The **PDF** prints the same four figures as text (no formulas), taken from the
+same `packingRowValues`, so a printout held against the sheet shows identical
+numbers.
+
 ## Backend contract
 
 `GET /api/inventory/supplier-orders` — every `supplier_orders` row
@@ -149,6 +317,10 @@ each annotated with a computed `warehouse` object by joining
 match preferred over a shipped one for the same tracking number). Response
 also carries `lastSync` (the same status object `GET /status` returns), so
 the panel doesn't need a second round-trip just to show the header label.
+
+Every row also carries `unit_price_cny`, `frt_per_unit_cny` and the two figures
+derived from them, `net_unit_price` and `total_price` — all four null on a line
+gtradea has not priced. See the product popup above.
 
 `POST /api/inventory/supplier-orders/sync?force=1` — kicks a fresh pull
 without waiting for it (`202`); see

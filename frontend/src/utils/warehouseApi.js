@@ -246,6 +246,22 @@ export async function loadItems(source) {
   return (json.data || []).map(unwrapItem);
 }
 
+// ONE item, with `products` filled in — each distinct 1688 product in the parcel,
+// name + photo + quantity. `loadItems` leaves that field off (see unwrapItem), so
+// a row from the list has `products: []`; this is how a screen that needs the
+// pictures for one parcel gets them without weighing the list down for every
+// screen that does not.
+export async function fetchItem(id) {
+  const res = await authFetch(`/inventory/warehouse/items/${encodeURIComponent(id)}`, { ...STAFF, cache: "no-store" });
+  const json = await readJson(res);
+  if (!res.ok || !json.success) {
+    const err = new Error(json.message || `Failed to load that item (HTTP ${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return unwrapItem(json.data);
+}
+
 // Put away a shipment: link tracking -> shelf, mint a WH code. Throws with the
 // server message on a duplicate (409) so the caller can surface a warning.
 export async function putAwayItem(rackId, trackingNumber, source) {
@@ -403,6 +419,18 @@ export function unwrapSupplierOrder(row) {
     productImage: row.product_image || "",
     supplierUrl: row.supplier_url || "",
     quantity: row.quantity ?? null,
+    // What gtradea prices this line at. `unitPrice` is its "Net unit ¥" — one
+    // piece including its share of the freight — and `totalPrice` is that times
+    // the quantity; both are computed server-side so the popup and any report
+    // can never disagree about them. `unitPriceBase` / `freightPerUnit` are the
+    // two halves that make up the unit price, shown as its working.
+    //
+    // null, not 0, on a line gtradea has not priced yet: "no price recorded" and
+    // "free" are different answers and the popup says so differently.
+    unitPrice: row.net_unit_price ?? null,
+    unitPriceBase: row.unit_price_cny ?? null,
+    freightPerUnit: row.frt_per_unit_cny ?? null,
+    totalPrice: row.total_price ?? null,
     // Weight in KG as typed in by staff on the 1688 tab; null until weighed.
     kg: row.kg ?? null,
     // The parcel's QC photo ids (see unwrapItem) — array = the truth, null = unknown.

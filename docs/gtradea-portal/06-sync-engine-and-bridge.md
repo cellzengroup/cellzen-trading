@@ -65,8 +65,13 @@ anon key as `apikey`) using credentials from `GTRADEA_EMAIL` /
    product name/image, quantity, shipping mode, and the job's `created_at`
    as the order date (gtradea puts no date on the order object itself, but
    the job's creation date lines up with the date encoded in the order
-   number, e.g. `ORD-20260717-908966` → 2026-07-17), and `paid_amount` from
-   the map built in step 2.
+   number, e.g. `ORD-20260717-908966` → 2026-07-17), `paid_amount` from
+   the map built in step 2, and the line's own `unit_price_cny` +
+   `frt_per_unit_cny` — the two halves of the "Net unit ¥" the 1688 tab
+   shows as Unit Price (see the
+   [1688 Orders panel](./05-1688-orders-panel.md)). Both go through
+   `money()`, which rejects `null`/`''` *before* coercing, because
+   `Number('')` is `0` and an unpriced line must never sync as a free one.
 5. `persistRows(rows, …)` upserts each row into `supplier_orders`, keyed on
    `source_item_id` (gtradea's own procurement-item id) via
    `findOrCreate` + `update` — so re-running the sync never creates

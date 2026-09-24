@@ -543,6 +543,36 @@ router.get('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
   }
 });
 
+// GET /items/:id — ONE item, enriched the way a write's reply is: with
+// `products`, each distinct 1688 product in the parcel including its photo.
+//
+// That last field is the reason this exists. `GET /items` deliberately leaves it
+// off — a photo URL and a full title on every one of 5000 rows would bloat the
+// poll and the instant-paint cache — so a row the Ship or Dispatched list handed
+// the client has `products: []` and nothing to show a picture from. This fetches
+// it for the one parcel actually being looked at.
+//
+// Registered after `GET /items` and `GET /items/export.csv`, so neither is
+// shadowed; the `/items/:id/...` writes are POST/DELETE and unaffected.
+router.get('/items/:id', authenticate, requireStaffOrAdmin, async (req, res) => {
+  try {
+    if (dbGuard(res)) return;
+    if (!UUID_RE.test(String(req.params.id))) {
+      return res.status(404).json({ success: false, message: 'Item not found' });
+    }
+    const item = await withConnectionRetry(() => WarehouseItem.findByPk(req.params.id));
+    if (!item) return res.status(404).json({ success: false, message: 'Item not found' });
+    // Safely: a parcel whose 1688 lines can't be read still returns the box. The
+    // caller wanted a picture, and the rest of the row is worth more than a 500.
+    await attachParcelSafely(item);
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: item });
+  } catch (error) {
+    console.error('Get item error:', error?.message || error);
+    res.status(500).json({ success: false, message: 'Unable to load that item' });
+  }
+});
+
 // POST /items — put-away. Auto-creates the shelf on first sight, dedupes an
 // already-in-stock tracking number, mints (or reuses) the goods number, links
 // item -> shelf.

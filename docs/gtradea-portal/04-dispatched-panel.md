@@ -15,7 +15,9 @@ search/select mechanics, filtered to `status === "shipped"` instead of
 |---|---|
 | Search box | Filters by code, tracking, or shelf |
 | Batch Delete toggle | Reveals row checkboxes + "Delete selected" / "Cancel" (styled red — destructive) |
+| Parcel popup | Tapping an order card opens the same `ParcelViewer` the Ship tab uses — product photo left, Product ID / Tracking Number / Shipment right. **Print only**: this tab passes no `onShip`, so the popup shows no Mark as Shipped for goods that have already gone. Full description in the [Ship panel](./02-ship-panel.md#the-parcel-popup-parcelviewer) |
 | Item detail card | Same shared `detailCard`, but only renders the Shipped/Logistics/Ship-via rows when `status === "shipped"` — no "Mark as Shipped" button here (it's already shipped) |
+| | Reached by a scan or an `Enter` lookup now, not by tapping a row |
 | `GtradeaItemsTable` | Adds a per-row delete (trash) action versus Ship's per-row ship action |
 | Single-delete confirm dialog | "Delete CZNxxxxx?" |
 | Batch-delete confirm dialog | Lists every record about to be removed |

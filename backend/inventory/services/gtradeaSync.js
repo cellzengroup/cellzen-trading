@@ -284,6 +284,16 @@ const normTracking = (v) => {
   return s || null;
 };
 
+// A money field off a procurement item -> a number, or null. gtradea sends `0`
+// for "priced at nothing" and null/'' for "not priced yet", and those must stay
+// apart: Number('') is 0, which would quietly turn an unpriced line into a free
+// one on the 1688 tab. Only a real, finite value survives.
+const money = (v) => {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
 // Flatten a job's detail into per-item supplier_orders rows.
 // gtradea puts no date on the order object — the procurement job's created_at is
 // the order date (it matches the date encoded in order_number). Fall back to the
@@ -342,6 +352,13 @@ function mapDetail(detail, paymentMap) {
         shipping_mode: order.shipping_mode || null,
         order_status: order.status || null,
         order_total: order.total != null ? order.total : null,
+        // The two halves of the "Net unit ¥" gtradea's own China Operations
+        // panel prints for this line (net unit = unit + frt/unit). Per ITEM,
+        // unlike paid_amount below, which is the whole 1688 order's total — so
+        // this is the only pair that stays right when one order bundles several
+        // lines. See the model for why both are stored rather than derived.
+        unit_price_cny: money(it.unit_price_cny),
+        frt_per_unit_cny: money(it.frt_per_unit_cny),
         // How much was actually paid for THIS item's own 1688 order (the "Pay
         // 1688 Supplier Orders" panel's Total), not the job-level advance.
         paid_amount: paidAmount,

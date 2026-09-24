@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import WarehouseScanner from "./WarehouseScanner";
@@ -9,6 +9,7 @@ import {
   createRack,
   deleteRack,
   loadItems,
+  fetchItem,
   putAwayItem,
   shipItem,
   updateItemShipmentMode,
@@ -917,6 +918,492 @@ const productPhotoUrl = (url) => {
   }
 };
 
+// A yuan amount as gtradea prints it. `dp` is 4 for the per-piece figures, whose
+// last two decimals are the freight share (¥3.8500) and matter, and 2 for money
+// totals. null/undefined is "not priced", which every caller renders as a dash
+// rather than ¥0.00 — an unpriced line must never read as a free one.
+const fmtCny = (v, dp = 2) => {
+  // null / undefined / '' are rejected BEFORE the coercion, not after: Number(null)
+  // and Number('') are both 0, which is finite, so a bare Number.isFinite() check
+  // renders an unpriced line as ¥0.00 — the one thing this must never say.
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? `¥${n.toFixed(dp)}` : null;
+};
+
+// One labelled line of the product popup's detail list.
+const ProductRow = ({ label, children }) => (
+  <div className="flex items-baseline justify-between gap-4 border-t border-[#ECE9E3] py-2.5 first:border-t-0">
+    <dt className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45">{label}</dt>
+    <dd className="min-w-0 break-words text-right">{children}</dd>
+  </div>
+);
+
+// The product behind one 1688 line, opened by tapping its photo in the 1688
+// Orders table: the photo LARGE on the left, and everything the line is known by
+// on the right — description, Product ID, quantity, and what gtradea prices it at.
+//
+// The price shown is gtradea's own "Net unit ¥" (unit price + that line's share
+// of the freight), because that is the figure its China Operations panel bills
+// from; Total Price is that times the quantity, computed on the server so this
+// popup can never quote a total that disagrees with a downloaded report. Both
+// arrive null on a line gtradea has not priced yet, and are shown as — with the
+// reason spelled out rather than a silently missing row.
+//
+// object-CONTAIN, not cover: this is the enlargement, so the whole product has to
+// be in frame — cropping it here would hide exactly the packaging detail someone
+// opened the photo to check. The <img> keeps referrerPolicy="no-referrer" for the
+// same reason every other product photo does (see SupplierOrdersTable).
+function ProductViewer({ order, onClose }) {
+  const [broken, setBroken] = useState(false);
+  // Which id was just copied, so the row can say so for a moment. "" = none.
+  const [copied, setCopied] = useState("");
+  const copiedTimer = useRef(null);
+  const sheet = useRef(null);
+  // A drag in progress on the phone sheet's header (see onGrab* below).
+  const grab = useRef(null);
+  // Whether the press that may become a backdrop click STARTED on the backdrop.
+  // Without this, selecting the description and releasing the finger outside the
+  // sheet counted as "tapped the backdrop" and shut the popup mid-read.
+  const downOnBackdrop = useRef(false);
+
+  // Escape closes. On the way out focus goes back to the control that opened the
+  // popup — the photo or description button in the row — so a keyboard user
+  // carries on from where they were instead of at the top of the page.
+  useEffect(() => {
+    const opener = document.activeElement;
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      if (opener && opener.isConnected && typeof opener.focus === "function") opener.focus();
+    };
+  }, [onClose]);
+
+  // Hold the page still behind the popup. On a phone, flicking the sheet's
+  // backdrop used to scroll the 1688 table underneath it, so closing the popup
+  // dropped you somewhere else in the list than where you opened it. The padding
+  // keeps a desktop scrollbar's width in the layout, so taking the scrollbar away
+  // doesn't jog the whole page sideways.
+  useEffect(() => {
+    const { body } = document;
+    const prevOverflow = body.style.overflow;
+    const prevPad = body.style.paddingRight;
+    const gap = window.innerWidth - document.documentElement.clientWidth;
+    body.style.overflow = "hidden";
+    if (gap > 0) body.style.paddingRight = `${gap}px`;
+    return () => { body.style.overflow = prevOverflow; body.style.paddingRight = prevPad; };
+  }, []);
+
+  const href = productPhotoUrl(order.productImage);
+  const productId = order.itemCode || order.jobCode || "";
+  const qty = Number.isFinite(Number(order.quantity)) ? Number(order.quantity) : null;
+  // Both shown to two decimals — money, as anyone reading this would write it.
+  // The four decimals gtradea prices the freight share at still do their job
+  // upstream: `totalPrice` is worked out from the UNROUNDED net unit on the
+  // server, so the total stays equal to what gtradea actually paid for the line
+  // even where the rounded unit price on screen, multiplied out by hand, would
+  // land a cent away.
+  const unit = fmtCny(order.unitPrice, 2);
+  const total = fmtCny(order.totalPrice, 2);
+  // The two halves the unit price is made of, shown under it as its working — the
+  // question staff actually ask of that number is "why is it more than the 1688
+  // price?", and the answer is the freight share. Only when gtradea gave us both
+  // halves (a missing one would make the sum a lie) and the freight half is worth
+  // printing: a priced line with no freight carries a real ¥0 share, and
+  // "¥18.00 goods + ¥0.00 freight" explains nothing.
+  const goodsHalf = fmtCny(order.unitPriceBase, 2);
+  const freightHalf = fmtCny(order.freightPerUnit, 2);
+  const working =
+    goodsHalf && freightHalf && freightHalf !== "¥0.00" ? `${goodsHalf} goods + ${freightHalf} freight` : null;
+
+  // An id tapped in here is nearly always on its way into gtradea, a chat or a
+  // courier's site, so a tap copies it rather than only selecting it.
+  const copy = (label, text) => {
+    const value = String(text || "").trim();
+    if (!value) return;
+    const done = () => {
+      setCopied(label);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(""), 1400);
+    };
+    // navigator.clipboard needs a secure context; the fallback keeps any tablet
+    // that reaches this over plain http working.
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(value).then(done).catch(() => {});
+      return;
+    }
+    const ta = document.createElement("textarea");
+    ta.value = value;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); done(); } catch { /* nothing else to try */ }
+    ta.remove();
+  };
+
+  // Drag the phone sheet down to dismiss it — the gesture a bottom sheet asks
+  // for, and the one that doesn't need the ✕ to be aimed at. Only the header
+  // drags, so the body still scrolls; the sheet follows the finger through the
+  // DOM node rather than through state, which keeps the drag at frame rate
+  // instead of re-rendering the panel behind it on every move.
+  const onGrabStart = (e) => {
+    if (!sheet.current || e.touches?.length !== 1) return;
+    sheet.current.style.transition = "";
+    grab.current = { from: e.touches[0].clientY, at: performance.now(), dy: 0 };
+  };
+  const onGrabMove = (e) => {
+    const g = grab.current;
+    if (!g || !sheet.current) return;
+    g.dy = Math.max(0, e.touches[0].clientY - g.from);
+    sheet.current.style.transform = g.dy ? `translateY(${g.dy}px)` : "";
+  };
+  const onGrabEnd = () => {
+    const g = grab.current;
+    grab.current = null;
+    if (!g || !sheet.current) return;
+    // Either a deliberate pull down, or a quick flick — a flick is how anyone in
+    // a hurry dismisses a sheet, and it never travels far.
+    const flick = g.dy > 28 && performance.now() - g.at < 220;
+    if (g.dy > 110 || flick) { onClose(); return; }
+    sheet.current.style.transition = "transform .18s ease-out";
+    sheet.current.style.transform = "";
+  };
+
+  return createPortal(
+    <div
+      className="wh-backdrop-in fixed inset-0 z-[160] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-6"
+      onPointerDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && downOnBackdrop.current) onClose(); }}
+    >
+      <div
+        ref={sheet}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Product ${productId || order.productName || ""}`}
+        className="wh-sheet-in flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-t-3xl bg-[#F6F4F0] text-[#2D2D2D] shadow-2xl sm:rounded-3xl"
+      >
+        {/* The ORDER number heads the popup — it is what a line is chased by
+            outside the warehouse (gtradea, the supplier, the customer). The
+            Product ID names this one line and belongs with the rest of the
+            line's own detail, in the table below. */}
+        <div
+          onTouchStart={onGrabStart}
+          onTouchMove={onGrabMove}
+          onTouchEnd={onGrabEnd}
+          onTouchCancel={onGrabEnd}
+          className="shrink-0 touch-none pt-2 sm:pt-0"
+        >
+          {/* The handle is the phone's hint that the sheet can be pulled away,
+              and the widest thing on it to grab. */}
+          <span aria-hidden className="mx-auto mb-1 block h-1 w-10 rounded-full bg-[#2D2D2D]/15 sm:hidden" />
+          <div className="flex items-center justify-between gap-3 px-5 pb-3 pt-3 sm:pt-5">
+            <div className="min-w-0">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45">
+                {copied === "order" ? <span className="text-[#412460]">Order # · copied</span> : "Order #"}
+              </p>
+              {order.orderNumber ? (
+                <button
+                  type="button"
+                  onClick={() => copy("order", order.orderNumber)}
+                  title="Tap to copy the order number"
+                  className="break-all text-left text-lg font-black tracking-tight text-[#412460] transition active:opacity-60"
+                >
+                  {order.orderNumber}
+                </button>
+              ) : (
+                <p className="text-lg font-black tracking-tight text-[#412460]">—</p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#2D2D2D]/8 text-[#2D2D2D] transition hover:bg-[#2D2D2D]/15 active:scale-95 active:bg-[#2D2D2D]/20"
+            >
+              <IconClose className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Photo left, details right — stacked on a phone, where side-by-side
+            would leave both too narrow to read. The bottom padding clears an
+            iPhone's home bar, which otherwise sat over the last price. */}
+        <div className="flex-1 overflow-y-auto px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+          <div className="flex flex-col gap-5 md:flex-row md:items-start">
+            <div className="w-full shrink-0 md:w-[48%]">
+              {href && !broken ? (
+                // The enlargement is itself a link to the original file: the popup's
+                // photo is still bounded by the sheet, and pinching a page pinned at
+                // user-scalable=no gets nowhere, so the way to read the print on a
+                // carton is the file in its own tab.
+                <a href={href} target="_blank" rel="noreferrer" title="Open the full-size photo" className="block">
+                  <img
+                    src={href}
+                    alt={order.productName || "Product photo"}
+                    referrerPolicy="no-referrer"
+                    decoding="async"
+                    onError={() => setBroken(true)}
+                    className="max-h-[52vh] w-full rounded-2xl bg-white object-contain ring-1 ring-[#ECE9E3]"
+                  />
+                </a>
+              ) : (
+                <div className="flex h-48 w-full items-center justify-center rounded-2xl bg-white text-xs text-[#2D2D2D]/40 ring-1 ring-[#ECE9E3]">
+                  No product photo
+                </div>
+              )}
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45">Description</p>
+              <p className="mt-1.5 break-words text-sm leading-relaxed text-[#2D2D2D]/80">
+                {order.productName || "—"}
+              </p>
+
+              <dl className="mt-5 rounded-2xl bg-white px-4 py-1 ring-1 ring-[#ECE9E3]">
+                <ProductRow label={copied === "product" ? "Product ID · copied" : "Product ID"}>
+                  {productId ? (
+                    <button
+                      type="button"
+                      onClick={() => copy("product", productId)}
+                      title="Tap to copy the Product ID"
+                      className="break-all text-sm font-bold text-[#412460] transition active:opacity-60"
+                    >
+                      {productId}
+                    </button>
+                  ) : (
+                    <span className="text-sm text-[#2D2D2D]/40">—</span>
+                  )}
+                </ProductRow>
+                <ProductRow label="Qty">
+                  <span className="text-sm font-bold">{qty ?? "—"}</span>
+                </ProductRow>
+                <ProductRow label="Unit Price">
+                  {unit ? (
+                    <>
+                      <span className="text-sm font-bold">{unit}</span>
+                      {working && <span className="mt-0.5 block text-[10px] text-[#2D2D2D]/40">{working}</span>}
+                    </>
+                  ) : (
+                    <span className="text-sm text-[#2D2D2D]/40" title="gtradea has not priced this line yet">—</span>
+                  )}
+                </ProductRow>
+                <ProductRow label="Total Price">
+                  {total ? (
+                    <span className="text-base font-black text-[#412460]">{total}</span>
+                  ) : (
+                    <span className="text-sm text-[#2D2D2D]/40" title="No unit price or quantity to work a total out from">—</span>
+                  )}
+                </ProductRow>
+              </dl>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// The parcel behind one Ship / Dispatched row, opened by tapping the order card:
+// its product photo LARGE on the left, and on the right the ids it is worked by
+// — Product ID, CN tracking, how it travels — over the actions that row carries.
+//
+// Which actions appear is decided by what the table was given, not by this popup:
+// Ship passes `onShip`, Dispatched does not (those goods have already gone), so
+// the same component stays honest on both tabs without being told which it is on.
+//
+// Tapping the Product ID opens the box QC photos, exactly as tapping it in the
+// row behind does — the same `GoodsNo`, so the dotted underline that advertises
+// it means the same thing everywhere.
+//
+// The photos are FETCHED here rather than read off the row. `loadItems` leaves
+// `products` off every one of its rows on purpose (a photo URL and a full title
+// x 5000 would bloat the poll and the instant-paint cache), so a row from the
+// list arrives with none. A row that came back from a WRITE already carries them,
+// and that is used at once — the fetch then only confirms it, and the popup never
+// blanks in the meantime.
+function ParcelViewer({ item, focusId, onClose, onOpenQc, onShip, onPrint }) {
+  // Seeded from the row so a parcel that already knows its products paints
+  // immediately; `loading` is only ever true when there is nothing to show yet.
+  const [products, setProducts] = useState(() => (Array.isArray(item.products) ? item.products : []));
+  const [loading, setLoading] = useState(() => !(item.products || []).length);
+  const [failed, setFailed] = useState(false);
+  const [picked, setPicked] = useState(0);
+  const [broken, setBroken] = useState(() => new Set());
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // `live` guards against the popup being closed (or switched to another parcel)
+  // while the request is in flight: a late reply must not write into a popup that
+  // is showing something else by then.
+  useEffect(() => {
+    let live = true;
+    fetchItem(item.id)
+      .then((full) => {
+        if (!live) return;
+        const list = Array.isArray(full.products) ? full.products : [];
+        setProducts(list);
+        // Land on the product whose row was tapped, not always the first: an
+        // expanded group row names ONE of the parcel products, and opening the
+        // popup on a different one would answer a question nobody asked.
+        const at = focusId ? list.findIndex((q) => q.itemCode === focusId) : -1;
+        if (at > 0) setPicked(at);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (!live) return;
+        // Not a failure worth shouting about: the ids, the tracking number and
+        // every action below still work without a picture, so only the photo
+        // panel says anything.
+        setFailed(true);
+        setLoading(false);
+      });
+    return () => { live = false; };
+  }, [item.id, focusId]);
+
+  const shown = products[Math.min(picked, Math.max(products.length - 1, 0))] || null;
+  const href = productPhotoUrl(shown && shown.image);
+  // The tapped product own id where there is one; otherwise the id the BOX is
+  // filed under, which is what its label prints.
+  const productId = (shown && shown.itemCode) || goodsCode(item);
+  const markBroken = (url) => setBroken((prev) => (prev.has(url) ? prev : new Set(prev).add(url)));
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[160] flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-6"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Parcel ${item.orderNumber || productId || ""}`}
+        className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-t-3xl bg-[#F6F4F0] text-[#2D2D2D] shadow-2xl sm:rounded-3xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between gap-3 px-5 pb-3 pt-5">
+          <div className="min-w-0">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45">Order #</p>
+            <p className="break-all text-lg font-black tracking-tight text-[#412460]">{item.orderNumber || "—"}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#2D2D2D]/8 text-[#2D2D2D] transition hover:bg-[#2D2D2D]/15"
+          >
+            <IconClose className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 pb-6">
+          <div className="flex flex-col gap-5 md:flex-row md:items-start">
+            <div className="w-full shrink-0 md:w-[48%]">
+              {href && !broken.has(href) ? (
+                <img
+                  src={href}
+                  alt={(shown && shown.name) || "Product photo"}
+                  referrerPolicy="no-referrer"
+                  onError={() => markBroken(href)}
+                  className="max-h-[52vh] w-full rounded-2xl bg-white object-contain ring-1 ring-[#ECE9E3]"
+                />
+              ) : (
+                <div className="flex h-48 w-full items-center justify-center rounded-2xl bg-white px-4 text-center text-xs text-[#2D2D2D]/40 ring-1 ring-[#ECE9E3]">
+                  {loading ? "Loading photo…" : failed ? "No photo could be loaded for this parcel." : "No product photo"}
+                </div>
+              )}
+              {/* A parcel can hold several products — one thumbnail each, so the
+                  large photo can be switched without leaving the popup. */}
+              {products.length > 1 && (
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {products.map((prod, i) => {
+                    const thumb = productPhotoUrl(prod.image);
+                    return (
+                      <button
+                        key={`${prod.itemCode || "p"}-${i}`}
+                        type="button"
+                        onClick={() => setPicked(i)}
+                        aria-label={`Show ${prod.itemCode || prod.name || `product ${i + 1}`}`}
+                        aria-pressed={i === picked}
+                        className={`h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-white transition ${i === picked ? "ring-2 ring-[#412460]" : "ring-1 ring-[#ECE9E3] hover:ring-[#412460]/40"}`}
+                      >
+                        {thumb && !broken.has(thumb) ? (
+                          <img src={thumb} alt="" referrerPolicy="no-referrer" onError={() => markBroken(thumb)} className="h-full w-full object-cover" />
+                        ) : (
+                          <span className="flex h-full w-full items-center justify-center text-[9px] text-[#2D2D2D]/35">{i + 1}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="min-w-0 flex-1">
+              {shown && shown.name && (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#2D2D2D]/45">Description</p>
+                  <p className="mt-1.5 break-words text-sm leading-relaxed text-[#2D2D2D]/80">{shown.name}</p>
+                </>
+              )}
+
+              <dl className={`rounded-2xl bg-white px-4 py-1 ring-1 ring-[#ECE9E3] ${shown && shown.name ? "mt-5" : ""}`}>
+                <ProductRow label="Product ID">
+                  <span className="text-sm font-bold text-[#412460]">
+                    {/* The same control as the row behind this popup: tapping the
+                        id opens the box QC photos. */}
+                    <GoodsNo code={productId} onOpen={onOpenQc ? () => onOpenQc(item) : undefined} tracking={item.trackingNumber} />
+                  </span>
+                </ProductRow>
+                <ProductRow label="Tracking Number">
+                  <span className="break-all text-sm font-semibold">{item.trackingNumber || "—"}</span>
+                </ProductRow>
+                <ProductRow label="Shipment">
+                  <ShipmentBadge mode={item.shipmentFrom} />
+                </ProductRow>
+              </dl>
+
+              {/* Only what this tab actually offers: Dispatched passes no
+                  `onShip`, so nothing there invites re-shipping goods that have
+                  already gone. */}
+              {(onShip || onPrint) && (
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {onPrint && (
+                    <button
+                      type="button"
+                      onClick={() => onPrint(item)}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-4 py-2.5 text-sm font-semibold text-[#2D2D2D]/70 ring-1 ring-[#ECE9E3] transition hover:bg-white active:scale-95"
+                    >
+                      <IconPrinter className="h-4 w-4" /> Print
+                    </button>
+                  )}
+                  {onShip && (
+                    <button
+                      type="button"
+                      onClick={() => onShip(item)}
+                      className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#412460] px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#B99353] active:scale-95 sm:flex-none"
+                    >
+                      <IconCheck className="h-4 w-4" /> Mark as Shipped
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 // The products inside a box that was just put away — photo + name for each, so
 // whoever is at the shelf can check the goods in hand against the order.
 //
@@ -1342,6 +1829,10 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // opens from any goods number: { tracking, goodsNo, index } or null.
   const sheetQcAdded = useRef(new Map());
   const [qcViewer, setQcViewer] = useState(null);
+  // The 1688 line whose product photo was tapped — what ProductViewer shows.
+  const [productViewer, setProductViewer] = useState(null);
+  // The Ship / Dispatched parcel whose order card was tapped.
+  const [parcelViewer, setParcelViewer] = useState(null);
   // The "QC Image Upload" popup shown before a label prints without any photo:
   // { kind: "print" | "copies" | "ok", tracking, goodsNo } or null.
   const [qcGate, setQcGate] = useState(null);
@@ -2368,11 +2859,17 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   // so it doesn't disappear mid-tap.
   // Open the saved QC photos of a 1688 order's parcel (from its card, goods number or
   // order number). Keyed by CN tracking number, so every line of the parcel shows the same photos.
-  const openQc1688 = (o) => {
+  const openQc1688 = useCallback((o) => {
     if (!o.cnTracking) { showToast("This order has no CN tracking number yet, so it has no QC photos", "warn"); return; }
     prefetchQcImages(o.cnTracking);
     setQcViewer({ tracking: o.cnTracking, goodsNo: o.itemCode || o.jobCode || o.orderNumber || "", index: 0 });
-  };
+  }, [showToast]);
+  // Open the product behind a 1688 line (from its photo in the table). Every
+  // field it shows is already on the row the table rendered, so this opens with
+  // no round trip and works just as well offline as the row itself did.
+  const openProduct = useCallback((o) => setProductViewer(o), []);
+  // Open the parcel behind a Ship / Dispatched row.
+  const openParcel = (it, focusId) => setParcelViewer({ item: it, focusId: focusId || "" });
   // Open the saved QC photos of a box (from its goods number).
   const openQc = (item, index = 0) => {
     const tracking = item?.trackingNumber;
@@ -3306,6 +3803,23 @@ export default function WarehouseApp({ mode = "cellzen" }) {
     [supplierShipRows, supplierSel]
   );
 
+  // One stable "tick every row" handler per table the panel shows. Inline arrows
+  // in the JSX would hand SupplierOrdersTable a new prop on every render and undo
+  // its memo — which is what keeps a popup opening or closing off the hundreds of
+  // rows behind it.
+  const toggleAllSupplierShip = useCallback(
+    (checked) => toggleAllSupplier(supplierShipRows, checked),
+    [toggleAllSupplier, supplierShipRows]
+  );
+  const toggleAllSupplierSelected = useCallback(
+    (checked) => toggleAllSupplier(supplierSelectedShippable, checked),
+    [toggleAllSupplier, supplierSelectedShippable]
+  );
+  const toggleAllSupplierRest = useCallback(
+    (checked) => toggleAllSupplier(supplierRestShippable, checked),
+    [toggleAllSupplier, supplierRestShippable]
+  );
+
   // Hand the selected 1688 rows to the shared ship confirm as the warehouse
   // boxes they matched.
   const requestSupplierShip = () => {
@@ -3701,7 +4215,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onToggleSelect={toggleShipSel}
                 onToggleAll={(checked) => toggleAllShip(filteredShip, checked)}
                 onToggleRows={toggleAllShip}
-                onView={openDetail}
+                onOpenParcel={openParcel}
                 onShip={requestShip}
                 onPrint={handlePrintLabel}
                 onPrintGroup={handlePrintGroup}
@@ -3839,7 +4353,7 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 onToggleSelect={toggleDispatchSel}
                 onToggleAll={(checked) => toggleAllDispatch(filteredDispatched, checked)}
                 onToggleRows={toggleAllDispatch}
-                onView={openDetail}
+                onOpenParcel={openParcel}
                 onPrint={handlePrintLabel}
                 onPrintGroup={handlePrintGroup}
                 onPrintGroupAsk={askPrintGroup}
@@ -4082,10 +4596,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                       selected={supplierSel}
                       shippableRows={supplierSelectedShippable}
                       onToggleSelect={toggleSupplierSel}
-                      onToggleAll={(checked) => toggleAllSupplier(supplierSelectedShippable, checked)}
+                      onToggleAll={toggleAllSupplierSelected}
                       onSetMode={setSupplierMode}
                       onSetKg={setSupplierKg}
                       onOpenQc={openQc1688}
+                      onOpenProduct={openProduct}
                       modeBusy={modeBusy}
                     />
                   ) : (
@@ -4118,10 +4633,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                     selected={supplierSel}
                     shippableRows={supplierRestShippable}
                     onToggleSelect={toggleSupplierSel}
-                    onToggleAll={(checked) => toggleAllSupplier(supplierRestShippable, checked)}
+                    onToggleAll={toggleAllSupplierRest}
                     onSetMode={setSupplierMode}
                     onSetKg={setSupplierKg}
                       onOpenQc={openQc1688}
+                      onOpenProduct={openProduct}
                     modeBusy={modeBusy}
                   />
                 </section>
@@ -4134,10 +4650,11 @@ export default function WarehouseApp({ mode = "cellzen" }) {
                 selected={supplierSel}
                 shippableRows={supplierShipRows}
                 onToggleSelect={toggleSupplierSel}
-                onToggleAll={(checked) => toggleAllSupplier(supplierShipRows, checked)}
+                onToggleAll={toggleAllSupplierShip}
                 onSetMode={setSupplierMode}
                 onSetKg={setSupplierKg}
                       onOpenQc={openQc1688}
+                      onOpenProduct={openProduct}
                 modeBusy={modeBusy}
               />
             )}
@@ -5228,6 +5745,20 @@ export default function WarehouseApp({ mode = "cellzen" }) {
       {/* The saved QC photos of a box — opens from any goods number. Above the
           "Item stored" sheet (z-140), so it can be opened from there too. */}
       {qcViewer && <QcViewer target={qcViewer} onClose={() => setQcViewer(null)} notify={showToast} />}
+      {productViewer && <ProductViewer order={productViewer} onClose={() => setProductViewer(null)} />}
+      {parcelViewer && (
+        <ParcelViewer
+          item={parcelViewer.item}
+          focusId={parcelViewer.focusId}
+          onClose={() => setParcelViewer(null)}
+          onOpenQc={openQc}
+          // Both actions close the popup first: each opens a dialog of its own
+          // (the ship confirm, the print-quantity prompt), and leaving this one
+          // stacked underneath would put two modals on screen at once.
+          onShip={parcelViewer.item.status === "in_stock" ? (it) => { setParcelViewer(null); requestShip(it); } : undefined}
+          onPrint={(it) => { setParcelViewer(null); handlePrintLabel(it); }}
+        />
+      )}
 
       {/* "QC Image Upload" — before a label prints (or the sheet closes) on a box with
           no QC photo. Above the sheet (z-140), below the photo viewer (z-160). */}
@@ -5531,7 +6062,7 @@ function distinctParcels(boxes) {
 // GtradeA shipment table — the gtradea PR id, shelf, the linked 1688 order #, CN
 // tracking, product, status + Print/Download/Ship. Mirrors ItemsTable with the
 // 1688 columns.
-function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onPrintGroupAsk, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
+function GtradeaItemsTable({ onOpenQc, onOpenParcel, rows, emptyAll = false, emptyText, onShip, onDelete, onPrint, onPrintGroup, onPrintGroupAsk, onDownload, selectable = false, selected, onToggleSelect, onToggleAll, onToggleRows }) {
   // One row per 1688 ORDER NUMBER, expanding to one row per PRODUCT in it.
   //
   // An order is what staff work from — gtradea publishes it, the supplier ships
@@ -5670,7 +6201,7 @@ function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText
           return (
             <li key={key} className="overflow-hidden rounded-2xl bg-white shadow-[0_2px_16px_-8px_rgba(45,45,45,0.16)] ring-1 ring-[#ECE9E3]">
               <div
-                onClick={() => (isGroup ? toggleExpand(key) : onView(head))}
+                onClick={() => (isGroup ? toggleExpand(key) : onOpenParcel(head))}
                 className="cursor-pointer p-4 transition active:scale-[.99]"
               >
                 <div className="flex items-start justify-between gap-3">
@@ -5770,7 +6301,7 @@ function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText
               {isGroup && isOpen && (
                 <div className="divide-y divide-[#F1EFEA] border-t border-[#F1EFEA] bg-[#FAFAF8]">
                   {units.map(({ id, item: it, productId, lead, shared }) => (
-                    <div key={id} onClick={() => onView(it)} className="cursor-pointer p-3 pl-6">
+                    <div key={id} onClick={() => onOpenParcel(it, productId)} className="cursor-pointer p-3 pl-6">
                       <div className="flex items-start justify-between gap-3">
                         {selectable && (
                           <span className="pt-0.5" onClick={(e) => e.stopPropagation()}>
@@ -5876,7 +6407,7 @@ function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText
               return (
                 <Fragment key={key}>
                   <tr
-                    onClick={() => (isGroup ? toggleExpand(key) : onView(head))}
+                    onClick={() => (isGroup ? toggleExpand(key) : onOpenParcel(head))}
                     className="cursor-pointer transition-colors hover:bg-[#FAF9F6] [&>td]:px-3 [&>td]:py-3"
                   >
                     {selectable && (
@@ -5918,7 +6449,7 @@ function GtradeaItemsTable({ onOpenQc, rows, onView, emptyAll = false, emptyText
                     </td>
                   </tr>
                   {isGroup && isOpen && units.map(({ id, item: it, productId, lead, shared }) => (
-                    <tr key={id} onClick={() => onView(it)} className="cursor-pointer bg-[#FAFAF8] transition-colors hover:bg-[#F4F2EE] [&>td]:px-3 [&>td]:py-2.5">
+                    <tr key={id} onClick={() => onOpenParcel(it, productId)} className="cursor-pointer bg-[#FAFAF8] transition-colors hover:bg-[#F4F2EE] [&>td]:px-3 [&>td]:py-2.5">
                       {/* Only the LEAD product of a package carries the checkbox
                           and the actions. The others sit in the same box, and a
                           second Ship button would offer to ship it twice. */}
@@ -6003,7 +6534,14 @@ function WarehousePill({ order }) {
 // `empty` overrides the no-rows message. Shipment mode splits these rows across
 // two of these tables, and the "All goods" one empties for a reason neither
 // default covers: everything visible is already in the shipment above it.
-function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, onSetKg, onOpenQc, modeBusy }) {
+// MEMOISED, and every prop it is given is stable (the rows are useMemo'd, the
+// handlers useCallback'd) — because this table is the heaviest thing the panel
+// draws: a few hundred 1688 lines, each with a photo, a mode <select> and a KG
+// <input>. Without the memo, every piece of WarehouseApp state that changed
+// re-rendered all of it, so opening the product popup — and closing it again —
+// took one to four seconds on a warehouse phone and read as a dead tap. Keep any
+// prop you add stable too.
+const SupplierOrdersTable = memo(function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", selectable = false, selected, shippableRows, onToggleSelect, onToggleAll, onSetMode, onSetKg, onOpenQc, onOpenProduct, modeBusy }) {
   // Track images that failed to load and hide them via STATE, not by mutating the
   // DOM node — an imperative style change would persist across re-renders and could
   // permanently hide a later-valid image for the same row key.
@@ -6020,6 +6558,47 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
   const markImgBroken = (url) =>
     setBrokenImgs((prev) => (!url || prev.has(url) ? prev : new Set(prev).add(url)));
   const canShowImg = (url) => url && !brokenImgs.has(url);
+
+  // The photo is the handle on the product popup (description, Product ID, qty,
+  // unit and total price) — a real <button>, not a click handler on the <img>,
+  // so it is reachable by keyboard and so the mobile card's own tap handler
+  // (which opens the QC photos) skips it: that handler bails on anything inside
+  // a button, which is exactly what keeps the two popups from racing.
+  const photoButton = (o, className) => (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onOpenProduct?.(o); }}
+      aria-label={`View product details for ${o.itemCode || o.jobCode || o.orderNumber || "this line"}`}
+      title="View product details"
+      className={`${className} shrink-0 overflow-hidden ring-1 ring-[#ECE9E3] transition hover:ring-2 hover:ring-[#412460]/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#412460]`}
+    >
+      <img
+        src={o.productImage}
+        alt=""
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => markImgBroken(o.productImage)}
+        className="h-full w-full object-cover"
+      />
+    </button>
+  );
+
+  // The description opens the same popup as the photo — on a phone it is the
+  // bigger target of the two, and on a desktop it is what the eye lands on when
+  // the row is scanned for a product rather than for an id. Also a <button>, for
+  // the same two reasons: keyboard reach, and keeping the mobile card's own tap
+  // handler (QC photos) off it.
+  const descButton = (o, className) => (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onOpenProduct?.(o); }}
+      aria-label={`View product details for ${o.itemCode || o.jobCode || o.orderNumber || "this line"}`}
+      title="View product details"
+      className={`${className} text-left transition hover:text-[#412460] focus:outline-none focus-visible:underline`}
+    >
+      {o.productName || "—"}
+    </button>
+  );
 
   // A row is tickable only if the parent listed it as shippable. Rendered as a
   // DISABLED checkbox rather than a blank cell for the rest, so the column stays
@@ -6097,18 +6676,9 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
                   )}
                 </div>
                 <div className="mt-0.5 break-all text-sm font-bold text-[#412460]">{o.orderNumber || "—"}</div>
-                <p className="mt-1 break-words text-xs text-[#2D2D2D]/70">{o.productName || "—"}</p>
+                {descButton(o, "mt-1 block w-full break-words text-xs text-[#2D2D2D]/70")}
               </div>
-              {canShowImg(o.productImage) ? (
-                <img
-                  src={o.productImage}
-                  alt=""
-                  loading="lazy"
-                  referrerPolicy="no-referrer"
-                  onError={() => markImgBroken(o.productImage)}
-                  className="h-12 w-12 shrink-0 rounded-lg object-cover ring-1 ring-[#ECE9E3]"
-                />
-              ) : null}
+              {canShowImg(o.productImage) ? photoButton(o, "h-12 w-12 rounded-lg") : null}
             </div>
             <dl className="mt-3 space-y-1.5 text-xs">
               <div className="flex justify-between gap-3">
@@ -6176,17 +6746,8 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
                 </td>
                 <td className="max-w-[300px]">
                   <div className="flex items-center gap-2">
-                    {canShowImg(o.productImage) ? (
-                      <img
-                        src={o.productImage}
-                        alt=""
-                        loading="lazy"
-                        referrerPolicy="no-referrer"
-                        onError={() => markImgBroken(o.productImage)}
-                        className="h-8 w-8 shrink-0 rounded object-cover ring-1 ring-[#ECE9E3]"
-                      />
-                    ) : null}
-                    <span className="truncate text-xs text-[#2D2D2D]/80">{o.productName || "—"}</span>
+                    {canShowImg(o.productImage) ? photoButton(o, "h-8 w-8 rounded") : null}
+                    {descButton(o, "min-w-0 truncate text-xs text-[#2D2D2D]/80")}
                   </div>
                 </td>
                 <td><ShipModeSelect order={o} onChange={onSetMode} busy={modeBusy?.has(o.id)} /></td>
@@ -6201,4 +6762,4 @@ function SupplierOrdersTable({ rows, loading, filtered = false, empty = "", sele
       </div>
     </>
   );
-}
+});

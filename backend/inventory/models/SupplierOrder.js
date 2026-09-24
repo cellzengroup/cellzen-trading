@@ -65,6 +65,25 @@ const SupplierOrder = sequelize
       kg: { type: DataTypes.DECIMAL(10, 3), allowNull: true },
       order_status: { type: DataTypes.STRING, allowNull: true },
       order_total: { type: DataTypes.DECIMAL(12, 2), allowNull: true },
+      // The two halves of gtradea's "Net unit ¥" — the per-piece cost its China
+      // Operations panel prices every line at, and the figure the 1688 tab shows
+      // as Unit Price (with Total Price = it x quantity):
+      //
+      //   net unit = unit_price_cny + frt_per_unit_cny
+      //
+      // Both come straight off the procurement item (`unit_price_cny`,
+      // `frt_per_unit_cny`) rather than being divided out of paid_amount, which
+      // is a 1688-ORDER-level total that can cover several lines — dividing it
+      // by one line's quantity would overstate that line whenever an order
+      // bundles more than one. Four decimals because gtradea prices the freight
+      // share to four (¥0.3500), and rounding it to two would make
+      // unit x qty stop matching the panel's own total.
+      //
+      // Stored (not recomputed on read) because it is gtradea's number, not
+      // ours: a line repriced there must show the new figure, and a line it has
+      // not priced yet stays NULL — "not priced", never a made-up 0.
+      unit_price_cny: { type: DataTypes.DECIMAL(12, 4), allowNull: true },
+      frt_per_unit_cny: { type: DataTypes.DECIMAL(12, 4), allowNull: true },
       // How much was actually PAID for this item's own 1688 order — gtradea's
       // "Pay 1688 Supplier Orders" total (sumPaymentCents / 100), keyed by the
       // item's supplier_order_id. NOT order.advance_amount, which is a job-level
