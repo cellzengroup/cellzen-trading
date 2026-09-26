@@ -17,7 +17,13 @@
 // and the corners are die-cut), and a pasted-in barcode image would print
 // blurry; we generate a real Code-128 at printer resolution.
 //
-// The DYNAMIC list below is by element index, so if the design gains or loses
+// Also dropped: the design's WORDING — "Shelf No:", "Order Included Inside",
+// "Order No:", "Tracking No:", "HANDLE WITH CARE", "www.gtradea.com". The design
+// file set them in its own typeface as outlines, which printed as the one
+// non-Aeonik text on the label. warehouseLabels.js sets them as live Aeonik text
+// instead, sized to these paths' ink boxes (see GT_CAPTIONS and GT_CARE there).
+//
+// The DYNAMIC and CAPTION lists below are by element index, so if the design gains or loses
 // elements the indices must be rechecked against the new file before trusting
 // the output.
 const fs = require('fs');
@@ -25,6 +31,8 @@ const svg = fs.readFileSync('frontend/public/Images/newbarcode80120.svg', 'utf8'
 
 // Element order in the file == paint order, and it is preserved below.
 const DYNAMIC = new Set([1, 9, 10, 13, 15, 16, 17, 24, 25]);
+// The fixed wording, set in Aeonik by warehouseLabels.js rather than drawn here.
+const CAPTION = new Set([6, 8, 11, 12, 14, 22]);
 const NOTES = {
   2: 'fragile panel (black)',
   3: 'gtradea mark', 4: 'gtradea mark', 5: 'gtradea mark',
@@ -40,27 +48,16 @@ const NOTES = {
   23: 'shipment-mode panel (black)',
 };
 
-// Elements warehouseLabels.js repositions or resizes after the fact. Tagging them
-// here keeps them the design's own vector art — an exact match for the artwork
-// around them — rather than being retyped as live text to move them.
+// Elements warehouseLabels.js repositions or resizes after the fact. Only the
+// gtradea mark is left here; the captions that used to share its nudges
+// ("Shelf No:", "Order Included Inside", "HANDLE WITH CARE") are live text now
+// and carry the same groups over there.
 //
-//   list  - the "Order Included Inside" caption, which travels with the list of
-//           ids under it: a parcel with one row of ids makes a shorter block than
-//           the design's two, and it is centred in the band rather than leaving
-//           all the leftover stock in one gap under the value.
-//   care  - "HANDLE WITH CARE", which slides down the right edge to make room
-//           for the parcel's weight, set on the same line after it
-//           ("HANDLE WITH CARE / 1.45KG" — see drawCareWeight). It only moves on
-//           a label that has a weight; otherwise it sits where the design put it.
-//   logo  - the gtradea mark, and
-//   shelf - the "Shelf No:" caption, both drawn larger than the artboard sets
-//           them (see ART_ZOOM) — they are what someone identifies a box by from
-//           across the room.
+//   logo  - the gtradea mark, drawn larger than the artboard sets it (see
+//           ART_ZOOM) — it is what someone identifies a box by from across the
+//           room.
 const GROUPS = {
   3: 'logo', 4: 'logo', 5: 'logo',  // the gtradea mark
-  6: 'care',                        // "HANDLE WITH CARE" (rotated)
-  8: 'shelf',                       // the "Shelf No:" caption
-  12: 'list',                       // the "Order Included Inside" caption
 };
 
 const parts = [];
@@ -69,7 +66,7 @@ let m, n = 0;
 while ((m = tagRe.exec(svg))) {
   const [, tag, attrs] = m;
   n += 1;
-  if (DYNAMIC.has(n)) continue;
+  if (DYNAMIC.has(n) || CAPTION.has(n)) continue;
   const fill = (attrs.match(/fill="([^"]+)"/) || [])[1] || '#000000';
   const note = NOTES[n] ? `  // ${NOTES[n]}` : '';
   const group = GROUPS[n] ? `, group: "${GROUPS[n]}"` : '';

@@ -90,10 +90,10 @@ const BARCODE_SCALE = 4;
 // the bars come off the printer exactly as tall as they always have.
 const BARCODE_BAR_DOTS = cz(114);
 const barMm = (dots, scale) => dots / (2.8346 * scale); // dots -> bwip-js mm@72dpi
-// The goods number, drawn by us under the bars (smaller + letter-spaced).
+// The goods number, drawn by us under the bars (smaller, normal letter width).
 const CODE_GAP = cz(12); // space between the bars and the number
 const CODE_SIZE = cz(42);
-const CODE_SPACING = cz(12); // letter spacing on the number
+const CODE_SPACING = 0; // no extra letter spacing on the number
 
 // Optional "SHIPMENT: BY AIR/LAND" banner, drawn full-bleed under the logo when
 // a shipment mode is picked at print time. Everything below it (down through the
@@ -439,12 +439,11 @@ async function loadLabelFonts() {
 
 // ============================================================ GtradeA label
 // The approved GtradeA design (frontend/public/Images/newbarcode80120.svg). Its
-// fixed artwork — mark, fragile panel, the four rules, the "Shelf No:" /
-// "Order Included Inside" / "Order No:" / "Tracking No:" wording, "HANDLE WITH
-// CARE", "www.gtradea.com", the shipment chip — is drawn straight from the
-// design's own vector paths (see gtradeaLabelArt.js), so it is exact by
-// construction rather than retyped as canvas coordinates. Only the values that
-// change per box are set as live text.
+// fixed artwork — mark, fragile panel, the four rules, the shipment chip — is
+// drawn straight from the design's own vector paths (see gtradeaLabelArt.js), so
+// it is exact by construction rather than retyped as canvas coordinates. All the
+// TEXT is live Aeonik: the values that change per box, and the design's fixed
+// wording too (see GT_CAPTIONS), so the whole label is one typeface.
 //
 // The artboard IS the label: 800 x 1200 units is 80 x 120 mm at 10 units per mm,
 // so it maps onto the 640 x 960 dot bitmap by a flat 0.8 with nothing left over.
@@ -495,16 +494,11 @@ function applyZoom(ctx, group) {
 // Fixed artwork, painted in the design's order. Fills collapse to pure black or
 // pure white: the stock is monochrome thermal, and the glass icon is knocked
 // OUT of the fragile panel, so its white has to survive as white.
-function drawLabelArt(ctx, { scale, dx, dy }, listDy = 0, careDy = 0) {
+function drawLabelArt(ctx, { scale, dx, dy }) {
   for (const el of GTRADEA_LABEL_ART) {
     ctx.save();
     ctx.translate(dx, dy);
     ctx.scale(scale, scale);
-    // The "Order Included Inside" caption moves with the list below it (see
-    // listLayout), and "HANDLE WITH CARE" slides down to make room for the weight
-    // set after it (see careLayout). Everything else stays where it was drawn.
-    if (el.group === "list" && listDy) ctx.translate(0, listDy);
-    if (el.group === "care" && careDy) ctx.translate(0, careDy);
     applyZoom(ctx, el.group);
     const f = String(el.fill || "").toLowerCase();
     ctx.fillStyle = f === "white" || f === "#ffffff" || f === "#fff" ? "#FFFFFF" : "#000000";
@@ -539,6 +533,20 @@ const GT_FIELDS = {
   mode:     { x: 627.8, top: 1093.3, bottom: 1118,   right: 765, weight: "700", ref: "VIA AIR", center: 688.5, ink: "#FFFFFF" },
 };
 
+// The design's fixed wording. The design file set it in its own typeface as
+// outlines, which made it the only non-Aeonik text on the label, so it is set
+// here as live Aeonik text instead. Each box is the ink box of the design's path
+// (measured with getBBox), so the words keep the design's height and left edge;
+// only the letterforms change. `ref` is the text itself: every caption is fixed.
+// "HANDLE WITH CARE" runs up the right edge and is set in drawCareCaption.
+const GT_CAPTIONS = {
+  shelf:    { x: 600.4, top: 56,     bottom: 75.3,   right: 780, weight: "400", ref: "Shelf No:", group: "shelf" },
+  list:     { x: 82.7,  top: 648.3,  bottom: 670.3,  right: 566, weight: "400", ref: "Order Included Inside" },
+  order:    { x: 82.7,  top: 809.6,  bottom: 831.3,  right: 566, weight: "400", ref: "Order No:" },
+  tracking: { x: 82.4,  top: 922.3,  bottom: 950.3,  right: 566, weight: "400", ref: "Tracking No:" },
+  site:     { x: 46,    top: 1072.6, bottom: 1105.6, right: 590, weight: "400", ref: "www.gtradea.com" },
+};
+
 // Ink height of `text` at `px` — what the design's bounding boxes actually
 // measure, as opposed to the em size, which no two typefaces agree on.
 function inkHeight(ctx, text, px, weight) {
@@ -552,7 +560,9 @@ function inkHeight(ctx, text, px, weight) {
 // BASELINE is then fixed for the field; if the live value is too long for its
 // slot the size comes down but the baseline stays put, so a long tracking number
 // still sits on the same line as a short one.
-function drawField(ctx, field, text, t) {
+// `dy` shifts the whole field down (the "Order Included Inside" caption travels
+// with the list under it — see listLayout).
+function drawField(ctx, field, text, t, dy = 0) {
   if (!text) return;
   const target = field.bottom - field.top;
   let px = (100 * target) / inkHeight(ctx, field.ref, 100, field.weight);
@@ -574,6 +584,7 @@ function drawField(ctx, field, text, t) {
   ctx.save();
   ctx.translate(t.dx, t.dy);
   ctx.scale(t.scale, t.scale);
+  if (dy) ctx.translate(0, dy);
   applyZoom(ctx, field.group); // the shelf code grows with the caption above it
   ctx.fillText(text, x, baseline);
   ctx.restore();
@@ -616,7 +627,7 @@ function drawLabelBarcode(ctx, code, t) {
 
 // -------------------------------------------------- "Order Included Inside"
 // What is in the parcel, listed under the design's "Order Included Inside"
-// caption (the caption itself is fixed artwork).
+// caption (the caption itself is fixed text — see GT_CAPTIONS).
 //
 // A supplier bags several 1688 lines under ONE tracking number, and the
 // "Order No:" block below can only name one of them, so the box's own label was
@@ -688,8 +699,8 @@ function listRows(ids) {
 }
 
 // Work out the rows, their type size, and how far the whole block sits from the
-// design's own position — measured once and used by BOTH the artwork (the
-// caption is tagged "list", so it travels with the rows) and drawIncludedList.
+// design's own position — measured once and used by BOTH the caption (drawn with
+// this dy, so it travels with the rows) and drawIncludedList.
 //
 // The block is CENTRED in the band between the two rules. The designer drew it
 // with two rows of ids, which fills that band almost exactly; a parcel with one
@@ -841,16 +852,17 @@ function drawOrderRows(ctx, t, layout) {
 // CARE" and reading on from it — "HANDLE WITH CARE / 1.45KG" — turned the same way
 // (up the label), on the same baseline, at the same cap height.
 //
-// The design's text is a fixed vector path that ends 142 units under the fragile
-// panel, and the weight needs more than that. The stock below it is free down to
-// the shipment-mode panel, so the words slide DOWN just far enough to fit the
-// weight in above them (`dy`, applied to the artwork tagged "care") — a label
-// without a weight is not moved at all. A weight too long for even that (a
-// four-figure one) shrinks its own type before it crowds either neighbour.
+// The words are set in Aeonik at the design's cap height, starting where the
+// design's start (the foot of the "H"); Aeonik is wider than the design's face,
+// so they run further up than the design's did. The stock below them is free
+// down to the shipment-mode panel, so whenever words + weight need more than the
+// stock above the start, they slide DOWN just far enough (`dy`). A weight too
+// long for even that (a four-figure one) shrinks its own type before it crowds
+// either neighbour.
 const GT_CARE = {
+  text: "HANDLE WITH CARE",
   baseX: 762,       // the text's baseline: rotated, its glyph tops face left
-  top: 634,         // the design's text spans y 634 (the end of "CARE") ...
-  bottom: 992,      // ... to y 992 (the foot of its "H", where it starts reading)
+  bottom: 992,      // the foot of the design's "H", where the words start reading
   ink: 27,          // cap height, i.e. 762 - 735
   stockTop: 516,    // the fragile panel ends at 502; keep 14 units clear
   stockBottom: 1061, // the shipment-mode panel starts at 1075; likewise
@@ -869,42 +881,54 @@ function formatKg(kg) {
 
 function careLayout(ctx, kg) {
   const value = formatKg(kg);
-  if (!value) return null;
-  // Type size from the design's own cap height, so the slash and figure match the
-  // words they follow. Measured, not guessed: the em size means something
-  // different in every typeface.
+  // Type size from the design's own cap height, so the words, the slash and the
+  // figure all match what the design drew. Measured, not guessed: the em size
+  // means something different in every typeface.
   const px = (100 * GT_CARE.ink) / inkHeight(ctx, "H", 100, "400");
   ctx.font = `400 ${px}px ${FONT_STACK}`;
+  const length = ctx.measureText(GT_CARE.text).width;
   const slashW = ctx.measureText("/").width;
   ctx.font = `700 ${px}px ${FONT_STACK}`;
-  let valueW = ctx.measureText(value).width;
+  let valueW = value ? ctx.measureText(value).width : 0;
   let valuePx = px;
 
-  const length = GT_CARE.bottom - GT_CARE.top; // the design's text
   const room = GT_CARE.stockBottom - GT_CARE.stockTop - length - 2 * GT_CARE.gap - slashW;
   if (valueW > room) {
     const s = Math.max(GT_CARE.minScale, room / valueW);
     valuePx = px * s;
     valueW *= s;
   }
-  const total = length + GT_CARE.gap + slashW + GT_CARE.gap + valueW;
+  const total = value ? length + GT_CARE.gap + slashW + GT_CARE.gap + valueW : length;
   // How far the words must move down for `total` to end no higher than stockTop.
   const dy = Math.max(0, total - (GT_CARE.bottom - GT_CARE.stockTop));
-  return { value, px, valuePx, slashW, dy };
+  return { value, px, valuePx, length, slashW, dy };
 }
 
-function drawCareWeight(ctx, t, care) {
-  if (!care) return;
-  ctx.save();
+// Turned a quarter to the left so the text runs up the label the way the
+// design's does; `y` is where it starts reading, on the baseline.
+function careTransform(ctx, t, y) {
   ctx.translate(t.dx, t.dy);
   ctx.scale(t.scale, t.scale);
-  // Origin on the baseline, just past the end of "CARE"; turned a quarter to the
-  // left so the text runs up the label the way the design's does.
-  ctx.translate(GT_CARE.baseX, GT_CARE.top + care.dy - GT_CARE.gap);
+  ctx.translate(GT_CARE.baseX, y);
   ctx.rotate(-Math.PI / 2);
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = "#000000";
+}
+
+function drawCareCaption(ctx, t, care) {
+  ctx.save();
+  careTransform(ctx, t, GT_CARE.bottom + care.dy);
+  ctx.font = `400 ${care.px}px ${FONT_STACK}`;
+  ctx.fillText(GT_CARE.text, 0, 0);
+  ctx.restore();
+}
+
+function drawCareWeight(ctx, t, care) {
+  if (!care.value) return;
+  ctx.save();
+  // Origin just past the end of "CARE".
+  careTransform(ctx, t, GT_CARE.bottom + care.dy - care.length - GT_CARE.gap);
   ctx.font = `400 ${care.px}px ${FONT_STACK}`;
   ctx.fillText("/", 0, 0);
   // The figure is the point of the line, so it is set heavier than the words.
@@ -924,11 +948,17 @@ async function renderGtradeaLabel(item, shipmentMode = null) {
   ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
 
   const t = artTransform();
-  // Measured before the artwork is painted: the list decides where its own
-  // caption sits, and the caption is part of that artwork.
+  // Measured first: the list decides where its own caption sits, and the care
+  // line where "HANDLE WITH CARE" starts.
   const list = listLayout(ctx, item);
   const care = careLayout(ctx, item.kg);
-  drawLabelArt(ctx, t, list ? list.dy : 0, care ? care.dy : 0);
+  drawLabelArt(ctx, t);
+  drawField(ctx, GT_CAPTIONS.shelf, GT_CAPTIONS.shelf.ref, t);
+  drawField(ctx, GT_CAPTIONS.list, GT_CAPTIONS.list.ref, t, list ? list.dy : 0);
+  drawField(ctx, GT_CAPTIONS.order, GT_CAPTIONS.order.ref, t);
+  drawField(ctx, GT_CAPTIONS.tracking, GT_CAPTIONS.tracking.ref, t);
+  drawField(ctx, GT_CAPTIONS.site, GT_CAPTIONS.site.ref, t);
+  drawCareCaption(ctx, t, care);
   // The GOODS id — gtradea's own "Product ID" (GTI-100119), the id the China
   // Operations table lists this parcel under. It has to be the id on the
   // sticker: staff read the label and then look the box up in the portal, and
@@ -1011,7 +1041,7 @@ async function renderCellzenLabel(item, shipmentMode = null) {
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(bc, bcx, barcodeTop, bw, bh);
   ctx.imageSmoothingEnabled = true;
-  // The goods number under the bars — our own render: smaller + letter-spaced.
+  // The goods number under the bars — our own render, smaller than bwip's.
   drawTextAt(ctx, code, barcodeTop + bh + codeGap, codeSize, "500", CODE_SPACING, "top");
 
   // Info block — Shelf / Order / Tracking, all at ONE shared font size so they
