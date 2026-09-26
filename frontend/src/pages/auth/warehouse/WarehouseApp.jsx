@@ -1365,6 +1365,14 @@ function ParcelViewer({ item, focusId, onClose, onOpenQc, onShip, onPrint }) {
                 <ProductRow label="Tracking Number">
                   <span className="break-all text-sm font-semibold">{item.trackingNumber || "—"}</span>
                 </ProductRow>
+                {/* When the box was put away on a shelf — the item row is created
+                    at that moment, so createdAt is the received date. */}
+                <ProductRow label="Received">
+                  <span className="text-sm font-semibold">
+                    {fmtDate(item.createdAt)}
+                    {item.createdByName && <span className="font-normal text-[#2D2D2D]/50"> · {item.createdByName}</span>}
+                  </span>
+                </ProductRow>
                 <ProductRow label="Shipment">
                   <ShipmentBadge mode={item.shipmentFrom} />
                 </ProductRow>
