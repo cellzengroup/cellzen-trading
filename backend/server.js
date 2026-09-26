@@ -208,6 +208,17 @@ const startServer = async () => {
       } catch (qcError) {
         console.warn('⚠️  Could not ensure warehouse_qc_images — run node backend/migrations/add_warehouse_qc_images_table.js:', qcError.message);
       }
+      // And the resolved Product Name per 1688 listing title, so the packing
+      // list declares the same goods under the same name on every export and a
+      // manual correction sticks. Also a brand-new table, so CREATE TABLE IF
+      // NOT EXISTS is the whole change. Its own try/catch: the export degrades
+      // to resolving names per-run without it, which must not read as an outage.
+      try {
+        const { ProductNameCache } = require('./inventory/models');
+        if (ProductNameCache) await ProductNameCache.sync();
+      } catch (nameError) {
+        console.warn('⚠️  Could not ensure product_name_cache — run node backend/migrations/add_product_name_cache_table.js:', nameError.message);
+      }
     } catch (pgError) {
       console.error('❌ PostgreSQL connection failed:', pgError.message);
       console.log('🔄 Server will continue without PostgreSQL (Inventory features disabled)');

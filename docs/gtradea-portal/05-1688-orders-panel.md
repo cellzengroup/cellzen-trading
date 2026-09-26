@@ -266,18 +266,31 @@ the four states always partition the current mode selection.
 
 ## The downloaded packing list (`/export.xlsx`, `/export.pdf`)
 
-Four money columns, left to right as the sum they are. In the **sheet** only the
-first holds a number; the other three are live Excel formulas over the cells to
-their left, each carrying the computed figure as its cached result so the file
-reads correctly before Excel has recalculated anything:
+Three money columns, left to right as the sum they are. In the **sheet** only
+the first holds a number; the two after it are live Excel formulas over the
+cells to their left, each carrying the computed figure as its cached result so
+the file reads correctly before Excel has recalculated anything:
 
 | Column | Sheet cell |
 |---|---|
-| Unit Price in ¥ | the stored net unit price (gtradea's "Net unit ¥") — a plain number
+| Unit Price in ¥ | the stored net unit price (gtradea's "Net unit ¥") — a plain number |
 | Unit Price in $ | `=<Unit ¥># / 6.7` |
-| Amount in ¥ | `=<Unit ¥># * <Quantity#>` |
 | Amount in $ | `=<Unit $># * <Quantity#>` |
-| **Total** row | `=SUM(...)` down the two Amount columns |
+| **Total** row | `=SUM(...)` down the Amount column |
+
+**The amount is billed in dollars only.** The yuan amount column that used to
+sit beside it said the same figure twice: the unit price is already there in
+yuan for anyone checking the conversion, and the line and the total now read in
+one currency — the one the invoice is settled in. The per-line yuan amount is
+still computed (`packingRowValues.paid`); it is what the dollar total is worked
+out from, it just has no column of its own.
+
+**The total is summed in yuan and converted once**, not summed down the dollar
+column (`packingTotalUsd`): each line's dollar figure is an unrounded division,
+and adding a column of those accumulates a fraction of a cent per line. The
+yuan side is exact money, so rounding it to the cent first and converting that
+is the figure the invoice can be settled against. The `SUM` in the cell is what
+lets Excel re-total after an edit; the cached result is the exact one.
 
 The rate is `RMB_PER_USD`, one constant in the route, so correcting it is one
 find-and-replace in the sheet and one line in the code.
@@ -286,8 +299,8 @@ find-and-replace in the sheet and one line in the code.
 1688-ORDER total repeated on every line of the order, which could not be divided
 into a per-piece price and overstated any single line of a multi-line order.
 Two consequences: the amount cells are **no longer merged** down a shipment
-(only the order number still is — see `packingShipmentGroups`), and the total is a
-plain `SUM` rather than one figure counted once per shipment.
+(only the order number still is — see `packingShipmentGroups`), and the total is
+added up rather than being one figure counted once per shipment.
 
 **Dollars are cached UNROUNDED** (`usdExact`, not a rounded helper). Excel
 recomputes `=M7/6.7` at full precision the moment it recalculates, so a rounded
@@ -295,8 +308,8 @@ cache would make the cell change value between opening the file and touching it,
 and a unit price rounded before being multiplied by a quantity compounds that
 cent into the total. The number format still shows two decimals.
 
-**An unpriced line gets blank cells, not formulas.** `=M7*I7` over a blank unit
-price shows ¥0.00, which states the goods were free rather than that nobody has
+**An unpriced line gets blank cells, not formulas.** `=N7*I7` over a blank unit
+price shows $0.00, which states the goods were free rather than that nobody has
 priced them. The same nullish-before-coercion guard as everywhere else on this
 path — `Number(null)` is `0`, and `0` is finite.
 
@@ -304,9 +317,120 @@ path — `Number(null)` is `0`, and `0` is finite.
 **empty** where nobody has weighed the line. gtradea publishes no weight, so a 0
 there would read as "weighed, and it came to nothing".
 
-The **PDF** prints the same four figures as text (no formulas), taken from the
+The **PDF** prints the same three figures as text (no formulas), taken from the
 same `packingRowValues`, so a printout held against the sheet shows identical
 numbers.
+
+## The Product Name column
+
+gtradea gives us no product name. What `supplier_orders.product_name` holds is
+the full 1688 listing **title** — keyword-stuffed, machine-translated marketing
+text ("Export Quality Commercial-Grade Small Blender for Milk Tea, Home Use,
+Shop Stalls, Multifunctional Juice and Soy Milk Maker"). That whole string is
+right for the **Product Description** column beside it. The **Product Name**
+column has to be a short name a customs broker can read, and deriving one is
+the job of `backend/inventory/services/productNames.js`.
+
+Resolution order per row — first usable answer wins:
+
+| # | Source | Notes |
+|---|---|---|
+| 1 | `product_name_cache`, `source='manual'` | A human's correction. Never overwritten, never re-asked. |
+| 2 | `product_name_cache`, `source='llm'` | Resolved on an earlier run. Makes a repeat export instant, free and **identical**. |
+| 3 | Groq, batched ~20 titles per call | Written back to the table. |
+| 4 | `deriveShortProductName` in the route | Offline heuristic, no network. |
+
+### How short the name should be
+
+**Two words is the target.** One or three where two will not do; four is a
+failure unless the goods genuinely have a four-word name. Across the current
+254-title catalogue that lands at 1.99 words average, 198 of them exactly two.
+
+The rule that gets there is: **drop the qualifier, keep the type.**
+
+| Drop | Keep |
+|---|---|
+| Material — "Ceramic Table Lamp" → **Table Lamp** | The noun that defines the product type — "Water Cup" not "Cup", "Dust Bag" not "Bag" |
+| Decoration — "Dustproof Filter Paper Box" → **Filter Paper Box** | Anything that changes what the goods ARE — Electric, Rechargeable, Insulated, Folding |
+| Redundancy — "Laptop Inner Bag" → **Laptop Bag** | Material where the bare noun means nothing — **Silicone Mold** stays, "Mold" is not a product |
+| Brand, platform, colour, size, count, model code, year, season, audience | |
+
+**Short is the goal; vague never was.** Pushing for two words produced 30
+one-word names, and several were as useless as the mangled plurals they
+replaced — a pet tracker came out as "Locator", a die-cast model as "Car", a
+backrest pillow as "Headboard Cushion". So every name is now held up to
+`validateName()` before it is allowed near the sheet:
+
+| Check | Rejects | Why |
+|---|---|---|
+| **Not vague alone** | "Locator", "Car", "Battery", "Cushion", "Ball", "Jacket" | A bare category noun declares nothing. `VAGUE_ALONE` |
+| **Grounded in the title** | "Water Bottle" for a listing that says *water cup* | Stops the model renaming goods to a near-synonym — the original complaint |
+| **Ends on a noun** | "Anti-Lost", "Non-Slip" | compromise POS-tags the last word; a modifier is not a name |
+| **No mistranslation tail** | "Battery Suit", "Tea Set" | 1688 renders 套装 as "suit"; an Xbox battery kit read as clothing |
+| **At most 4 words** | | |
+
+A rejection does **not** go straight to the heuristic. The failures go back to
+the model in a **repair pass** — one small extra call carrying the rejected
+name and the exact reason, which is far more use to it than another round of
+general prompt wording. Only if repair also fails does the row fall back, and
+then only for a *hard* failure; a *soft* one (wording the title does not use,
+like "Mold" where the listing spells it "Mould") is kept, because a slightly-off
+real name still beats the heuristic.
+
+This is enforced twice, on purpose. The prompt asks for it, and then
+`tightenName()` strips leading material and decorative words deterministically,
+so a verbose answer from the model still lands short. The tightener only strips
+when two or more words survive, or when the single survivor is not on its
+`GENERIC_HEAD` list — which is what stops "Inner Bag" collapsing to "Bag" while
+"Small Blender" still collapses to "Blender". **It runs on model output only**:
+a name pinned with `--set` is printed exactly as the person typed it.
+
+**The name is cached because a packing list is a declaration.** Re-deriving it
+per export meant the same goods could go out under two different names on two
+prints of the same consignment — and it put a ~20s LLM round trip on the
+critical path of every download. The table (`product_name_cache`, keyed by a
+sha256 of the normalised title) makes the second export of anything a lookup.
+
+**No model name is hard-coded.** `PREFERRED_MODELS` is a list, checked against
+`GET /v1/models` at first use, and a model that 404s mid-run is struck off and
+the chunk retried on the next candidate. This is not hypothetical tidiness:
+Groq retired `llama-3.3-70b-versatile`, every chunk came back
+`model_not_found`, and the export quietly fell through to the heuristic —
+shipping packing lists that read "Milk teas" for a blender, "And sizeses" for a
+miniskirt, "Pack suitables" for vacuum dust bags and "Be storeds" for a laptop
+bag. Nothing errored; the sheet was just wrong.
+
+**A failed resolution is loud.** Whatever the reason — no key, dead model, rate
+limit, timeout — the rows fall back to the heuristic *and* a `console.error`
+names the count and the cause, because whoever is about to email that sheet to
+a forwarder needs to know which cells are guesses.
+
+**Rate limits are waited out, within a budget.** This key is on Groq's
+on-demand tier (8000 tokens/minute) and a chunk costs ~3200, so a full
+catalogue run will hit 429s. A live export may only spend
+`PACKING_LLM_RETRY_BUDGET_MS` (20s) waiting before it gives the remaining rows
+to the heuristic; the refresh script below passes `patient: true` and waits
+properly. Warm the cache with the script, and the export never pays it.
+
+### Working with the names
+
+```bash
+node backend/scripts/refresh-product-names.js             # resolve + cache anything new
+node backend/scripts/refresh-product-names.js --list      # read every cached name
+node backend/scripts/refresh-product-names.js --offline   # what the fallback would say
+node backend/scripts/refresh-product-names.js --dry-run   # resolve, print, write nothing
+node backend/scripts/refresh-product-names.js --force     # re-resolve after a prompt/model change
+node backend/scripts/refresh-product-names.js --set "<title substring>" "<name>"
+```
+
+**`--set` is the fix for a name a model keeps getting wrong.** It pins the name
+as `source='manual'`, which no model can overwrite — not even `--force`. Reach
+for it before editing the prompt: it is one row, it is certain, and it cannot
+regress the other 252 names.
+
+The table is created on server start (`server.js`, same pattern as
+`warehouse_qc_images`) and by
+`backend/migrations/add_product_name_cache_table.js` for a manual run.
 
 ## Backend contract
 

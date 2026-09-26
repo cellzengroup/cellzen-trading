@@ -460,10 +460,10 @@ function deriveModelNumber(o) {
   return `GT${1000 + (hash % 9000)}`;
 }
 
-// FALLBACK ONLY — the export route's primary path is productNameNer.js
-// (a real NER model), used whenever it's available and confident. This
-// heuristic exists for when it isn't (model unavailable on this platform, or
-// it genuinely found nothing) — a rough guess is still better than a blank
+// FALLBACK ONLY — the export route's primary path is services/productNames.js
+// (a batched LLM call, with the resolved names kept in product_name_cache).
+// This heuristic exists for when that is unavailable: no GROQ_API_KEY, no
+// network, quota exhausted. A rough guess is still better than a blank
 // customs-facing cell.
 //
 // gtradea's product_name is really the full 1688 listing TITLE — a long,
@@ -477,16 +477,66 @@ function deriveModelNumber(o) {
 // the actual product-type word(s) more than once across the title (e.g.
 // "Stand" 3x, "Earring"/"Earrings" 2x, "Hand Ledger Tape" verbatim 2x) — so we
 // POS-tag the title with compromise and collect every noun that recurs;
-// that's a much stronger signal than position. Short, single-clause titles
-// (<=3 words, e.g. "Mobile Phone Stand") need none of this and are just
-// sentence-cased as-is.
-function pluralizeWord(word) {
-  const bare = word.replace(/[^a-zA-Z]/g, '');
-  if (/[sxz]$/i.test(bare) || /(ch|sh)$/i.test(bare)) return `${word}es`;
-  if (/[^aeiou]y$/i.test(bare)) return `${word.slice(0, -1)}ies`;
-  if (/s$/i.test(bare)) return word; // already looks plural
-  return `${word}s`;
+// that's a much stronger signal than position.
+//
+// WHAT THIS USED TO DO, AND WHY IT DOESN'T ANY MORE
+//
+// It pluralised the word it landed on and never checked the result was a noun
+// phrase. When the LLM path went dark (Groq retired the pinned model — see
+// services/productNames.js) every row came through here, and real packing
+// lists went out reading "Milk teas" for a commercial blender, "And sizeses"
+// for a miniskirt, "Pack suitables" for vacuum dust bags and "Be storeds" for
+// a laptop bag. So: nothing is pluralised any more — the listing's own wording
+// is kept as written — filler is dropped before a candidate is built, and
+// every candidate must pass usableName() or the next strategy is tried. The
+// worst case is now a blunt-but-real noun phrase rather than an invented word.
+
+// Words that are never the goods. Marketplace boilerplate, grade/appeal
+// adjectives, and the bare function words that produced "And sizes" and
+// "Be stored".
+const NAME_FILLER = new Set([
+  'new', 'hot', 'sale', 'wholesale', 'retail', 'cross', 'border', 'cross-border',
+  'amazon', 'aliexpress', 'wish', 'ebay', 'shein', 'temu', 'foreign', 'trade',
+  'export', 'quality', 'factory', 'direct', 'supply', 'stock', 'free', 'shipping',
+  // 'end' earns its place: compromise splits "High-End" (in roughly a third of
+  // these titles) into two tokens and tags "End" as a noun, which is how
+  // "End scrunchie" got as far as the sheet.
+  'high-end', 'highend', 'end', 'luxury', 'premium', 'upgraded', 'thickened', 'sexy',
+  'fashion', 'fashionable', 'trendy', 'popular', 'style', 'ins', 'korean',
+  'nordic', 'european', 'american', 'japanese', 'simple', 'cute', 'lovely',
+  'multifunctional', 'multi', 'functional', 'portable', 'universal',
+  'professional', 'household', 'home', 'use', 'suitable', 'applicable',
+  'spring', 'summer', 'autumn', 'winter', 'season',
+  'pcs', 'pc', 'piece', 'pieces', 'pack', 'set', 'lot', 'bulk', 'large', 'small',
+  'color', 'colors', 'colour', 'colours', 'size', 'sizes', 'model', 'models',
+  'and', 'or', 'the', 'a', 'an', 'for', 'with', 'in', 'of', 'to', 'on', 'by',
+  'be', 'is', 'are', 'can', 'it', 'its', 'all', 'type', 'series',
+]);
+// A name may not begin or end on a word that cannot carry a noun phrase — the
+// one thing "And sizes", "Be stored" and "Pack suitable" have in common. The
+// two lists differ deliberately: "can" opens a verb phrase but closes a real
+// noun phrase ("Tinplate Tea Can" is in this catalogue). Kept in step with
+// LEADING_STOPWORD / TRAILING_STOPWORD in services/productNames.js.
+const NAME_LEADING_STOPWORD = /^(and|or|the|a|an|for|with|in|of|to|on|by|be|is|are|can|suitable|applicable|type|series)$/i;
+const NAME_TRAILING_STOPWORD = /^(and|or|the|a|an|for|with|in|of|to|on|by|be|is|are|suitable|applicable|type|series|stored|used|needed|included)$/i;
+const normWord = (w) => String(w || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
+const isFiller = (w) => {
+  const n = normWord(w);
+  return !n || NAME_FILLER.has(n) || /^\d+$/.test(n) || /\d/.test(n) && n.length <= 5;
+};
+
+// The gate every candidate has to pass before it can reach the sheet.
+function usableName(phrase) {
+  const words = String(phrase || '').trim().split(/\s+/).filter(Boolean);
+  if (!words.length || words.length > 4) return false;
+  if (NAME_LEADING_STOPWORD.test(words[0]) || NAME_TRAILING_STOPWORD.test(words[words.length - 1])) return false;
+  const joined = words.join(' ');
+  if (joined.length < 3 || joined.length > 60) return false;
+  if (!/[a-z]{3}/i.test(joined)) return false;
+  // Must carry at least one word that is doing naming work.
+  return words.some((w) => !isFiller(w) && normWord(w).length >= 3);
 }
+
 // Strip (Color: ...) / [silver] spec tags — noise for name extraction.
 const stripSpecTags = (title) => String(title || '')
   .replace(/\([^)]*\)/g, ' ')
@@ -522,22 +572,30 @@ const sentenceCase = (phrase) => {
 function deriveShortProductName(rawName) {
   const s = stripSpecTags(rawName);
   if (!s) return '-';
+
+  // Try each strategy in turn and take the first that yields a real noun
+  // phrase, rather than committing to whatever the first one produced.
+  const candidates = [];
+
+  // Short, single-clause title ("Mobile Phone Stand") — already a name.
   const clause1 = stripTrailingPrepClause(s.split(',')[0].trim());
   const words1 = clause1.split(/\s+/).filter(Boolean);
-  if (words1.length > 0 && words1.length <= 3) return sentenceCase(clause1);
+  if (words1.length > 0 && words1.length <= 3) candidates.push(clause1);
+
+  const { tokens, isNoun, normTokens } = tagTokens(s);
 
   // Long / comma-less title — find every noun that the seller repeated
-  // somewhere else in the title (2+ occurrences, singular/plural collapsed).
-  // That's what actually names the product in keyword-stuffed listings — NOT
-  // just the first noun that happens to repeat: a title can stutter the same
-  // word 2-3 times in a row ("relief relief relief") AND separately repeat the
-  // real head noun far apart ("...material paper...backing paper"). Counting
-  // distinct repeated stems (not first-match position) catches both at once
-  // and naturally collapses the stutter to a single mention.
-  const { tokens, isNoun, normTokens } = tagTokens(s);
+  // somewhere else in the title (2+ occurrences). That's what actually names
+  // the product in keyword-stuffed listings — NOT just the first noun that
+  // happens to repeat: a title can stutter the same word 2-3 times in a row
+  // ("relief relief relief") AND separately repeat the real head noun far
+  // apart ("...material paper...backing paper"). Counting distinct repeated
+  // stems (not first-match position) catches both and collapses the stutter.
+  // Filler is excluded up front, so a title that says "Wholesale" three times
+  // can no longer name the goods after it.
   const counts = new Map();
   tokens.forEach((t, i) => {
-    if (!isNoun[i] || !normTokens[i]) return;
+    if (!isNoun[i] || !normTokens[i] || isFiller(t)) return;
     const entry = counts.get(normTokens[i]);
     if (entry) entry.count += 1;
     else counts.set(normTokens[i], { count: 1, firstIdx: i, text: t });
@@ -546,19 +604,38 @@ function deriveShortProductName(rawName) {
     .filter((v) => v.count >= 2)
     .sort((a, b) => a.firstIdx - b.firstIdx);
 
-  if (repeated.length >= 2) return sentenceCase(repeated.map((r) => r.text).join(' '));
+  if (repeated.length >= 2) candidates.push(repeated.slice(0, 3).map((r) => r.text).join(' '));
   if (repeated.length === 1) {
-    // A single repeated noun ("Earring") isn't a complete name by itself —
-    // pair it with the word right after its first occurrence ("Set").
+    // A single repeated noun ("Earring") is thin on its own — qualify it with
+    // the nearest non-filler modifier BEFORE its first occurrence ("Gold
+    // Earring"), which reads as a product where the old "+ pluralised next
+    // word" ("Earring Sets") invented wording the listing never used.
     const head = repeated[0];
-    const next = tokens[head.firstIdx + 1];
-    return sentenceCase(next ? `${head.text} ${pluralizeWord(next)}` : pluralizeWord(head.text));
+    const prev = tokens[head.firstIdx - 1];
+    if (prev && !isFiller(prev)) candidates.push(`${prev} ${head.text}`);
+    candidates.push(head.text);
   }
 
-  // Nothing repeats — fall back to the tail of clause 1 (best-effort).
-  const core = words1.slice(-2);
-  core[core.length - 1] = pluralizeWord(core[core.length - 1]);
-  return sentenceCase(core.join(' '));
+  // Nothing repeats — take the last noun in clause 1 with its modifier. Still
+  // verbatim: no pluralising, no invented words.
+  const lastNounIdx = (() => {
+    const limit = Math.min(tokens.length, words1.length);
+    for (let i = limit - 1; i >= 0; i--) if (isNoun[i] && !isFiller(tokens[i])) return i;
+    return -1;
+  })();
+  if (lastNounIdx >= 0) {
+    const prev = tokens[lastNounIdx - 1];
+    if (prev && !isFiller(prev)) candidates.push(`${prev} ${tokens[lastNounIdx]}`);
+    candidates.push(tokens[lastNounIdx]);
+  }
+
+  // Last resort: the first few words of the title that aren't filler.
+  candidates.push(words1.filter((w) => !isFiller(w)).slice(0, 3).join(' '));
+
+  const chosen = candidates.find(usableName);
+  // Truly nothing usable (a title that is all filler or all codes) — say so
+  // rather than print an invented word on a customs document.
+  return chosen ? sentenceCase(chosen) : '-';
 }
 
 // Run async work over items with a bounded worker pool. Product-image
@@ -609,18 +686,21 @@ const PACKING_COLUMNS = [
   // room to spare, and the symbol matches the one the cells below are formatted
   // with.
   //
-  // The four read left to right as the sum they are, and in the SHEET all but
-  // the first are live formulas over the cells to their left (see the row loop),
-  // never baked-in numbers — a reader clicking any of them sees the working,
+  // The three read left to right as the sum they are, and in the SHEET the two
+  // after the first are live formulas over the cells to their left (see the row
+  // loop), never baked-in numbers — a reader clicking either sees the working,
   // and correcting the rate is one find-and-replace in Excel:
   //
-  //   Unit Price in ¥    what gtradea prices ONE piece at (its "Net unit ¥"")
+  //   Unit Price in ¥    what gtradea prices ONE piece at (its "Net unit ¥")
   //   Unit Price in $    = <Unit ¥ cell> / 6.7
-  //   Amount in ¥       = <Unit ¥ cell> * <Quantity cell>
   //   Amount in $        = <Unit $ cell> * <Quantity cell>
+  //
+  // The AMOUNT is billed in DOLLARS ONLY. The yuan column that used to sit
+  // beside it said the same figure twice: the unit price is already there in
+  // yuan for anyone checking the conversion, and the line and the total now read
+  // in one currency — the one the invoice is settled in.
   { key: 'unitPaid', header: 'Unit Price in ¥', width: 20 },
   { key: 'unitPaidUsd', header: 'Unit Price in $', width: 20 },
-  { key: 'paid', header: 'Amount in ¥', width: 20 },
   { key: 'paidUsd', header: 'Amount in $', width: 20 },
 ];
 // -> { columns: [...], col: { marka: 1, ctn: 2, ... } }, 1-indexed for ExcelJS.
@@ -1133,21 +1213,25 @@ function packingShipmentGroups(orders) {
   return { groupOf };
 }
 
-// What the Total row carries: every line's own amount added up, in both
-// currencies. A plain sum over the lines now that each holds its own figure —
-// the old version added one order-level amount per SHIPMENT, which was the only
-// way not to count a multi-line order once per line back when every line of it
-// repeated the same total.
-function packingTotals(orders) {
+// What the Total row carries: every line's own amount added up, in dollars — the
+// only currency the amount is billed in. A plain sum over the lines now that
+// each holds its own figure; the old version added one order-level amount per
+// SHIPMENT, which was the only way not to count a multi-line order once per line
+// back when every line of it repeated the same total.
+//
+// Summed in YUAN and converted ONCE at the end, not summed in dollars: each
+// line's dollar figure is an unrounded division, and adding a column of those
+// accumulates a fraction of a cent per line. The yuan side is exact money, so
+// rounding it to the cent first and converting that is the figure the invoice
+// can be settled against.
+function packingTotalUsd(orders) {
   let rmb = 0;
   let seen = false;
   for (const o of orders) {
     const v = packingRowValues(o, '').paid;
     if (v != null) { rmb += v; seen = true; }
   }
-  if (!seen) return { totalPaid: null, totalPaidUsd: null };
-  const total = Math.round(rmb * 100) / 100;
-  return { totalPaid: total, totalPaidUsd: usdExact(total) };
+  return seen ? usdExact(Math.round(rmb * 100) / 100) : null;
 }
 
 // GET /export.xlsx — packing list for the (optionally search-, scope- and
@@ -1212,7 +1296,6 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     const unitRmbLetter = sheet.getColumn(col.unitPaid).letter;
     const unitUsdLetter = sheet.getColumn(col.unitPaidUsd).letter;
     const qtyLetter = sheet.getColumn(col.quantity).letter;
-    const rmbLetter = sheet.getColumn(col.paid).letter;
     const usdLetter = sheet.getColumn(col.paidUsd).letter;
     // The money cell for one column on row `rr`: the stored Unit Price in ¥ as a
     // plain number, and the other three as the live formula that derives them,
@@ -1226,10 +1309,9 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
       if (v == null) return null;
       if (key === 'unitPaid') return v;
       if (key === 'unitPaidUsd') return { formula: `${unitRmbLetter}${rr}/${RMB_PER_USD}`, result: v };
-      if (key === 'paid') return { formula: `${unitRmbLetter}${rr}*${qtyLetter}${rr}`, result: v };
       return { formula: `${unitUsdLetter}${rr}*${qtyLetter}${rr}`, result: v };
     };
-    const MONEY_FMT = { unitPaid: CNY_FMT, unitPaidUsd: USD_FMT, paid: CNY_FMT, paidUsd: USD_FMT };
+    const MONEY_FMT = { unitPaid: CNY_FMT, unitPaidUsd: USD_FMT, paidUsd: USD_FMT };
     let r = 4;
     for (let i = 0; i < orders.length; i++) {
       const o = orders[i];
@@ -1296,7 +1378,7 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     // once, as a merged cell down the group. Only that column: the money columns
     // now differ line to line (see packingShipmentGroups).
     const { groupOf } = packingShipmentGroups(orders);
-    const { totalPaid, totalPaidUsd } = packingTotals(orders);
+    const totalPaidUsd = packingTotalUsd(orders);
     for (let i = 0; i < orders.length; i++) {
       if (groupOf[i] !== i) continue;
       let end = i;
@@ -1326,8 +1408,8 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     totalRow.getCell(col.model).value = 'Total';
     totalRow.getCell(col.quantity).value = totalQty;
     totalRow.getCell(col.unit).value = 'pcs';
-    // Both totals are a SUM down their own column, which is what a reader
-    // checking the sheet expects to find there and what lets Excel re-total it
+    // ONE total, in dollars, as a SUM down the Amount column — what a reader
+    // checking the sheet expects to find there, and what lets Excel re-total it
     // after an edit. Summing is honest now that each line carries its own
     // amount; when the column held one order-level figure repeated per line, it
     // would have counted a multi-line order once per line.
@@ -1336,16 +1418,10 @@ router.get('/export.xlsx', authenticate, requireStaffOrAdmin, async (req, res) =
     // number that means nothing, and a blank says so.
     const firstDataRow = 4;
     const lastDataRow = r - 1;
-    const sumCell = (c, letter, total, fmt) => {
-      const cell = totalRow.getCell(c);
-      cell.value = total == null
-        ? null
-        : { formula: `SUM(${letter}${firstDataRow}:${letter}${lastDataRow})`, result: total };
-      cell.numFmt = fmt;
-    };
-    if (lastDataRow >= firstDataRow) {
-      sumCell(col.paid, rmbLetter, totalPaid, CNY_FMT);
-      sumCell(col.paidUsd, usdLetter, totalPaidUsd, USD_FMT);
+    if (lastDataRow >= firstDataRow && totalPaidUsd != null) {
+      const totalCell = totalRow.getCell(col.paidUsd);
+      totalCell.value = { formula: `SUM(${usdLetter}${firstDataRow}:${usdLetter}${lastDataRow})`, result: totalPaidUsd };
+      totalCell.numFmt = USD_FMT;
     }
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1397,10 +1473,13 @@ function registerPdfFonts(doc) {
 
 // Cell values as printable text. The sheet stores numbers so Excel can total
 // them; the page has to show them, so they're formatted here instead.
-// The four money columns, and which currency each prints in. The page has no
+// The money columns, and which currency each prints in. The page has no
 // formulas, so it prints the same numbers the sheet caches as its results — a
 // reader holding the printout against the file has to see identical figures.
-const PDF_MONEY = { unitPaid: "¥", unitPaidUsd: '$', paid: "¥", paidUsd: '$' };
+//
+// `paid`, the per-line amount in yuan, is still COMPUTED — it is what the dollar
+// total is worked out from — but has no column of its own to print in any more.
+const PDF_MONEY = { unitPaid: "¥", unitPaidUsd: '$', paidUsd: '$' };
 const pdfText = (key, value) => {
   if (value == null || value === '') return '';
   if (PDF_MONEY[key] || key === 'quantity') {
@@ -1428,7 +1507,7 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
     // PDF that a browser would happily save as a corrupt file.
     const { orders, nerNames, imageBuffers } = await buildPackingExport(opts);
     const { groupOf } = packingShipmentGroups(orders);
-    const { totalPaid, totalPaidUsd } = packingTotals(orders);
+    const totalPaidUsd = packingTotalUsd(orders);
     const logo = await packingLogo();
     const title = packingTitle(opts);
 
@@ -1602,7 +1681,6 @@ router.get('/export.pdf', authenticate, requireStaffOrAdmin, async (req, res) =>
       model: 'Total',
       quantity: String(totalQty),
       unit: 'pcs',
-      paid: pdfText('paid', totalPaid),
       paidUsd: pdfText('paidUsd', totalPaidUsd),
     };
     columns.forEach((c, ci) => {
@@ -2074,3 +2152,7 @@ router.get('/status', authenticate, requireStaffOrAdmin, (req, res) => {
 });
 
 module.exports = router;
+// Exported for scripts/refresh-product-names.js, which exercises the offline
+// fallback against the real catalogue without standing the server up. Express
+// ignores extra properties on a router.
+module.exports.deriveShortProductName = deriveShortProductName;

@@ -14,6 +14,7 @@ const WarehouseItem = require('./WarehouseItem');
 const PrintJob = require('./PrintJob');
 const SupplierOrder = require('./SupplierOrder');
 const WarehouseQcImage = require('./WarehouseQcImage');
+const ProductNameCache = require('./ProductNameCache');
 
 if (sequelize) {
   // Product <-> Inventory
@@ -88,4 +89,5 @@ module.exports = {
   PrintJob,
   SupplierOrder,
   WarehouseQcImage,
+  ProductNameCache,
 };
