@@ -13,7 +13,7 @@ const { withConnectionRetry } = require('../dbRetry');
 const { downloadImage } = require('../../config/supabase');
 const gtradeaSync = require('../services/gtradeaSync');
 const { extractProductNames } = require('../services/productNames');
-const { classifyShipmentModes, effectiveOrderMode, toShipmentFrom } = require('../services/shipmentMode');
+const { classifyShipmentModes, autoOrderMode, effectiveOrderMode, toShipmentFrom } = require('../services/shipmentMode');
 
 const router = express.Router();
 
@@ -69,6 +69,16 @@ const SHIP_MODES = ['air', 'land'];
 const normalizeShipMode = (v) => {
   const s = String(v || '').trim().toLowerCase();
   return SHIP_MODES.includes(s) ? s : null;
+};
+
+// The Mode tooltip for a row, given its override and its automatic answer
+// (autoOrderMode). Shared by the list and the PATCH reply so the two read alike.
+const shipModeReason = (override, auto) => {
+  if (!override) return auto.reason;
+  const why = auto.source === 'gtradea'
+    ? `the gtradea order says ${toShipmentFrom(auto.mode)}`
+    : `auto-detected ${toShipmentFrom(auto.mode)}: ${auto.reason}`;
+  return `Set to ${toShipmentFrom(override)} by warehouse staff (${why})`;
 };
 
 // supplier_orders.kg is DECIMAL(10,3), which pg hands back as a string ("2.500").
@@ -228,16 +238,19 @@ async function fetchSupplierOrders(search, { from, to, withQc = false } = {}) {
       }
     }
 
-    // By Air / By Land per row, from the product title (see
-    // services/shipmentMode.js). Batched so the classifier is trained once for
-    // the whole page rather than once per row, and computed on READ rather than
-    // stored — improving the lexicon re-rates every historical order for free.
-    const autoModes = await classifyShipmentModes(rows.map((r) => r.product_name || ''));
+    // By Air / By Land per row: gtradea's own shipping mode for orders from
+    // the cut-over on, the product-title classifier for older ones (see
+    // autoOrderMode in services/shipmentMode.js). Batched so the classifier is
+    // trained once for the whole page rather than once per row, and computed
+    // on READ rather than stored — improving the lexicon re-rates every
+    // historical order for free, and a mode changed on gtradea shows on the
+    // next sync.
+    const classified = await classifyShipmentModes(rows.map((r) => r.product_name || ''));
 
     return rows.map((r, i) => {
       const key = String(r.china_tracking_no || '').toUpperCase();
       const m = key ? matchMap[key] : null;
-      const auto = autoModes[i];
+      const auto = autoOrderMode(r, classified[i]);
       const override = normalizeShipMode(r.ship_mode_override);
       const netUnit = netUnitOut(r.unit_price_cny, r.frt_per_unit_cny);
       return {
@@ -259,15 +272,17 @@ async function fetchSupplierOrders(search, { from, to, withQc = false } = {}) {
         ...(qcIds ? { qc_image_ids: key ? (qcIds[key] || []) : [] } : null),
         shipping_mode: r.shipping_mode,
         // Effective mode the box should travel in, and enough of the working to
-        // explain it in the panel's tooltip: what the classifier decided, which
-        // stage decided it, why, and whether a human has overridden it.
+        // explain it in the panel's tooltip: what gtradea or the classifier
+        // decided, which of them decided it, why, and whether a human has
+        // overridden it.
         ship_mode: override || auto.mode,
         ship_mode_auto: auto.mode,
+        ship_mode_auto_source: auto.source,
         ship_mode_override: override,
         ship_mode_source: override ? 'staff' : auto.source,
-        ship_mode_reason: override
-          ? `Set to ${override === 'land' ? 'By Land' : 'By Air'} by warehouse staff (auto-detected ${auto.mode === 'land' ? 'By Land' : 'By Air'}: ${auto.reason})`
-          : auto.reason,
+        ship_mode_reason: shipModeReason(override, auto),
+        // Set only where gtradea flies a line a hazard rule would put on land.
+        ship_mode_hazard: auto.hazardWarning || null,
         order_status: r.order_status,
         // What gtradea's China Operations panel prices this line at, per piece
         // and in total. `net_unit_price` is its "Net unit ¥" column (unit +
@@ -326,10 +341,11 @@ router.patch('/:id/ship-mode', authenticate, requireStaffOrAdmin, async (req, re
 
     await withConnectionRetry(() => order.update({ ship_mode_override: mode }));
 
-    // Clearing an override hands the row back to the classifier, so the
-    // effective mode has to be recomputed here either way — the client can't
-    // work out what the classifier will say next.
-    const [auto] = await classifyShipmentModes([order.product_name || '']);
+    // Clearing an override hands the row back to gtradea or the classifier, so
+    // the effective mode has to be recomputed here either way — the client
+    // can't work out what the classifier will say next.
+    const [classified] = await classifyShipmentModes([order.product_name || '']);
+    const auto = autoOrderMode(order, classified);
     const effective = mode || auto.mode;
 
     // Push the decision onto the box itself. warehouse_items.shipment_from is
@@ -351,7 +367,7 @@ router.patch('/:id/ship-mode', authenticate, requireStaffOrAdmin, async (req, re
     if (WarehouseItem && order.china_tracking_no) {
       const lines = await withConnectionRetry(() => SupplierOrder.findAll({
         where: { china_tracking_no: order.china_tracking_no },
-        attributes: ['id', 'product_name', 'ship_mode_override'],
+        attributes: ['id', 'product_name', 'ship_mode_override', 'shipping_mode', 'ordered_at'],
       }));
       const lineModes = await Promise.all(lines.map((line) => effectiveOrderMode(line)));
       boxMode = lineModes.includes('land') ? 'land' : 'air';
@@ -368,11 +384,11 @@ router.patch('/:id/ship-mode', authenticate, requireStaffOrAdmin, async (req, re
         id: order.id,
         ship_mode: effective,
         ship_mode_auto: auto.mode,
+        ship_mode_auto_source: auto.source,
         ship_mode_override: mode,
         ship_mode_source: mode ? 'staff' : auto.source,
-        ship_mode_reason: mode
-          ? `Set to ${toShipmentFrom(mode)} by warehouse staff (auto-detected ${toShipmentFrom(auto.mode)}: ${auto.reason})`
-          : auto.reason,
+        ship_mode_reason: shipModeReason(mode, auto),
+        ship_mode_hazard: auto.hazardWarning || null,
         // How many boxes on the shelf were retagged — the panel uses it to tell
         // staff the change reached the physical stock, not just this table.
         warehouse_items_updated: propagated,
@@ -897,7 +913,7 @@ const resolveScope = (v) => {
 // without hand-deleting rows out of the sheet afterwards.
 //
 // Matched on the EFFECTIVE mode (`ship_mode` — the staff override when there is
-// one, otherwise the classifier's answer), which is exactly what the Mode column
+// one, otherwise gtradea's or the classifier's answer), which is exactly what the Mode column
 // in the 1688 panel shows, so the export can't disagree with the screen.
 // `air` is the catch-all rather than an equality test on 'air', mirroring the
 // frontend's own `=== "land" ? land : air` reading: a row can never fall out of

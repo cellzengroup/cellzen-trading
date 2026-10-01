@@ -1550,20 +1550,23 @@ function StoredProducts({ products }) {
 }
 
 // The Mode cell in the 1688 panel: how this order has to travel, pre-filled
-// from the product description by the backend's dangerous-goods classifier
-// (backend/inventory/services/shipmentMode.js) and editable here.
+// with the shipping mode on the gtradea order for orders from ORD-20260923-500870
+// on, and from the product description by the backend's dangerous-goods
+// classifier for older ones (backend/inventory/services/shipmentMode.js), and
+// editable here.
 //
 // It is a real <select> rather than a badge because the classifier is not
 // infallible — it reads a machine-translated marketing title, and the one
 // person who can see the actual goods is the staff member looking at this row.
 // The auto answer is a starting point they can always overrule.
 //
-// `title` carries the classifier's reasoning ("Restricted for air freight —
-// Lithium battery (\"power bank\")") so hovering explains WHY a row defaulted to
-// By Land, rather than leaving staff to guess whether to trust it.
+// `title` carries the reasoning ("Restricted for air freight — Lithium battery
+// (\"power bank\")", or that gtradea set it) so hovering explains WHY a row
+// reads the way it does, rather than leaving staff to guess whether to trust it.
 function ShipModeSelect({ order, onChange, busy }) {
   const land = order.shipMode === "land";
   const manual = !!order.shipModeOverride;
+  const fromGtradea = order.shipModeAutoSource === "gtradea";
   const tone = land
     ? "bg-amber-50 text-amber-700 ring-amber-200 focus:ring-amber-400/40"
     : "bg-sky-50 text-sky-700 ring-sky-200 focus:ring-sky-400/40";
@@ -1580,17 +1583,31 @@ function ShipModeSelect({ order, onChange, busy }) {
         <option value="air">By Air</option>
         <option value="land">By Land</option>
       </select>
-      {/* Nothing is drawn for a row the classifier decided on its own — the
-          dropdown already states the mode, and labelling every untouched row
-          just adds noise to a table staff scan by eye. The undo only appears
-          once someone has actually overridden, which is the only case where
-          there is something to undo. */}
+      {/* gtradea flies this line but its title names restricted goods. The mode
+          still follows gtradea; this is the one row a staff member should look
+          at before it goes on an aircraft, so it can't be left to a tooltip.
+          Gone once anyone picks a mode for the row. */}
+      {!manual && order.shipModeHazard && (
+        <span
+          role="img"
+          title={order.shipModeReason || undefined}
+          aria-label="Check before it flies: the title names restricted goods"
+          className="text-xs leading-none text-amber-600"
+        >
+          ⚠
+        </span>
+      )}
+      {/* Nothing else is drawn for a row decided automatically — the dropdown
+          already states the mode, and labelling every untouched row just adds
+          noise to a table staff scan by eye. The undo only appears once someone
+          has actually overridden, which is the only case where there is
+          something to undo. */}
       {manual && (
         <button
           type="button"
           disabled={busy}
           onClick={() => onChange(order.id, null)}
-          title={`${order.shipModeReason || ""}\n\nClick to undo this manual choice and let the mode be detected from the product again.`}
+          title={`${order.shipModeReason || ""}\n\nClick to undo this manual choice and ${fromGtradea ? "go back to the shipping mode on the gtradea order" : "let the mode be detected from the product again"}.`}
           aria-label="Undo manual shipment mode"
           className="text-xs leading-none text-[#412460]/45 transition-colors hover:text-[#412460] disabled:opacity-50"
         >
@@ -3447,7 +3464,8 @@ export default function WarehouseApp({ mode = "cellzen" }) {
   }, [isGtradea, tab, applyPendingModes]);
 
   // Staff correction of one row's shipment mode. `mode` is "air" | "land", or
-  // null to drop the correction and hand the row back to the classifier.
+  // null to drop the correction and hand the row back to gtradea's mode (or the
+  // classifier's, for orders before ORD-20260923-500870).
   // Optimistic, because the dropdown has to feel instant on a warehouse tablet;
   // the server's answer overwrites the guess as soon as it lands, and a failure
   // reloads rather than leaving a wrong mode on screen.

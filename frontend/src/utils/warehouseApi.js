@@ -436,16 +436,20 @@ export function unwrapSupplierOrder(row) {
     // The parcel's QC photo ids (see unwrapItem) — array = the truth, null = unknown.
     qcImageIds: Array.isArray(row.qc_image_ids) ? row.qc_image_ids : null,
     shippingMode: row.shipping_mode || "",
-    // How this box has to travel, worked out from the product title by the
-    // backend's dangerous-goods classifier and correctable from the Mode
-    // dropdown in the 1688 panel. `shipMode` is the effective answer;
-    // `shipModeAuto` is what the classifier said before any correction, and
-    // `shipModeOverride` is non-empty only once a human has picked.
+    // How this box has to travel: gtradea's own shipping mode for newer orders,
+    // worked out from the product title by the backend's dangerous-goods
+    // classifier for older ones, and correctable from the Mode dropdown in the
+    // 1688 panel. `shipMode` is the effective answer; `shipModeAuto` is what
+    // gtradea/the classifier said before any correction, and `shipModeOverride`
+    // is non-empty only once a human has picked.
     shipMode: row.ship_mode === "land" ? "land" : "air",
     shipModeAuto: row.ship_mode_auto === "land" ? "land" : "air",
+    shipModeAutoSource: row.ship_mode_auto_source || "", // gtradea | rule | category | model | default
     shipModeOverride: row.ship_mode_override || "",
-    shipModeSource: row.ship_mode_source || "", // rule | category | model | default | staff
+    shipModeSource: row.ship_mode_source || "", // gtradea | rule | category | model | default | staff
     shipModeReason: row.ship_mode_reason || "",
+    // Non-empty where gtradea flies a line a dangerous-goods rule would put on land.
+    shipModeHazard: row.ship_mode_hazard || "",
     orderStatus: row.order_status || "",
     orderedAt: row.ordered_at || null, // when the order was placed on gtradea
     syncedAt: row.synced_at || null,
@@ -476,7 +480,8 @@ export async function loadSupplierOrders(search = "") {
 }
 
 // Correct the shipment mode on one 1688 order. `mode` is "air" | "land", or
-// null to drop the correction and go back to the auto-detected answer.
+// null to drop the correction and go back to the automatic answer (gtradea's
+// mode, or the classifier's for older orders).
 //
 // Returns the row's mode fields as the server now sees them — including what
 // the classifier says once an override is cleared, which the caller can't work
@@ -494,9 +499,11 @@ export async function updateSupplierShipMode(id, mode) {
   return {
     shipMode: d.ship_mode === "land" ? "land" : "air",
     shipModeAuto: d.ship_mode_auto === "land" ? "land" : "air",
+    shipModeAutoSource: d.ship_mode_auto_source || "",
     shipModeOverride: d.ship_mode_override || "",
     shipModeSource: d.ship_mode_source || "",
     shipModeReason: d.ship_mode_reason || "",
+    shipModeHazard: d.ship_mode_hazard || "",
     // The server retags any box already on the shelf for this tracking number,
     // so the Ship confirm and the printed label follow the change too.
     warehouseShipmentFrom: d.warehouse_shipment_from || "By Air",

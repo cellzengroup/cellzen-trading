@@ -1,7 +1,9 @@
 // Decides whether a 1688 procurement item must travel BY LAND (dangerous /
 // air-restricted goods) or can go BY AIR (general cargo), from the product
 // title alone. Drives the Mode column in the warehouse 1688 panel, where staff
-// can override any answer from a dropdown.
+// can override any answer from a dropdown — for orders placed before
+// GTRADEA_MODE_FROM. Newer orders take gtradea's own shipping mode instead (see
+// autoOrderMode at the bottom of this file).
 //
 // THREE STAGES, in this order, and the order is the whole design:
 //
@@ -393,12 +395,60 @@ async function classifyShipmentModes(titles) {
 const SHIPMENT_FROM = { [AIR]: 'By Air', [LAND]: 'By Land' };
 const toShipmentFrom = (mode) => SHIPMENT_FROM[mode] || 'By Air';
 
+// ------------------------------------------------------- gtradea's own answer
+// Orders placed from ORD-20260923-500870 (PR-2230) on ship the way gtradea's
+// procurement panel says (supplier_orders.shipping_mode, the customer's choice
+// at checkout), not the way the title reads. The classifier stays the answer
+// for everything older, so historical rows keep the mode they were packed on.
+//
+// The cut is that order's placement instant (its ordered_at), not its calendar
+// day: three orders earlier on 23 Sep were packed on the classifier's answer.
+const GTRADEA_MODE_FROM = new Date('2026-09-23T18:06:34.606Z');
+
+// gtradea's mode for this line, or null when it doesn't decide it: an order
+// from before the cut, one with no placement date, or a mode the warehouse
+// doesn't ship in (gtradea has only ever sent 'air' and 'land').
+function gtradeaOrderMode(order) {
+  const mode = String(order?.shipping_mode || '').trim().toLowerCase();
+  if (mode !== AIR && mode !== LAND) return null;
+  const at = order?.ordered_at ? new Date(order.ordered_at) : null;
+  if (!at || Number.isNaN(at.getTime()) || at < GTRADEA_MODE_FROM) return null;
+  return mode;
+}
+
+// A line's mode before any staff override, in the same shape classifyShipmentMode
+// returns: gtradea's when it decides the line, otherwise `classified` — this
+// line's classifyShipmentMode result, passed in so the list route can batch it.
+//
+// gtradea's answer stands even when a hazard rule disagrees: that is the
+// customer's paid-for mode, and staff can still overrule it from the Mode
+// dropdown. What changes is that the disagreement is said out loud —
+// `hazardWarning` carries the rule's reason, for a line gtradea would fly.
+function autoOrderMode(order, classified) {
+  const mode = gtradeaOrderMode(order);
+  if (!mode) return classified;
+  const hazardWarning = mode === AIR && classified?.source === 'rule' ? classified.reason : null;
+  return {
+    mode,
+    source: 'gtradea',
+    hazardClass: null,
+    matched: [],
+    reason: `${toShipmentFrom(mode)} — the shipping mode on the gtradea order.`
+      + (hazardWarning ? ` Check before it flies: ${hazardWarning}.` : ''),
+    hazardWarning,
+    confidence: 1,
+  };
+}
+
 // The mode a 1688 order actually ships in: the staff override when there is
-// one, otherwise the classifier's answer. Takes the SupplierOrder row so the
+// one, otherwise gtradea's (see autoOrderMode), otherwise the classifier's.
+// Takes the SupplierOrder row — with shipping_mode and ordered_at — so the
 // put-away route and the 1688 panel can't drift apart on the precedence rule.
 async function effectiveOrderMode(order) {
   const override = String(order?.ship_mode_override || '').trim().toLowerCase();
   if (override === LAND || override === AIR) return override;
+  const gtradea = gtradeaOrderMode(order);
+  if (gtradea) return gtradea;
   const { mode } = await classifyShipmentMode(order?.product_name || '');
   return mode;
 }
@@ -406,8 +456,10 @@ async function effectiveOrderMode(order) {
 module.exports = {
   classifyShipmentMode,
   classifyShipmentModes,
+  autoOrderMode,
   effectiveOrderMode,
   toShipmentFrom,
+  GTRADEA_MODE_FROM,
   // exported for backend/scripts/eval-shipment-mode.js
   _internals: {
     tokenize, classifyByRules, classifyAirCategory, modelScore, trainClassifier,

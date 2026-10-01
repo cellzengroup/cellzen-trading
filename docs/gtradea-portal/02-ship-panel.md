@@ -189,9 +189,11 @@ mode, reprint the label with a different selection.
     a ship that commits mid-request rolls the whole write back to a 409.
   - For a gtradea box, every 1688 line whose `china_tracking_no` is the box's
     tracking number is brought in line with the pick: `ship_mode_override` is
-    **cleared** where the classifier already agrees with the pick and set to
-    `air` / `land` where it doesn't — except that **By Air never overrides a
-    line a dangerous-goods rule puts on land**. Those lines stay as they are and
+    **cleared** where the automatic answer (gtradea's mode, or the classifier's
+    for orders before ORD-20260923-500870) already agrees with the pick and set
+    to `air` / `land` where it doesn't — except that **By Air never overrides a
+    line that is on land and that a dangerous-goods rule puts on land**, whoever
+    set it there. Those lines stay as they are and
     are listed in `keptLand` (`[{ id, item_code, product_name, reason }]`);
     changing one takes that line's own Mode dropdown in the 1688 panel.
   - With `restoreLineOverrides: [{ id, override }]` as well, the lines are set

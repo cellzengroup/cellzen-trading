@@ -5,7 +5,7 @@ const multer = require('multer');
 const { Rack, WarehouseItem, PrintJob, SupplierOrder, WarehouseQcImage, sequelize } = require('../models');
 const { authenticate } = require('../middleware/auth');
 const { withConnectionRetry } = require('../dbRetry');
-const { effectiveOrderMode, toShipmentFrom, classifyShipmentModes } = require('../services/shipmentMode');
+const { effectiveOrderMode, toShipmentFrom, classifyShipmentModes, autoOrderMode } = require('../services/shipmentMode');
 
 const router = express.Router();
 
@@ -165,6 +165,7 @@ function parcelLines(tracking) {
     attributes: [
       'id', 'china_tracking_no', 'job_code', 'item_code', 'order_number',
       'product_name', 'product_image', 'quantity', 'ship_mode_override', 'kg',
+      'shipping_mode', 'ordered_at', // gtradea's mode, and whether it decides (effectiveOrderMode)
     ],
     order: [['item_code', 'ASC NULLS LAST'], ['order_number', 'ASC'], ['id', 'ASC']],
   });
@@ -728,7 +729,8 @@ router.post('/items', authenticate, requireStaffOrAdmin, async (req, res) => {
       // Same reason for the shipment mode: scanning a box in Store prints its
       // label immediately, and that label has to read the mode the 1688 panel
       // shows for this order — the staff override if someone set one, otherwise
-      // what the dangerous-goods classifier worked out. Without this the box
+      // gtradea's shipping mode (newer orders) or what the dangerous-goods
+      // classifier worked out (older ones). Without this the box
       // was born on the model's 'By Air' default and a lithium shipment printed
       // as air freight seconds after being scanned.
       // A parcel travels as ONE box, so it goes By Land if ANY of its lines has
@@ -849,7 +851,7 @@ router.post('/items/:id/shipment-mode', authenticate, requireStaffOrAdmin, async
       const pick = mode === 'By Land' ? 'land' : 'air';
       const lines = await withConnectionRetry(() => SupplierOrder.findAll({
         where: { china_tracking_no: item.tracking_number },
-        attributes: ['id', 'item_code', 'product_name', 'ship_mode_override'],
+        attributes: ['id', 'item_code', 'product_name', 'ship_mode_override', 'shipping_mode', 'ordered_at'],
       }));
       previousLineOverrides = lines.map((l) => ({ id: l.id, override: normShipMode(l.ship_mode_override) }));
       const restore = Array.isArray(req.body?.restoreLineOverrides) ? req.body.restoreLineOverrides : null;
@@ -864,20 +866,23 @@ router.post('/items/:id/shipment-mode', authenticate, requireStaffOrAdmin, async
           .map((r) => ({ id: r.id, override: normShipMode(r.override) }));
       } else if (lines.length) {
         // Otherwise each line follows the pick: its override is cleared where the
-        // classifier already agrees and set to the pick where it doesn't — except
-        // that By Air never overrides a line a dangerous-goods RULE puts on land
-        // (lithium, blades, …). A box-level switch is too blunt to overrule a
-        // regulated term the staff member may not even see on the sheet; that takes
-        // the line's own Mode dropdown in the 1688 panel. Such lines are left
-        // exactly as they are and reported back.
-        const autos = await classifyShipmentModes(lines.map((l) => l.product_name || ''));
+        // automatic answer (gtradea's, or the classifier's) already agrees and set
+        // to the pick where it doesn't — except that By Air never overrides a line
+        // that is on land AND that a dangerous-goods RULE puts on land (lithium,
+        // blades, …). A box-level switch is too blunt to overrule a regulated term
+        // the staff member may not even see on the sheet; that takes the line's
+        // own Mode dropdown in the 1688 panel. Such lines are left exactly as they
+        // are and reported back.
+        const classified = await classifyShipmentModes(lines.map((l) => l.product_name || ''));
         lines.forEach((l, i) => {
-          const auto = autos[i];
-          // (A line staff already set to air in the 1688 panel ships by air as it
-          // is: it isn't "kept" anything, and its override stays as the pick has it.)
-          if (pick === 'air' && auto.mode === 'land' && auto.source === 'rule'
-              && normShipMode(l.ship_mode_override) !== 'air') {
-            keptLand.push({ id: l.id, item_code: l.item_code, product_name: l.product_name, reason: auto.reason });
+          const auto = autoOrderMode(l, classified[i]);
+          // The rule is read off the classifier itself, not `auto`: gtradea saying
+          // land must not switch the guard off for a lithium line. And only a line
+          // that is ON land now is kept — one staff set to air in the 1688 panel,
+          // or one gtradea flies, already ships by air and isn't "kept" anything.
+          if (pick === 'air' && classified[i].source === 'rule'
+              && (normShipMode(l.ship_mode_override) || auto.mode) === 'land') {
+            keptLand.push({ id: l.id, item_code: l.item_code, product_name: l.product_name, reason: classified[i].reason });
             return;
           }
           lineOverrides.push({ id: l.id, override: auto.mode === pick ? null : pick });

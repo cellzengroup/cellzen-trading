@@ -190,8 +190,9 @@ Server-side, in order:
    and `product_name` to store on the item (denormalized, so the Ship/
    Dispatched panels can show them without a join). The box's
    `shipment_from` is **By Land if any line of the parcel is land** (a staff
-   override or the dangerous-goods classifier), otherwise By Air — one parcel
-   travels as one box.
+   override; else gtradea's `shipping_mode` for orders from
+   ORD-20260923-500870 on; else the dangerous-goods classifier), otherwise By
+   Air — one parcel travels as one box.
 4. Auto-creates the rack if it doesn't exist yet, as one
    `INSERT … ON CONFLICT DO NOTHING` (`Rack.bulkCreate` with
    `ignoreDuplicates`), sent together with the id minting in step 6.
